@@ -120,3 +120,24 @@ if (!function_exists('get_option')) {
         return WpStub::$options[$option] ?? $default;
     }
 }
+
+if (!function_exists('update_option')) {
+    /**
+     * @param mixed $value
+     */
+    function update_option(string $option, $value, bool $autoload = true): bool
+    {
+        WpStub::$options[$option] = $value;
+
+        return true;
+    }
+}
+
+if (!function_exists('delete_option')) {
+    function delete_option(string $option): bool
+    {
+        unset(WpStub::$options[$option]);
+
+        return true;
+    }
+}

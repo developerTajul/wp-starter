@@ -22,5 +22,9 @@ class Kernel extends BaseKernel
         \Framework\Console\Commands\MakeProviderCommand::class,
         \Framework\Console\Commands\MakeControllerCommand::class,
         \Framework\Console\Commands\MakeRouteCommand::class,
+        \Framework\Database\Commands\MakeMigrationCommand::class,
+        \Framework\Database\Commands\MigrateCommand::class,
+        \Framework\Database\Commands\MigrateRollbackCommand::class,
+        \Framework\Database\Commands\MigrateStatusCommand::class,
     ];
 }

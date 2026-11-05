@@ -82,6 +82,21 @@ final class PostController extends Controller
     }
 
     /**
+     * A bool parameter, which is the type PHP coerces most surprisingly: the
+     * non-empty string "false" becomes true. Returns both the value and its
+     * runtime type so a test can prove the coercion happened before reflection
+     * rather than after.
+     */
+    #[Route('POST', 'posts/publish')]
+    public function publish(bool $published, int $qty = 1): WP_REST_Response
+    {
+        return $this->respond([
+            'published' => $published,
+            'qty' => $qty,
+        ]);
+    }
+
+    /**
      * Not public, so it must never be registered as a route.
      */
     #[Route('GET', 'posts/internal')]

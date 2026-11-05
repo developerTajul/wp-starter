@@ -248,14 +248,25 @@ final class RouterTest extends TestCase
         $registrar->get('posts', Fixtures\PostController::class, 'store');
     }
 
-    public function test_a_controller_that_does_not_exist_surfaces_as_a_container_error(): void
+    /**
+     * A controller the container cannot build is a deployment error, not a
+     * caller error — but it must still be a *response*.
+     *
+     * This previously let the container's EntryNotFoundException escape the REST
+     * callback, which WordPress renders as an opaque 500 naming nothing. The
+     * route and the class are the two facts needed to fix it, so both are named.
+     */
+    public function test_a_controller_that_does_not_exist_returns_a_500_naming_the_route(): void
     {
         $this->router->registrar()->get('posts', 'Tests\Unit\Routing\Fixtures\MissingController', 'index');
         $this->router->registerRoutes(self::NAMESPACE);
 
-        $this->expectException(\DevLinkStudios\WPServiceContainer\Exceptions\ContainerException::class);
+        $result = $this->dispatch('posts');
 
-        $this->dispatch('posts');
+        $this->assertInstanceOf(WP_Error::class, $result);
+        $this->assertSame(500, $result->get_status());
+        $this->assertStringContainsString('MissingController', $result->get_error_message());
+        $this->assertStringContainsString('posts', $result->get_error_message());
     }
 
     /**
@@ -332,12 +343,57 @@ final class RouterTest extends TestCase
     }
 
     /**
+     * The string "false" must reach a `bool` parameter as false.
+     *
+     * A request body of `{"published": "false"}` arrives as the non-empty string
+     * "false", and PHP coerces a non-empty string to true — so the controller
+     * would publish the record. `accepts()` already whitelists 'true'/'false' as
+     * valid bools, so the intent to support them was there; the coercion simply
+     * has to happen before reflection, not after.
+     *
+     * "0" is included because it coerces correctly on its own, which is exactly
+     * what makes the bug treacherous: only some false-y spellings invert.
+     */
+    public function test_the_string_false_reaches_a_bool_parameter_as_false(): void
+    {
+        $this->router->registrar()->post('posts/publish', Fixtures\PostController::class, 'publish');
+        $this->router->registerRoutes(self::NAMESPACE);
+
+        foreach (['false', 'FALSE', '0', ''] as $spelling) {
+            $request = new WP_REST_Request();
+            $request->set_params(['published' => $spelling, 'qty' => '3']);
+
+            $data = $this->dispatchRequest('posts/publish', $request)->get_data();
+
+            $this->assertFalse(
+                $data['published'],
+                sprintf('The spelling %s must be false, not true.', var_export($spelling, true))
+            );
+            $this->assertSame(3, $data['qty']);
+        }
+    }
+
+    public function test_the_string_true_reaches_a_bool_parameter_as_true(): void
+    {
+        $this->router->registrar()->post('posts/publish', Fixtures\PostController::class, 'publish');
+        $this->router->registerRoutes(self::NAMESPACE);
+
+        foreach (['true', 'TRUE', '1', 1, true] as $spelling) {
+            $request = new WP_REST_Request();
+            $request->set_params(['published' => $spelling]);
+
+            $data = $this->dispatchRequest('posts/publish', $request)->get_data();
+
+            $this->assertTrue($data['published'], sprintf('The spelling %s must be true.', get_debug_type($spelling)));
+        }
+    }
+
+    /**
      * A permission callback returning null must deny. WordPress treats null as
      * a denial, and `return $allowed ? true : null;` is the canonical idiom —
      * so allowing it here would silently make a protected route public.
      */
-    public function test_a_permission_callback_returning_null_denies_the_request(): void
-    {
+    public function test_a_permission_callback_returning_null_denies_the_request(): void    {
         $this->router->registrar()
             ->get('posts', Fixtures\PostController::class, 'index')
             ->permissionCallback('Tests\Unit\Routing\Fixtures\null_permission');
@@ -378,6 +434,286 @@ final class RouterTest extends TestCase
 
         $this->assertSame('posts/latest', $routes[0]);
         $this->assertSame('posts/(?P<id>[^/]+)', $routes[1]);
+    }
+
+    /**
+     * A constraint is a regex, and a regex may contain braces.
+     *
+     * `{id:[0-9]{1,3}}` is the natural way to bound a numeric id, and a
+     * non-greedy match up to the first `}` truncates it to `[0-9]{1,3)\}` —
+     * which matches nothing. The route is then dead: WordPress 404s every
+     * request and nothing reports a problem at registration.
+     */
+    public function test_a_quantifier_inside_a_constraint_is_preserved(): void
+    {
+        $this->router->registrar()->get('posts/{id:[0-9]{1,3}}', Fixtures\PostController::class, 'show');
+
+        $this->router->registerRoutes(self::NAMESPACE);
+
+        $this->assertSame('posts/(?P<id>[0-9]{1,3})', WpStub::$registeredRoutes[self::NAMESPACE][0]['route']);
+    }
+
+    public function test_a_bounded_constraint_matches_what_it_should_and_rejects_the_rest(): void
+    {
+        $this->router->registrar()->get('posts/{id:[0-9]{1,3}}', Fixtures\PostController::class, 'show');
+        $this->router->registerRoutes(self::NAMESPACE);
+
+        $pattern = '@^' . WpStub::$registeredRoutes[self::NAMESPACE][0]['route'] . '$@i';
+
+        $this->assertSame(1, preg_match($pattern, 'posts/42'));
+        $this->assertSame(0, preg_match($pattern, 'posts/1234'));
+        $this->assertSame(0, preg_match($pattern, 'posts/abc'));
+    }
+
+    /**
+     * A constraint may contain parens, including nested ones.
+     *
+     * Escaping the literal parts of a path means finding the `(?P<name>...)`
+     * groups first, and a constraint's own parens make that ambiguous to any
+     * splitter that cannot count them. When the group is missed it is quoted as
+     * literal text — `posts/\(\?P\<id\>...\)` — so the route matches nothing and
+     * WordPress 404s it silently.
+     */
+    public function test_a_constraint_containing_a_nested_group_is_not_quoted_as_literal(): void
+    {
+        $this->router->registrar()->get('posts/{id:((\d+))}', Fixtures\PostController::class, 'show');
+        $this->router->registerRoutes(self::NAMESPACE);
+
+        $registered = WpStub::$registeredRoutes[self::NAMESPACE][0]['route'];
+
+        $this->assertSame('posts/(?P<id>((\d+)))', $registered);
+
+        $pattern = '@^' . $registered . '$@i';
+
+        $this->assertSame(1, preg_match($pattern, 'posts/42'));
+        $this->assertSame(0, preg_match($pattern, 'posts/abc'));
+
+        // The captured value must be the digits, not the extra group's text.
+        preg_match($pattern, 'posts/42', $matches);
+        $this->assertSame('42', $matches['id']);
+    }
+
+    public function test_a_non_capturing_group_with_a_nested_group_survives(): void
+    {
+        $this->router->registrar()->get('posts/{id:(?:a(b))}')->handle(static fn (): array => []);
+        $this->router->registerRoutes(self::NAMESPACE);
+
+        $registered = WpStub::$registeredRoutes[self::NAMESPACE][0]['route'];
+
+        $this->assertSame('posts/(?P<id>(?:a(b)))', $registered);
+        $this->assertSame(1, preg_match('@^' . $registered . '$@i', 'posts/ab'));
+        $this->assertSame(0, preg_match('@^' . $registered . '$@i', 'posts/axb'));
+    }
+
+    /**
+     * A paren inside a character class is literal to PCRE and must not be counted
+     * as opening a group, or the depth never returns to zero and the group is
+     * treated as unterminated.
+     */
+    public function test_a_paren_inside_a_character_class_does_not_open_a_group(): void
+    {
+        $this->router->registrar()->get('posts/{id:[(]x}')->handle(static fn (): array => []);
+        $this->router->registerRoutes(self::NAMESPACE);
+
+        $registered = WpStub::$registeredRoutes[self::NAMESPACE][0]['route'];
+
+        $this->assertSame('posts/(?P<id>[(]x)', $registered);
+        $this->assertSame(1, preg_match('@^' . $registered . '$@i', 'posts/(x'));
+    }
+
+    /**
+     * A literal paren in the path that opens no group is escaped, so it matches a
+     * paren rather than corrupting the pattern.
+     */
+    public function test_an_unbalanced_literal_paren_is_escaped(): void
+    {
+        $this->router->registrar()->get('posts/(draft')->handle(static fn (): array => []);
+        $this->router->registerRoutes(self::NAMESPACE);
+
+        $registered = WpStub::$registeredRoutes[self::NAMESPACE][0]['route'];
+
+        $this->assertSame('posts/\(draft', $registered);
+        $this->assertSame(1, preg_match('@^' . $registered . '$@i', 'posts/(draft'));
+        $this->assertSame(0, preg_match('@^' . $registered . '$@i', 'posts/draft'));
+    }
+
+    /**
+     * A placeholder in a path that also contains regex metacharacters: only the
+     * literal halves are quoted, and both placeholders stay live.
+     */
+    public function test_only_the_literal_segments_are_quoted_around_placeholders(): void
+    {
+        $this->router->registrar()->get('v1.0/{id:\d+}/{slug:[a-z-]+}')->handle(static fn (): array => []);
+        $this->router->registerRoutes(self::NAMESPACE);
+
+        $registered = WpStub::$registeredRoutes[self::NAMESPACE][0]['route'];
+
+        $this->assertSame('v1\.0/(?P<id>\d+)/(?P<slug>[a-z-]+)', $registered);
+        $this->assertSame(1, preg_match('@^' . $registered . '$@i', 'v1.0/7/my-post'));
+
+        // The escaped `.` must not match an arbitrary character.
+        $this->assertSame(0, preg_match('@^' . $registered . '$@i', 'v1X0/7/my-post'));
+    }
+
+    /**
+     * A `{` that is not part of a placeholder must be treated as a literal, not
+     * swallowed as a malformed capture group.
+     */
+    public function test_a_brace_that_is_not_a_placeholder_is_escaped_literally(): void
+    {
+        $this->router->registrar()->get('weird/{not a name}')->handle(static fn (): array => []);
+        $this->router->registerRoutes(self::NAMESPACE);
+
+        $this->assertSame(
+            'weird/\{not a name\}',
+            WpStub::$registeredRoutes[self::NAMESPACE][0]['route']
+        );
+    }
+
+    /**
+     * An empty constraint must fall back to the default, not compile to a group
+     * that matches nothing.
+     *
+     * `{id:}` splits to an empty string rather than null, so a `?? '[^/]+'`
+     * fallback misses it and the group becomes `(?P<id>)` — which matches the
+     * empty string instead of a path segment. WordPress anchors every pattern, so
+     * `posts/{id:}` would match `posts/` and shadow a sibling route registered
+     * after it.
+     */
+    public function test_an_empty_constraint_falls_back_to_the_default(): void
+    {
+        $this->router->registrar()->get('posts/{id:}')->handle(static fn (): array => []);
+        $this->router->registerRoutes(self::NAMESPACE);
+
+        $registered = WpStub::$registeredRoutes[self::NAMESPACE][0]['route'];
+
+        $this->assertSame('posts/(?P<id>[^/]+)', $registered);
+
+        // And it must not match a path with no segment there.
+        $this->assertSame(0, preg_match('@^' . $registered . '$@i', 'posts/'));
+        $this->assertSame(1, preg_match('@^' . $registered . '$@i', 'posts/42'));
+    }
+
+    /**
+     * A whitespace-only constraint is as malformed as an empty one.
+     */
+    public function test_a_whitespace_only_constraint_falls_back_to_the_default(): void
+    {
+        $this->router->registrar()->get('posts/{id:   }')->handle(static fn (): array => []);
+        $this->router->registerRoutes(self::NAMESPACE);
+
+        $this->assertSame('posts/(?P<id>[^/]+)', WpStub::$registeredRoutes[self::NAMESPACE][0]['route']);
+    }
+
+    /**
+     * WordPress calls the permission callback with no error handling of its own,
+     * so a callback that cannot be resolved would be an unhandled fatal on a
+     * route any anonymous client can reach. It must fail closed instead.
+     */
+    public function test_an_unresolvable_permission_callback_denies_rather_than_fatals(): void
+    {
+        $this->router->registrar()
+            ->get('posts', Fixtures\PostController::class, 'index')
+            ->permissionCallback('thisFunctionDoesNotExist');
+
+        $this->router->registerRoutes(self::NAMESPACE);
+
+        $result = $this->permission('posts');
+
+        $this->assertInstanceOf(WP_Error::class, $result);
+        $this->assertSame('wp_mini_laravel_permission_callback_failed', $result->get_error_code());
+        $this->assertStringContainsString('thisFunctionDoesNotExist', $result->get_error_message());
+    }
+
+    /**
+     * A bare method name is not a resolvable callback, and must deny rather than
+     * be mistaken for a working one.
+     *
+     * Nothing ties `canDoIt` to the route's controller, so the container reflects
+     * it as a plain function, does not find one, and throws. Documenting this as a
+     * supported form would be worse than the throw: the operator would write a
+     * callback that silently 401s every request behind what looks like a real
+     * authorization failure.
+     */
+    public function test_a_bare_method_name_is_not_a_resolvable_permission_callback(): void
+    {
+        $this->router->registrar()
+            ->get('posts', Fixtures\PostController::class, 'index')
+            ->permissionCallback('canDoIt');
+
+        $this->router->registerRoutes(self::NAMESPACE);
+
+        $result = $this->permission('posts');
+
+        $this->assertInstanceOf(WP_Error::class, $result);
+        $this->assertSame('wp_mini_laravel_permission_callback_failed', $result->get_error_code());
+
+        // The message names the callback and carries the reason, so a wiring bug
+        // is distinguishable from a route that genuinely denies this user.
+        $this->assertStringContainsString('canDoIt', $result->get_error_message());
+        $this->assertStringContainsString('does not exist', $result->get_error_message());
+    }
+
+    /**
+     * The form that *is* supported for "a method on a class": a plain function
+     * name, a static method, and an instance method on a resolvable class. Pinned
+     * together because the docblocks describe them as one contract.
+     */
+    public function test_a_named_function_permission_callback_resolves(): void
+    {
+        $this->router->registrar()
+            ->get('posts', Fixtures\PostController::class, 'index')
+            ->permissionCallback('Tests\Unit\Routing\Fixtures\allow_permission');
+
+        $this->router->registerRoutes(self::NAMESPACE);
+
+        $this->assertTrue($this->permission('posts'));
+    }
+
+    /**
+     * One bad route must not take the others down with it.
+     *
+     * Validating inside the registration loop meant WordPress had already
+     * accepted the earlier routes when the exception fired, so the rest were
+     * never handed over — and the namespace was already flagged, making a retry
+     * a silent no-op.
+     */
+    public function test_a_route_with_no_handler_does_not_leave_the_others_registered(): void
+    {
+        $registrar = $this->router->registrar();
+        $registrar->get('ok', Fixtures\PostController::class, 'index');
+        $registrar->get('bad');  // no handler: throws at registration
+        $registrar->get('later', Fixtures\PostController::class, 'index');
+
+        try {
+            $this->router->registerRoutes(self::NAMESPACE);
+            $this->fail('Expected a RouteRegistrationException.');
+        } catch (\Framework\Routing\Exceptions\RouteRegistrationException $e) {
+            // expected
+        }
+
+        // Nothing was handed to WordPress, so a fixed routes file can retry and
+        // register all three — rather than colliding with the ones that landed.
+        $this->assertSame([], WpStub::$registeredRoutes[self::NAMESPACE] ?? []);
+    }
+
+    public function test_registration_can_be_retried_after_a_bad_route_is_fixed(): void
+    {
+        $registrar = $this->router->registrar();
+        $registrar->get('bad');
+
+        try {
+            $this->router->registerRoutes(self::NAMESPACE);
+        } catch (\Framework\Routing\Exceptions\RouteRegistrationException $e) {
+            // expected
+        }
+
+        // Fix the offending route by removing it, then retry.
+        $fixed = new Router($this->container, new RouteResolver($this->container));
+        $fixed->registrar()->get('good', Fixtures\PostController::class, 'index');
+        $fixed->registerRoutes(self::NAMESPACE);
+
+        $this->assertCount(1, WpStub::$registeredRoutes[self::NAMESPACE]);
     }
 
     /**

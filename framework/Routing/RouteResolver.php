@@ -94,10 +94,50 @@ class RouteResolver
                 throw RouteResolutionException::unexpectedArgument($name, $value, $controller::class, $action);
             }
 
-            $arguments[$name] = $value;
+            $arguments[$name] = $this->normalize($parameter->getType(), $value);
         }
 
         return $this->container->call([$controller, $action], $arguments);
+    }
+
+    /**
+     * Convert a request value into the shape the declared type actually expects.
+     *
+     * Only `bool` needs this, and it needs it badly. A request body of
+     * `{"published": "false"}` reaches a `bool $published` parameter as the
+     * non-empty string "false", and PHP coerces a non-empty string to `true` —
+     * so the controller publishes the record. `"0"` happens to coerce correctly,
+     * which is what makes this treacherous: only some of the false-y spellings
+     * invert.
+     *
+     * `accepts()` already whitelists 'true' and 'false' as valid bool inputs, so
+     * the intent to support them is there; the coercion just has to happen before
+     * the value reaches reflection, not after.
+     *
+     * @param mixed $value
+     * @return mixed
+     */
+    private function normalize(?ReflectionType $type, mixed $value): mixed
+    {
+        if (!$type instanceof ReflectionNamedType || !$type->isBuiltin()) {
+            return $value;
+        }
+
+        if ($type->getName() !== 'bool' || is_bool($value)) {
+            return $value;
+        }
+
+        if (is_string($value)) {
+            // Matched case-insensitively: `?published=False` is as likely from a
+            // hand-built query string as the lowercase form.
+            return match (strtolower(trim($value))) {
+                'true', '1' => true,
+                'false', '0', '' => false,
+                default => $value,
+            };
+        }
+
+        return is_int($value) ? $value !== 0 : $value;
     }
 
     /**
@@ -120,7 +160,13 @@ class RouteResolver
             'string' => is_scalar($value) || $value instanceof \Stringable,
             'int' => is_int($value) || (is_string($value) && preg_match('/^-?\d+$/', $value) === 1),
             'float' => is_int($value) || is_float($value) || (is_string($value) && is_numeric($value)),
-            'bool' => is_bool($value) || in_array($value, [0, 1, '0', '1', 'true', 'false'], true),
+            // Case-insensitive, and including the empty string, because these
+            // arrive from query strings and form bodies where `?published=FALSE`
+            // and `published=` are both ordinary. Every accepted spelling is
+            // converted by normalize() before it reaches reflection — a bare
+            // in_array() here would have let 'false' through as the *string*
+            // "false", which PHP then coerces to true.
+            'bool' => self::isBoolLike($value),
             // A PHP array cannot be passed from a URL segment, so an array
             // parameter can only be satisfied by a structured body value.
             'array' => is_array($value),
@@ -129,8 +175,29 @@ class RouteResolver
     }
 
     /**
-     * Invoke a permission callback, which WordPress may define either as a
-     * method name on the controller or as a plain function name.
+     * Whether a value is one of the spellings a `bool` parameter accepts.
+     *
+     * @param mixed $value
+     */
+    private static function isBoolLike(mixed $value): bool
+    {
+        if (is_bool($value) || $value === 0 || $value === 1) {
+            return true;
+        }
+
+        return is_string($value)
+            && in_array(strtolower(trim($value)), ['true', 'false', '0', '1', ''], true);
+    }
+
+    /**
+     * Invoke a permission callback by name.
+     *
+     * Delegates to the container, so the same three forms it accepts for any
+     * callback apply here: a plain function name (`my_check`), a static method
+     * (`Checks::canEdit`), or an instance method on a resolvable class
+     * (`Checks@canEdit`). A bare method name such as `canEdit` is not among them —
+     * nothing associates it with the route's controller, so it is reflected as a
+     * plain function and does not resolve.
      *
      * @return mixed
      */

@@ -10,18 +10,36 @@ use WP_REST_Request;
 /**
  * Rejects the request unless the current user holds a given capability.
  *
- * The capability defaults to `manage_options`, which is the right default for
- * an admin endpoint and a dangerous one for anything else — so to check a
- * different capability, bind this class for the route's context:
+ * The capability defaults to `manage_options`, which is the right default for an
+ * admin endpoint and a dangerous one for anything else. To check a different
+ * capability, subclass it:
  *
- *     $container->when(LeadController::class)
- *               ->needs('$capability')
- *               ->give('edit_posts');
+ *     final class RequireEditPosts extends RequireCapability
+ *     {
+ *         public function __construct()
+ *         {
+ *             parent::__construct('edit_posts');
+ *         }
+ *     }
  *
- * Middleware is resolved from the container by class name, so a binding is what
- * supplies a constructor argument that is not the default.
+ * then list the subclass as the route's middleware.
+ *
+ * Because middleware is resolved by class name with the *resolved* class as the
+ * container context, a contextual binding only applies when it names that same
+ * class. Binding on the subclass works:
+ *
+ *     $container->when(RequireEditPosts::class)->needs('$capability')->give('edit_posts');
+ *
+ * Binding on `RequireCapability` itself, or on the controller whose route uses
+ * it, does **not** — the container never sees either during resolution. Nothing
+ * errors: the binding is simply never consulted and the capability silently
+ * stays whatever the constructor default is. Prefer the subclass's own
+ * constructor over a contextual binding; it fails loudly if it is wrong.
+ *
+ * Not `final`, so that subclassing works. See
+ * {@see \Framework\Routing\Router::runMiddleware()}.
  */
-final class RequireCapability implements Middleware
+class RequireCapability implements Middleware
 {
     public function __construct(private readonly string $capability = 'manage_options')
     {

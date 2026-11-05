@@ -13,6 +13,134 @@ declare(strict_types=1);
  * loaded into this process — wins.
  */
 
+// $wpdb's output-format constants. wpdb is the one WordPress class the framework
+// *extends* rather than merely type-hints (Tests\Support\FakeWpdb), so the parent
+// has to exist as a real class here. Its own constants have to exist too, since
+// FakeWpdb reads ARRAY_A and the real values must not be re-invented.
+if (!defined('OBJECT')) {
+    define('OBJECT', 'OBJECT');
+}
+
+if (!defined('OBJECT_K')) {
+    define('OBJECT_K', 'OBJECT_K');
+}
+
+if (!defined('ARRAY_A')) {
+    define('ARRAY_A', 'ARRAY_A');
+}
+
+if (!defined('ARRAY_N')) {
+    define('ARRAY_N', 'ARRAY_N');
+}
+
+if (!class_exists('wpdb')) {
+    /**
+     * The surface of wpdb the framework touches, as no-op defaults.
+     *
+     * Deliberately declares no behaviour: every method is here so a subclass can
+     * override it and so a stray call on a bare `wpdb` returns something typed
+     * rather than fataling. The real semantics the migrator depends on live in
+     * Tests\Support\FakeWpdb, where they are asserted against.
+     */
+    class wpdb
+    {
+        public string $prefix = 'wp_';
+
+        public string $last_error = '';
+
+        public int $insert_id = 0;
+
+        public int $rows_affected = 0;
+
+        public int $num_rows = 0;
+
+        public string $last_query = '';
+
+        /**
+         * @param string $query
+         * @param mixed  ...$args
+         */
+        public function prepare($query, ...$args)
+        {
+            return (string) $query;
+        }
+
+        /**
+         * @param string $query
+         * @return int|false
+         */
+        public function query($query)
+        {
+            return 0;
+        }
+
+        /**
+         * @param string $table
+         * @param array<string, mixed> $data
+         * @param array<int, string>|string|null $format
+         * @return int|false
+         */
+        public function insert($table, $data, $format = null)
+        {
+            return 0;
+        }
+
+        /**
+         * @param string $table
+         * @param array<string, mixed> $data
+         * @param array<string, mixed> $where
+         * @return int|false
+         */
+        public function update($table, $data, $where, $format = null, $whereFormat = null)
+        {
+            return 0;
+        }
+
+        /**
+         * @param string|null $query
+         * @param int         $x
+         * @param int         $y
+         * @return string|null
+         */
+        public function get_var($query = null, $x = 0, $y = 0)
+        {
+            return null;
+        }
+
+        /**
+         * @param string|null $query
+         * @param int         $x
+         * @return list<string>
+         */
+        public function get_col($query = null, $x = 0)
+        {
+            return [];
+        }
+
+        /**
+         * @param string|null $query
+         * @param string      $output
+         * @return array<int, mixed>|null
+         */
+        public function get_results($query = null, $output = OBJECT)
+        {
+            return [];
+        }
+
+        /**
+         * @param string|null $query
+         * @param string      $output
+         * @param int         $y
+         * @return array<string, mixed>|null
+         */
+        public function get_row($query = null, $output = OBJECT, $y = 0)
+        {
+            return null;
+        }
+    }
+}
+
+
 if (!class_exists('WP_Error')) {
     class WP_Error
     {
@@ -84,8 +212,7 @@ if (!class_exists('WP_REST_Response')) {
     }
 }
 
-if (!class_exists('WP_REST_Request')) {
-    /**
+if (!class_exists('WP_REST_Request')) {    /**
      * A stand-in carrying only the surface the framework uses: parameters set
      * from any source, and a header bag.
      */

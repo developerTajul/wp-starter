@@ -1,0 +1,16 @@
+# Migration files live here.
+#
+# Naming convention, as `<timestamp>_<snake_case_description>.php`:
+#
+#   2026_11_05_100000_create_leads_table.php   →  class CreateLeadsTable
+#   20261105100000_create_leads_table.php      →  class CreateLeadsTable
+#
+# Scaffold one with:
+#
+#   wp wp_mini make:migration create_leads_table
+#
+# The migrator discovers this directory at base_path('database/migrations') and
+# loads each file by path, so the namespace a migration declares is its own
+# choice — the class name, however, must match the filename.
+#
+# This file only exists so the empty directory is committed.

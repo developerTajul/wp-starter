@@ -56,6 +56,22 @@ abstract class GeneratorCommand extends Command
     }
 
     /**
+     * What to tell the caller when no usable name was given.
+     *
+     * Overridable because the argument is not a class name for every generator:
+     * `make:migration` takes a free-form description and derives the class from
+     * it, so the default example would be actively misleading.
+     */
+    protected function missingNameMessage(): string
+    {
+        return sprintf(
+            'Please provide a %s name. Example: %s Blog',
+            strtolower($this->getType()),
+            $this->getName()
+        );
+    }
+
+    /**
      * Namespace new classes of this type are placed in.
      */
     protected function getNamespace(): string
@@ -69,13 +85,7 @@ abstract class GeneratorCommand extends Command
             $className = $this->resolveClassName($args[0] ?? null);
 
             if ($className === null) {
-                $this->error(
-                    sprintf(
-                        'Please provide a %s name. Example: %s Blog',
-                        strtolower($this->getType()),
-                        $this->getName()
-                    )
-                );
+                $this->error($this->missingNameMessage());
 
                 return;
             }
