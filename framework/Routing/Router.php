@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Framework\Routing;
 
 use DevLinkStudios\WPServiceContainer\Container;
+use Framework\Http\Request;
 use Framework\Routing\Contracts\Middleware;
 use Framework\Routing\Exceptions\RouteRegistrationException;
 use Framework\Routing\Exceptions\RouteResolutionException;
@@ -229,6 +230,74 @@ class Router
     {
         $this->pinRouteParameters($route, $request);
 
+        // Everything below runs with Framework\Http\Request resolving to the
+        // request WordPress just handed us, rather than to the instance captured
+        // from the superglobals at plugin load. Bound *before* the controller is
+        // resolved, because a constructor may type-hint it too — resolving first
+        // and binding afterwards would leave the constructor holding the wrong one.
+        return $this->withHttpRequest($request, function () use ($route, $request): mixed {
+            return $this->dispatchTo($route, $request);
+        });
+    }
+
+    /**
+     * Run a callback with `Framework\Http\Request` bound to this REST request.
+     *
+     * ## Why the binding has to be scoped
+     *
+     * `Container::instance()` is permanent — it sets a shared instance and does
+     * not offer an unset — so binding and walking away would leave the REST
+     * request in the container for the rest of the process. That is harmless
+     * under a classic one-request-per-process PHP setup and wrong everywhere
+     * else: under a persistent worker, or when something dispatches a second
+     * request, the next controller to type-hint `Request` would silently receive
+     * the *previous* request's body. Restoring the previous binding in a
+     * `finally` keeps the binding confined to the dispatch, which is what the
+     * "scoped to the current request lifecycle" rule asks for.
+     *
+     * ## Why a framework Request at all
+     *
+     * A controller type-hinting the native `WP_REST_Request` keeps working
+     * untouched — {@see RouteResolver} still hands that one over for a parameter
+     * typed as such. This binding is only what makes the *framework's* Request
+     * mean the REST request instead of a stale superglobal capture, and it
+     * carries two things a capture cannot: the URL-matched parameters, and a body
+     * decoded with WordPress's own parameter precedence already applied.
+     *
+     * @param callable(): mixed $callback
+     *
+     * @return mixed
+     */
+    private function withHttpRequest(WP_REST_Request $request, callable $callback): mixed
+    {
+        // Nothing to bind against without the framework's HTTP layer loaded — a
+        // consuming project may have dropped HttpServiceProvider from its
+        // providers, in which case routing must keep working exactly as before.
+        if (!class_exists(Request::class)) {
+            return $callback();
+        }
+
+        $hadPrevious = $this->container->bound(Request::class);
+        $previous = $hadPrevious ? $this->container->resolve(Request::class) : null;
+
+        $this->container->instance(Request::class, Request::fromRestRequest($request));
+
+        try {
+            return $callback();
+        } finally {
+            // `instance()` only ever sets, so restoring means either putting the
+            // old instance back or forgetting the binding entirely when there was
+            // none — leaving it bound would be a permanent leak of this request.
+            if ($hadPrevious) {
+                $this->container->instance(Request::class, $previous);
+            } else {
+                $this->container->forget(Request::class);
+            }
+        }
+    }
+
+    private function dispatchTo(Route $route, WP_REST_Request $request): mixed
+    {
         $controller = $route->getController();
 
         if ($controller !== null) {

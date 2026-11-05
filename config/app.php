@@ -27,5 +27,11 @@ return [
         \App\Providers\AppServiceProvider::class,
         \App\Providers\RouteServiceProvider::class,
         \Framework\Database\MigrationServiceProvider::class,
+
+        // Binds Framework\Http\Request (captured from the superglobals) and the
+        // middleware Pipeline, so both can be type-hinted anywhere a service is
+        // resolved. Listed last: it captures the request, and nothing else needs
+        // to run before that happens.
+        \Framework\Http\HttpServiceProvider::class,
     ],
 ];

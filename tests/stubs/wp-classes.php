@@ -224,7 +224,28 @@ if (!class_exists('WP_REST_Request')) {    /**
         /** @var array<string, mixed> */
         private array $urlParams = [];
 
-        /** @var array<string, string> */
+        /**
+         * The query-string bucket, kept separate from `$params` — as the real
+         * class keeps it. A stub that merged everything into one array could not
+         * express "the client sent this query param *and* the route matched a URL
+         * param of the same name", which is the case `fromRestRequest()` has to
+         * get right.
+         *
+         * @var array<string, mixed>
+         */
+        private array $queryParams = [];
+
+        private string $body = '';
+
+        /**
+         * Keyed by WordPress's *canonicalized* header name — lowercased with
+         * dashes turned into underscores — because that is what the real class
+         * does, and `Request::fromRestRequest()` has to translate back from it.
+         * A stub that kept the caller's spelling would let a wrong translation
+         * pass.
+         *
+         * @var array<string, list<string>>
+         */
         private array $headers = [];
 
         private string $method = 'GET';
@@ -284,6 +305,40 @@ if (!class_exists('WP_REST_Request')) {    /**
             return $this->params;
         }
 
+        /**
+         * Set the query-string parameters, as the real `set_query_params()` does.
+         *
+         * Mirrors the real class by also writing them into the merged `$params`
+         * bag, because `get_params()` there returns every source merged.
+         *
+         * @param array<string, mixed> $params
+         */
+        public function set_query_params(array $params): void
+        {
+            foreach ($params as $key => $value) {
+                $this->queryParams[(string) $key] = $value;
+                $this->params[(string) $key] = $value;
+            }
+        }
+
+        /**
+         * @return array<string, mixed>
+         */
+        public function get_query_params(): array
+        {
+            return $this->queryParams;
+        }
+
+        public function set_body(string $body): void
+        {
+            $this->body = $body;
+        }
+
+        public function get_body(): string
+        {
+            return $this->body;
+        }
+
         public function set_method(string $method): void
         {
             $this->method = strtoupper($method);
@@ -294,14 +349,36 @@ if (!class_exists('WP_REST_Request')) {    /**
             return $this->method;
         }
 
+        /**
+         * Mirrors WP_REST_Request::canonicalize_header_name(): lowercase, with
+         * `-` and `_` treated as the same character.
+         */
+        public static function canonicalize_header_name(string $key): string
+        {
+            return str_replace('-', '_', strtolower($key));
+        }
+
         public function set_header(string $key, string $value): void
         {
-            $this->headers[strtolower($key)] = $value;
+            // Replaced, not appended: WordPress's add_header() accumulates, but
+            // every framework caller sets, and an accumulating stub would make a
+            // repeated set_header() in a test read as two values.
+            $this->headers[self::canonicalize_header_name($key)] = [$value];
+        }
+
+        /**
+         * @return array<string, list<string>>
+         */
+        public function get_headers(): array
+        {
+            return $this->headers;
         }
 
         public function get_header(string $key): ?string
         {
-            return $this->headers[strtolower($key)] ?? null;
+            return isset($this->headers[self::canonicalize_header_name($key)])
+                ? implode(',', $this->headers[self::canonicalize_header_name($key)])
+                : null;
         }
     }
 }
