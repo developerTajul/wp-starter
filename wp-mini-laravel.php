@@ -38,6 +38,13 @@ if (defined('WP_MINI_LARAVEL_BOOTED')) {
 
 define('WP_MINI_LARAVEL_BOOTED', true);
 
+// Bind the plugin root before anything can ask for a path. base_path(),
+// app_path() and config_path() all resolve through this key and fail fast
+// when it is missing, so the console commands that build paths (make:provider)
+// would otherwise throw. Bound here, in the entry file, because this is the
+// only place that knows where the installation actually lives.
+app()->instance('path.base', __DIR__);
+
 \Framework\Config\Config::load(__DIR__ . '/config');
 
 // Installing the container is app()'s job; touching app() here installs it.
