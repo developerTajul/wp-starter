@@ -43,6 +43,7 @@ framework/                 The reusable machinery (a separate Composer library).
   Config/                    The configuration repository.
   Console/                   Console kernel, base Command, make:* generators.
   Database/                  Migrator, Migration base class, migrate:* commands.
+  Http/                      Request, responses, and the middleware pipeline.
   Routing/                   Router, routes, controllers, middleware.
   Support/helpers.php        app(), config(), base_path(), app_path()...
 stubs/                     Templates the make:* commands render.
@@ -168,6 +169,182 @@ final class RequireCapability implements Middleware
 The first middleware to return an error wins, so a group's broad check runs
 before a route's narrower one. Middleware is resolved from the container, so it
 can declare constructor dependencies too.
+
+This is a *permission* seam: it can only allow or deny, because WordPress owns
+the response. For middleware that can also rewrite the request and decorate the
+response, see the HTTP layer below.
+
+## The HTTP layer
+
+REST routes get their request/response lifecycle from WordPress. Anything else —
+an `admin_post_*` handler, an AJAX action, a shortcode that renders a form —
+has to build its own, and reaching for `$_POST` and `wp_safe_redirect()` in each
+one is how a plugin ends up with five different ideas of what "logged in" means.
+
+`Framework\Http` is that lifecycle, and it works the same for a form post and a
+headless JSON client.
+
+### The Request object
+
+`Framework\Http\Request` is the **only** class in the framework allowed to read
+`$_GET`, `$_POST`, `$_SERVER`, `$_COOKIE`, `$_FILES` or `php://input`. Everything
+downstream receives the object, which is what makes a controller testable without
+a web server.
+
+```php
+$request->all();                    // every parameter, merged
+$request->input('email');           // a parameter, whichever source carried it
+$request->query('page');            // the query string only
+$request->json();                   // the decoded JSON body, or null
+$request->method();                 // 'POST'
+$request->isMethod('post');         // true
+$request->expectsJson();            // Accept: application/json, or a JSON body
+$request->isJson();                 // Content-Type declares JSON
+```
+
+Construction is split from capture. `Request::capture()` reads the superglobals
+and is called once by `HttpServiceProvider`; `new Request(...)` takes the parts
+explicitly, which is what every test uses.
+
+### REST routes and the framework Request
+
+A controller may type-hint either request object.
+
+```php
+use Framework\Http\Request;      // the framework's — merged params, decoded JSON
+use WP_REST_Request;             // WordPress's — unchanged, still supported
+
+final class LeadController extends Controller
+{
+    #[Route('POST', 'leads')]
+    public function store(Request $request): WP_REST_Response
+    {
+        return $this->created(['email' => $request->input('email')]);
+    }
+}
+```
+
+The router binds the framework `Request` for the duration of each dispatch, so a
+controller that type-hints it receives the request WordPress just dispatched —
+including the URL-matched parameters and a decoded body — rather than the
+superglobal capture taken at plugin load. A constructor may type-hint it too; the
+binding is installed before the controller is resolved.
+
+The binding is **scoped to the dispatch** and the previous one is restored
+afterwards, because `Container::instance()` has no unset: without the restore, the
+REST request would stay in the container for the rest of the process and the next
+controller to ask for a `Request` would get the finished one. Under a persistent
+worker that is a routine failure, not a hypothetical.
+
+Nothing is required of a project that does not want this: if
+`HttpServiceProvider` is not registered, routing behaves exactly as before and
+the native `WP_REST_Request` is still injected for a parameter typed as such.
+
+One thing to know if you build a container by hand: the binding is installed in
+**the container the router was constructed with**. `RouteServiceProvider` passes
+its own, which is the same instance `app()` returns, so a controller calling
+`app(Request::class)` sees it. A hand-built `new Container()` is a *different*
+instance, and code resolving through `app()` would silently get nothing.
+
+**JSON bodies are folded in automatically.** A client posting
+`{"email": "a@b.test"}` with `Content-Type: application/json` reaches
+`$request->input('email')` exactly as a form post would — PHP does not populate
+`$_POST` for a non-form content type, so without this the payload would be
+invisible. Detection is by `Content-Type`, never by sniffing the body: a client
+that declares form encoding has told you what it sent.
+
+Parameters merge **query → body → JSON**, so the more specific source wins.
+
+### Responses
+
+All three implement `Framework\Http\Contracts\ResponseInterface`, whose contract
+is `send()` and `status()`.
+
+```php
+new JsonResponse(['id' => 7], ['status_code' => 201]);   // wp_send_json()
+new RedirectResponse('/thanks')->with('success', 'Saved'); // wp_safe_redirect()
+new ViewResponse(app_path('views/thanks.php'), ['name' => $name]);
+```
+
+`JsonResponse` wraps `wp_send_json()` rather than returning a `WP_REST_Response`,
+because a REST response is only rendered by the REST server — an AJAX handler
+returning one would emit nothing at all.
+
+`RedirectResponse::with()` stores a flash message in a **transient**, not a
+session: WordPress has no session layer, and starting a PHP one breaks page
+caching and needs `session_start()` before any output. The transient key is
+scoped per client, because a transient is site-global and a shared key would show
+one visitor's message to the next. Read it back with
+`RedirectResponse::readFlash()`, which consumes it.
+
+Its status must be a real redirect code — `301`, `302`, `303`, `307` or `308`.
+Anything else throws at construction, because `wp_redirect()` answers a non-3xx
+status with `wp_die()`, which ends the request with an error page instead of
+redirecting. Pass the `Request` as the third argument when one is available: it
+is what makes the flash cookie's `Secure` flag correct behind a TLS-terminating
+proxy, where `$_SERVER['HTTPS']` is unset.
+
+`ViewResponse` renders through output buffering, so a view can be captured to a
+string — for a test, or to embed in a larger document. `render()` is side-effect
+free; only `send()` writes, and it renders *before* committing a status, so a
+view that throws leaves the response untouched rather than half-sent. A view may
+not use the variable names `path`, `data`, `__path` or `__data`.
+
+### The middleware pipeline
+
+An onion: each layer runs, calls `$next`, and gets the response back on the way
+out — so it can add a header or a cookie to whatever the destination produced, or
+short-circuit by not calling `$next` at all.
+
+```php
+$response = app(Pipeline::class)
+    ->send(app(Request::class))
+    ->through([VerifyAdminNonce::class, Authenticate::class])
+    ->then(fn (Request $request) => new ViewResponse($viewPath));
+
+$response->send();
+```
+
+Three middlewares ship with it:
+
+| Class | Checks | Denies with |
+| --- | --- | --- |
+| `VerifyAdminNonce` | `wp_verify_nonce()`, action configurable | 403 |
+| `Authenticate` | `is_user_logged_in()`, with a token seam | 401, or a login redirect for a browser |
+| `Authorize` | `current_user_can()` for **every** capability given | 401 anonymous / 403 authenticated |
+
+`VerifyAdminNonce` defaults to the action `'-1'`, which is what `wp_nonce_field()`
+bakes into a form that was given no action — so a standard WordPress form post
+satisfies it unchanged. `-1` is a specific action and **not** a wildcard: a nonce
+minted for `save_lead` will be refused by it. Pass the action you created the
+nonce with.
+
+Rejections adapt to the client: a JSON caller gets a JSON document, a browser
+gets `wp_die()` or a redirect to the login form. In `Authorize`, `all-of` is
+deliberate — WordPress's own `authorize()` route option treats a list as OR.
+
+Middleware is resolved from the container, so it can declare constructor
+dependencies, and its `handle()` parameters **must be named `$request` and
+`$next`** — the pipeline passes both by name, because that is the only way the
+container matches an argument.
+
+`Authenticate` does not implement token authentication, on purpose: a framework
+should not decide how tokens are issued or verified. Override `resolveUser()` to
+do it, and return 0 to refuse — a rejected token is not rescued by a valid cookie:
+
+```php
+final class AuthenticateApiClient extends Authenticate
+{
+    protected function resolveUser(Request $request): int
+    {
+        return ApiTokens::verify($request->header('authorization')) ?? 0;
+    }
+}
+```
+
+The provider is registered by default. Remove
+`Framework\Http\HttpServiceProvider::class` from `config('app.providers')` if you
+do not want the request bound.
 
 ## Console
 
@@ -531,6 +708,29 @@ The suite does not load WordPress. `tests/bootstrap.php` installs a stub layer
 for the WordPress functions and classes the framework touches, so the whole
 framework is testable without a WordPress install. Anything about real HTTP
 behaviour should be verified against a live install.
+
+### Manual verification
+
+Some behaviour cannot be reached from inside a PHPUnit process, and a stubbed
+test for it would pass for the wrong reason. Those cases have scripts under
+`tests/manual/`, which load a real WordPress and clean up after themselves:
+
+```bash
+php tests/manual/verify-http-lifecycle.php     # router binding, capture(), response send()
+php tests/manual/verify-review-fixes.php       # migration engine edge cases
+```
+
+`verify-http-lifecycle.php` starts an HTTP server on a free port and drives it
+with real requests. That is the only way to cover three things:
+
+- **`Request::capture()` with a JSON body.** `php://input` is empty in every CLI
+  process — it is populated only by a web SAPI, and piping a body on stdin does
+  not fill it. The PHPUnit test for capture covers the superglobals and records
+  this limitation rather than faking the body.
+- **`JsonResponse::send()` and `RedirectResponse::send()`.** Both terminate the
+  request, so the emitted status and headers can only be observed over the wire.
+- **The router's `Request` binding against a real `WP_REST_Server`**, so the
+  callback under test is the one WordPress actually calls.
 
 `app()` caches the container in a function-level static, so a test needing a
 genuinely fresh container must use `#[RunInSeparateProcess]`.

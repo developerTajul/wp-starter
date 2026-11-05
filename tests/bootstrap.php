@@ -18,3 +18,8 @@ require_once dirname(__DIR__) . '/vendor/autoload.php';
 // After the autoloader, so a real WordPress install loaded into this process —
 // were one ever loaded — would define these first and win.
 require_once __DIR__ . '/stubs/wp-classes.php';
+
+// Doubles for PHP *builtins*, which cannot be declared globally and so cannot
+// live in wordpress.php. Required last: it declares a function in the framework's
+// own namespace, and the framework's files must have been resolvable first.
+require_once __DIR__ . '/stubs/builtins.php';

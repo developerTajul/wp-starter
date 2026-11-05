@@ -141,3 +141,189 @@ if (!function_exists('delete_option')) {
         return true;
     }
 }
+
+// ------------------------------------------------------------------- HTTP layer
+
+if (!function_exists('get_current_user_id')) {
+    /**
+     * On a real install these two always agree — `is_user_logged_in()` is a
+     * thin wrapper over the same current-user global, and WordPress sets it from
+     * the auth cookie before any hook runs. The stub keeps them as separate
+     * fields so a test can stage a token flow where the cookie is absent, so a
+     * test that wants "logged in the ordinary way" sets `$userLoggedIn` and this
+     * reports a plausible id rather than 0.
+     *
+     * The default is 1, not 0, because 0 means "nobody" — and a logged-in
+     * request reporting nobody is a state WordPress cannot reach.
+     */
+    function get_current_user_id(): int
+    {
+        if (WpStub::$currentUserId !== 0) {
+            return WpStub::$currentUserId;
+        }
+
+        return WpStub::$userLoggedIn ? 1 : 0;
+    }
+}
+
+if (!function_exists('wp_set_current_user')) {
+    /**
+     * Establishes the current user, as WordPress does.
+     *
+     * The stub deliberately does *not* make is_user_logged_in() agree: the real
+     * is_user_logged_in() checks the auth cookie, and WordPress's own
+     * `determine_current_user` filter chain — which is where a token
+     * implementation hooks in — sets the current user first. A test asserting a
+     * token flow sets both fields, which is what really happens on a request
+     * that authenticated.
+     */
+    function wp_set_current_user(int $userId): void
+    {
+        WpStub::$currentUserId = $userId;
+    }
+}
+
+if (!function_exists('wp_create_nonce')) {
+    function wp_create_nonce(string $action = '-1'): string
+    {
+        return WpStub::issueNonce($action);
+    }
+}
+
+if (!function_exists('wp_verify_nonce')) {
+    /**
+     * @return int|false 1 or 2 for a valid nonce, false otherwise.
+     */
+    function wp_verify_nonce(string $nonce, string $action = '-1')
+    {
+        if (!isset(WpStub::$nonces[$nonce])) {
+            return false;
+        }
+
+        return WpStub::$nonces[$nonce] === $action ? 1 : false;
+    }
+}
+
+if (!function_exists('wp_login_url')) {
+    function wp_login_url(string $redirect = ''): string
+    {
+        $base = WpStub::$loginUrl ?? 'http://example.test/wp-login.php';
+
+        if ($redirect === '') {
+            return $base;
+        }
+
+        return $base . (str_contains($base, '?') ? '&' : '?') . 'redirect_to=' . rawurlencode($redirect);
+    }
+}
+
+if (!function_exists('wp_safe_redirect')) {
+    /**
+     * @param array<string, mixed> $args
+     *
+     * @throws RuntimeException On a non-3xx status, mirroring WordPress: the real
+     *                          wp_safe_redirect() -> wp_redirect() calls wp_die()
+     *                          there, which ends the request. A stub that coerced
+     *                          the status to 302 instead would let a RedirectResponse
+     *                          with a bad status pass a test while producing an
+     *                          error page in production.
+     */
+    function wp_safe_redirect(string $location, int $status = 302, string $xRedirectBy = 'WordPress'): bool
+    {
+        if ($status < 300 || 399 < $status) {
+            WpStub::$died[] = [
+                'message' => 'HTTP redirect status code must be a redirection code, 3xx.',
+                'title' => '',
+                'args' => [],
+            ];
+
+            throw new RuntimeException('wp_die(): HTTP redirect status code must be a redirection code, 3xx.');
+        }
+
+        WpStub::$redirects[] = ['url' => $location, 'status' => $status];
+
+        return true;
+    }
+}
+
+if (!function_exists('wp_send_json')) {
+    /**
+     * @param mixed $data
+     */
+    function wp_send_json($data, int $statusCode = 200, int $flags = 0): void
+    {
+        WpStub::$jsonResponses[] = ['data' => $data, 'status' => $statusCode];
+    }
+}
+
+if (!function_exists('set_transient')) {
+    /**
+     * @param mixed $value
+     */
+    function set_transient(string $transient, $value, int $expiration = 0): bool
+    {
+        WpStub::$transients[$transient] = $value;
+        WpStub::$transientWrites[] = [
+            'key' => $transient,
+            'value' => $value,
+            'expiration' => $expiration,
+        ];
+
+        return true;
+    }
+}
+
+if (!function_exists('get_transient')) {
+    /**
+     * @return mixed
+     */
+    function get_transient(string $transient)
+    {
+        return WpStub::$transients[$transient] ?? false;
+    }
+}
+
+if (!function_exists('delete_transient')) {
+    function delete_transient(string $transient): bool
+    {
+        unset(WpStub::$transients[$transient]);
+
+        return true;
+    }
+}
+
+// setcookie() is NOT stubbed here. It is a PHP builtin, so a global function
+// declaration would be a fatal and the function_exists() guard above would
+// silently skip it — see tests/stubs/builtins.php, which defines it in the
+// namespace RedirectResponse is compiled under, which is where an unqualified
+// call actually resolves.
+
+if (!function_exists('status_header')) {
+    function status_header(int $statusCode, string $description = ''): void
+    {
+        WpStub::$statusHeaders[] = $statusCode;
+    }
+}
+
+if (!function_exists('esc_html__')) {
+    function esc_html__(string $text, string $domain = 'default'): string
+    {
+        return esc_html($text);
+    }
+}
+
+if (!function_exists('wp_die')) {
+    /**
+     * @param array<string, mixed> $args
+     *
+     * @throws RuntimeException Always — the real function ends the request, and a
+     *                          stub that returned would let code after a wp_die()
+     *                          run, which never happens in production.
+     */
+    function wp_die(string $message = '', string $title = '', array $args = []): void
+    {
+        WpStub::$died[] = ['message' => $message, 'title' => $title, 'args' => $args];
+
+        throw new RuntimeException('wp_die(): ' . $message);
+    }
+}
