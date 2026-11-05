@@ -1,0 +1,23 @@
+<?php
+declare(strict_types=1);
+
+use Framework\Routing\Contracts\Middleware;
+use Framework\Routing\RouteRegistrar;
+
+/**
+ * REST routes for this plugin.
+ *
+ * Loaded by Framework\Routing\RouteServiceProvider on the `rest_api_init`
+ * action and published under config('app.rest_namespace'). Every route here is
+ * matched before the request reaches a controller, so this file should stay a
+ * map of the API surface rather than a place for logic.
+ */
+return function (RouteRegistrar $router): void {
+    $router->get('ping', static fn () => ['pong' => true]);
+
+    // $router->group(['prefix' => 'posts', 'middleware' => [Middleware::class]], function (RouteRegistrar $router): void {
+    //     $router->get('', PostController::class, 'index');
+    //     $router->post('', PostController::class, 'store');
+    //     $router->get('{id}', PostController::class, 'show');
+    // });
+};
