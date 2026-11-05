@@ -6,7 +6,7 @@ declare(strict_types=1);
  *
  * Run immediately after cloning, before writing any application code:
  *
- *     php bin/init-plugin.php \
+ *     php framework/bin/init-plugin.php \
  *         --name="Lead Bridge" \
  *         --slug=lead-bridge \
  *         --vendor=acme \
@@ -57,10 +57,10 @@ if (PHP_SAPI !== 'cli') {
     exit(1);
 }
 
-// The repository root, one level above bin/. Resolved from __DIR__ rather than
-// from getcwd(), so the script works when invoked by an absolute path from
-// anywhere — `php /path/to/bin/init-plugin.php` is a normal way to run this.
-define('INIT_PLUGIN_ROOT', dirname(__DIR__));
+// The repository root, two levels above bin/ — bin/ is now under framework/.
+// Resolved from __DIR__ rather than from getcwd(), so the script works when
+// invoked by an absolute path from anywhere — `php /path/to/framework/bin/init-plugin.php` is a normal way to run this.
+define('INIT_PLUGIN_ROOT', dirname(__DIR__, 2));
 
 require __DIR__ . '/lib/RebrandPlan.php';
 require __DIR__ . '/lib/Rebrander.php';
@@ -225,7 +225,7 @@ function printUsage(): void
     Rebrand the WP Mini Laravel starter for a new project.
 
     USAGE
-      php bin/init-plugin.php --name=... --slug=... --vendor=... --namespace=... [options]
+      php framework/bin/init-plugin.php --name=... --slug=... --vendor=... --namespace=... [options]
 
     REQUIRED
       --name="Lead Bridge"     Plugin name. Appears in the plugin header and admin notices.

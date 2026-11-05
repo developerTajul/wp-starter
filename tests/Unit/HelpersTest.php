@@ -132,4 +132,79 @@ final class HelpersTest extends TestCase
             app(\DevLinkStudios\WPServiceContainer\Contracts\ContainerInterface::class)
         );
     }
+
+    /**
+     * Environment lookups resolve from the superglobals in the order Laravel
+     * uses: $_ENV, then $_SERVER, then getenv().
+     */
+    #[RunInSeparateProcess]
+    public function test_env_reads_from_superglobals(): void
+    {
+        $_ENV['ENV_KEY'] = 'from-env';
+        $_SERVER['ENV_KEY'] = 'from-server';
+
+        $this->assertSame('from-env', env('ENV_KEY'));
+    }
+
+    /**
+     * A missing key returns the default, and when the caller passes no default
+     * it is null — not an empty string and not a coercion.
+     */
+    #[RunInSeparateProcess]
+    public function test_env_returns_default_when_key_is_missing(): void
+    {
+        $this->assertNull(env('NONEXISTENT_KEY'));
+        $this->assertSame('production', env('APP_ENV', 'production'));
+    }
+
+    /**
+     * Laravel string coercion: native booleans, their parenthesised forms,
+     * '(null)', and an empty string all resolve to a real scalar.
+     */
+    #[RunInSeparateProcess]
+    public function test_env_coerces_string_booleans_and_null(): void
+    {
+        $_ENV['BOOL_TRUE'] = 'true';
+        $_ENV['BOOL_FALSE'] = 'false';
+        $_ENV['PAREN_TRUE'] = '(true)';
+        $_ENV['PAREN_FALSE'] = '(false)';
+        $_ENV['NULL_VAL'] = '(null)';
+        $_ENV['EMPTY_STR'] = '';
+
+        $this->assertTrue(env('BOOL_TRUE'));
+        $this->assertFalse(env('BOOL_FALSE'));
+        $this->assertTrue(env('PAREN_TRUE'));
+        $this->assertFalse(env('PAREN_FALSE'));
+        $this->assertNull(env('NULL_VAL'));
+        $this->assertNull(env('EMPTY_STR'));
+        $this->assertIsBool(env('BOOL_TRUE'));
+    }
+
+    /**
+     * (empty) is a string literal that resolves to an empty string, distinct
+     * from null — matching Laravel's own behaviour.
+     */
+    #[RunInSeparateProcess]
+    public function test_env_empty_paren_resolves_to_empty_string(): void
+    {
+        $_ENV['EMPTY_PAREN'] = '(empty)';
+        $this->assertSame('', env('EMPTY_PAREN'));
+    }
+
+    /**
+     * The plugin config reads APP_ENV through env() so a .env file controls
+     * the runtime environment instead of hardcoding a value.
+     */
+    #[RunInSeparateProcess]
+    public function test_config_app_env_reads_from_app_env(): void
+    {
+        $_ENV['APP_ENV'] = 'testing';
+
+        // Config is cached per-process; reset so our freshly set env var is
+        // reflected when the config file is loaded.
+        \Framework\Config\Config::flush();
+        \Framework\Config\Config::load(__DIR__ . '/../../config');
+
+        $this->assertSame('testing', config('app.env'));
+    }
 }

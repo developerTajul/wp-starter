@@ -1,22 +1,22 @@
 # WP Mini Laravel
 
 A Laravel-shaped architecture for WordPress plugins: a service container with
-constructor injection, service providers with a register/boot lifecycle, a
-configuration repository, a REST routing layer with controllers and middleware,
-and a database migration engine.
+constructor injection, service providers with a `register`/`boot` lifecycle, a
+configuration repository, dual routing (admin screens **and** a headless REST
+API), a validation and resource layer, a database migration engine, and a
+one-command rebrander.
 
 This repository is a **starter project**, not a plugin you install as-is. Clone
-it, rebrand it, and build your own plugin inside it — see
-[Rebranding this plugin](#rebranding-this-plugin) before you write any code.
+it, rebrand it in one command, and build your plugin inside it — see
+[Rebranding](#rebranding) before you write any code.
 
-The plugin itself is a `wordpress-plugin` Composer package; the reusable
-machinery lives in the sibling `framework/` library, which projects depend on
-through a path repository.
+---
 
 ## Requirements
 
 - PHP 8.2+
 - WordPress 6.0+
+- Composer
 
 ## Installation
 
@@ -24,1367 +24,443 @@ through a path repository.
 composer install
 ```
 
-`vendor/` is not committed. Without it the plugin shows an admin notice rather
+`vendor/` is not committed. Without it, the plugin shows an admin notice rather
 than fataling on an uncaught `Error`.
 
-## Layout
+Then copy the environment template and fill in your values:
 
-```
-wp-mini-laravel.php        Entry file. Binds path.base, loads config, boots.
-app/                       Your application.
-  Console/Kernel.php         The command registry.
-  Console/Command.php        Base class for your own commands.
-  Http/Controllers/          Generated controllers land here.
-    Api/                       REST controllers (JSON in, resources out).
-  Http/Middleware/           Route guards — e.g. RequireLeadRead.
-  Http/Resources/            JsonResource classes — the public shape of a payload.
-  Providers/                 Your service providers.
-config/app.php             Configuration values.
-routes/api.php             REST route definitions.
-routes/web.php             Web route definitions (admin screens, form handlers).
-views/                     PHP view files, named with dots: leads.index.
-  layout.php                 The demo screen's shell.
-database/migrations/       Versioned schema changes.
-framework/                 The reusable machinery (a separate Composer library).
-  Config/                    The configuration repository.
-  Console/                   Console kernel, base Command, make:* generators.
-  Database/                  Migrator, Migration base class, migrate:* commands.
-  Http/                      Request, responses, and the middleware pipeline.
-    Requests/                  FormRequest — self-validating request objects.
-  Routing/                   Router, routes, controllers, middleware.
-  Support/                   ViewRenderer, JsonResource, and the global helpers.
-    helpers.php                app(), config(), base_path(), view(), e(), old()...
-  Validation/                The rule engine behind FormRequest.
-stubs/                     Templates the make:* commands render.
-tests/                     PHPUnit suite (WordPress is stubbed, not loaded).
-core/                      Your own PSR-4 namespace (Core\), currently empty.
+```bash
+cp .env.example .env
 ```
 
-## Request lifecycle
+---
 
-Understanding the order explains most of the framework's constraints.
+## The Three-Zone Architecture
 
-1. **Plugin load.** The entry file binds `path.base` into the container and loads
-   `config/`. It then bootstraps `App\Kernel`, which calls `register()` on every
-   provider listed in `config('app.providers')`.
-   - `register()` runs *now*, while other plugins may still be loading. It must
-     only declare bindings — never `add_action`, never resolve a service.
-2. **`plugins_loaded`.** The entry file's hook calls `app()->boot()`, which calls
-   `boot()` on each provider. This is where hooks are registered and services
-   resolved.
-3. **`rest_api_init`.** `RouteServiceProvider` loads `routes/api.php`, collects
-   the routes, and hands them to WordPress.
+The tree is split into three zones with a strict rule about which may depend on
+which. Getting this boundary right is what keeps a project upgradeable.
 
-The register/boot split is why a provider may depend on a binding declared by a
-provider that is listed *after* it.
+| Zone | Namespace | Whose | Rebrand? | May depend on |
+| --- | --- | --- | --- | --- |
+| `framework/` | `Framework\` | The library's | **No** | nothing above it |
+| `app/` | `App\` | Yours | **Yes** | `Framework\`, `Core\` |
+| `core/` | `Core\` | Yours | **Yes** | `Framework\` (never `App\`) |
 
-## Dependency injection
+### `framework/` — the reusable machinery
 
-Never `new` a service. Type-hint it, and the container builds it:
+A separate Composer package (`devlinkstudios/wp-mini-laravel-framework`)
+consumed through a path repository and symlinked into `vendor/`. It carries the
+container wiring, config repository, routing, HTTP layer, validation, console
+and migrations.
+
+**This zone is read-only during a rebrand.** Its `Framework\` namespace belongs
+to the library; renaming it here forks the library, and every future framework
+update becomes a merge. If you genuinely intend to fork, do it in its own
+repository and depend on your fork.
+
+### `app/` — your application
+
+Everything that is specific to *this* plugin: controllers, middleware,
+resources, providers, console commands, and the `App\Kernel` that registers
+them. This is where most of your work happens.
+
+### `core/` — your domain
+
+A namespace for framework-agnostic domain logic — entities, value objects,
+service classes and their contracts — that does not import WordPress or the
+framework's HTTP layer. A `NoteService` in `core/` can be tested without a
+WordPress install or a request.
+
+The rule that keeps this honest: **`core/` never depends on `app/`.** Dependencies
+point inward — `app/` resolves a `Core\` contract, and the provider binds it to
+an adapter.
+
+---
+
+## Directory Structure
+
+```
+wp-mini-laravel.php           Entry file. Loads .env, binds path.base, boots the kernel.
+.env / .env.example           Environment variables (see Dotenv below).
+composer.json                 Dependencies, PSR-4 maps, and the `rebrand` script.
+
+app/                          YOUR APPLICATION  (App\)
+  Kernel.php                    Registers service providers.
+  Console/Kernel.php            The WP-CLI command registry.
+  Console/Command.php           Base class for your own commands.
+  Http/Controllers/             Controllers.
+    Admin/DashboardController     The admin-screen example.
+    Api/LeadController            The REST example.
+  Http/Middleware/              Route guards — e.g. RequireLeadRead.
+  Http/Resources/               JsonResource classes — the public shape of a payload.
+  Providers/                    Your service providers.
+  Repositories/                 $wpdb-backed adapters for Core contracts.
+  Database/                     Transaction manager.
+
+core/                         YOUR DOMAIN  (Core\)
+  Note/                         A worked example: entity, contracts, service.
+  Shared/                       Result, PaginatedResult, shared contracts.
+
+config/app.php                Configuration values, mapped from env() with fallbacks.
+routes/api.php                REST route definitions.
+routes/web.php                Web route definitions (admin screens, form handlers).
+views/                        PHP view files, named with dots: leads.index.
+database/migrations/          Versioned schema changes.
+
+framework/                    THE LIBRARY  (Framework\) — never rebranded
+  Config/                       The configuration repository.
+  Console/                      Console kernel, base Command, make:* generators.
+  Database/                     Migrator, Migration base class, migrate:* commands.
+  Http/                         Request, responses, middleware pipeline, FormRequest.
+  Routing/                      Router, routes, controllers, middleware, adapters.
+  Support/                      ViewRenderer, JsonResource, and global helpers.
+    helpers.php                   app(), config(), env(), base_path(), view(), e(), old()
+  Validation/                   The rule engine behind FormRequest.
+  bin/                          The rebrander (init-plugin.php + lib/).
+
+stubs/                        Templates the make:* commands render.
+tests/                        PHPUnit suite (WordPress is stubbed, not loaded).
+```
+
+---
+
+## Dotenv Support
+
+Environment variables are managed with [vlucas/phpdotenv](https://github.com/vlucas/phpdotenv)
+and loaded in the entry file immediately after Composer's autoloader:
 
 ```php
-final class LeadRepository
-{
-    public function __construct(private readonly WpdbGateway $gateway) {}
-}
-
-// Anywhere the container resolves LeadRepository, the gateway is injected.
+\Dotenv\Dotenv::createImmutable(__DIR__)->safeLoad();
 ```
 
-Declare bindings in a provider's `register()`:
+`safeLoad()` (not `load()`) means the plugin **does not crash** when no `.env`
+file exists — a production host that supplies variables at the server level
+keeps working.
+
+### The `env()` helper
 
 ```php
-public function register(): void
-{
-    $this->container->singleton(LeadRepository::class);
-    $this->container->bind(LeadRepositoryInterface::class, LeadRepository::class);
-}
+env('APP_ENV', 'production');
 ```
 
-An interface has no implementation of its own, so it needs an explicit binding
-before anything depending on it can be constructed.
+It checks `$_ENV`, then `$_SERVER`, then `getenv()`, and coerces Laravel-style
+string booleans:
 
-## Routing
+| Written in `.env` | Resolves to |
+| --- | --- |
+| `true` / `false` | `bool` |
+| `(true)` / `(false)` | `bool` |
+| `(null)` or an empty value | `null` |
+| `(empty)` | `''` |
+| unset key | the second argument |
 
-There are two routers, one per WordPress domain, and both speak the same fluent
-API. Which one a routes file receives is the only difference:
+Quote any value containing a space — phpdotenv's parser rejects unquoted
+whitespace: `APP_NAME="Lead Bridge"`.
 
-| File | Router | WordPress mechanism |
+### Config over env
+
+**`env()` is only ever called inside `config/*.php`.** Nothing in `app/`,
+`core/`, `routes/` or `views/` reads the environment directly. Instead, config
+maps the variable once, with a fallback, and the rest of the application reads
+it through the `config()` helper or an injected `Framework\Config\Config`:
+
+```php
+// config/app.php
+'name' => env('APP_NAME', 'WP Mini Laravel'),
+
+// anywhere in app/ or core/
+config('app.name');
+$name = $this->config->get('app.name');   // constructor-injected Config
+```
+
+This is why the plugin keeps working under PHPUnit, WP-CLI, and any context that
+boots before the entry file: the fallback in `config/app.php` is a real value,
+not a missing one.
+
+---
+
+## Routing — Dual Surfaces
+
+The same router definition drives two completely different WordPress surfaces.
+`routes/api.php` publishes a **headless REST API**; `routes/web.php` publishes
+**admin screens and form handlers**.
+
+### Web routes
+
+```php
+return function (WordPressRouterAdapter $router): void {
+    $router->adminPage('my-plugin', DashboardController::class, 'index')
+        ->name('dashboard')
+        ->withOptions(['capability' => 'manage_options']);
+
+    $router->adminAction('my_form', SaveController::class, 'handle');
+    $router->page('my-public-page', PublicController::class, 'show');
+};
+```
+
+| Helper | WordPress mechanism | Use for |
 | --- | --- | --- |
-| `routes/api.php` | REST | `rest_api_init` → `register_rest_route()` |
-| `routes/web.php` | web | `admin_menu`, `admin_post_{action}`, `template_redirect` |
+| `adminPage()` | `admin_menu` | `wp-admin` screens |
+| `adminAction()` | `admin_post_{action}` | form submissions |
+| `page()` | `template_redirect` | front-end pages |
 
-`routes/api.php` receives a fluent registrar:
+A screen callback must **return** a string or a `ResponseInterface` — an admin
+page returns rather than exits, so WordPress can render its chrome around it.
+
+### Headless REST API
 
 ```php
 return function (RouteRegistrar $router): void {
     $router->get('ping', static fn (): array => ['pong' => true]);
 
-    $router->group(
-        ['prefix' => 'leads', 'middleware' => [RequireCapability::class]],
-        function (RouteRegistrar $router): void {
-            $router->get('', LeadController::class, 'index');
-            $router->post('', LeadController::class, 'store');
-            $router->get('{id:\d+}', LeadController::class, 'show');
-        }
-    );
+    $router->get('leads', LeadController::class, 'index')
+        ->middleware(RequireLeadRead::class);
+
+    $router->get('leads/{id}', LeadController::class, 'show')
+        ->middleware(RequireLeadRead::class);
 };
 ```
 
-Paths reach the controller's parameters by name, and the `{id:\d+}` constraint
-means WordPress rejects a non-numeric id with a 404 before the controller runs.
+These publish under `/wp-json/{config('app.rest_namespace')}/`. The demo exposes:
 
-Every route is reached under `config('app.rest_namespace')`, by default
-`/wp-json/wp-mini-laravel/v1/`.
-
-### Web routes
-
-WordPress reaches a web screen through three unrelated mechanisms, and nothing in
-core presents them as one idea. This router does:
-
-```php
-return function (WordPressRouterAdapter $router): void {
-    // admin_menu → add_menu_page()
-    $router->adminPage('leads', DashboardController::class, 'index')
-        ->withOptions([
-            'page_title' => 'Lead Enquiries',
-            'menu_title' => 'Leads',
-            'capability' => 'manage_options',
-            'icon'       => 'dashicons-email',
-            'position'   => 26,
-        ]);
-
-    // admin_menu → add_submenu_page()
-    $router->adminPage('leads-settings', SettingsController::class, 'index')
-        ->withOptions(['parent_slug' => 'leads']);
-
-    // admin_post_leads_store (and the _nopriv hook)
-    $router->adminAction('leads-store', LeadController::class, 'store');
-
-    // template_redirect
-    $router->page('thank-you', ThankYouController::class, 'index');
-};
+```
+GET /wp-json/wp-mini-laravel/v1/ping         → {"pong": true}   (open)
+GET /wp-json/wp-mini-laravel/v1/leads        → {"data": [...]}  (guarded)
+GET /wp-json/wp-mini-laravel/v1/leads/{id}   → {"data": {...}}  (guarded)
 ```
 
-`get()`/`post()` also work, and infer the surface from the verb: a `POST` is
-taken to be a form handler, a `GET` to be a front-end page. That inference is a
-convenience for the obvious case, not a claim about an ambiguous one — a `GET`
-route that is really an admin screen should say `adminPage()`.
+> **REST routes are public by default in WordPress.** The `leads` endpoints
+> carry `RequireLeadRead` because they publish contact details; without it an
+> anonymous caller reads the table. `ping` is deliberately open because it
+> returns nothing about anybody — the difference between the two is the point.
 
-Two behaviours worth knowing, both of which exist to prevent bugs that are hard
-to diagnose:
+Middleware is registered **by class name**, with the capability set in that
+class's constructor. A `Class::class . ':capability'` spelling registers a route
+whose middleware cannot be resolved — denying every caller, administrators
+included.
 
-- **Form handlers register on both `admin_post_{action}` and
-  `admin_post_nopriv_{action}`.** Registering only the first is the classic
-  mistake: the form works while logged in and 404s for everyone else.
-- **Two routes cannot derive the same action name.** `PUT leads/{id}` and
-  `DELETE leads/{id}` would both want `leads`, and WordPress would then fire
-  *both* callbacks on one submission. Registration throws instead, and non-POST
-  verbs get a suffix (`leads_put`, `leads_delete`) so the collision does not
-  arise.
+---
 
-Web controllers are plain classes — they do not extend `Framework\Routing\Controller`,
-which is REST-shaped. They receive the Phase 4 `Request` and return a
-`ResponseInterface` or a string, and know nothing about WordPress:
+## WP-CLI Integration
+
+Commands are registered in `app/Console/Kernel.php` and exposed under the prefix
+from `config('app.cli_prefix')` — `wp_mini` by default.
+
+```bash
+wp wp_mini make:controller LeadController     # a controller class
+wp wp_mini make:provider BillingServiceProvider
+wp wp_mini make:route ReportController         # a route + controller
+wp wp_mini make:migration create_leads_table
+wp wp_mini migrate                             # run pending migrations
+wp wp_mini migrate:rollback
+wp wp_mini migrate:status
+wp wp_mini route:list                          # every registered route
+```
+
+`Command` deliberately does **not** extend `WP_CLI_Command` — WP-CLI accepts a
+plain callable, so extending it would couple every command to WP-CLI being
+loaded merely to be *declared*, not to be run.
+
+---
+
+## Request Lifecycle
+
+1. WordPress includes `wp-mini-laravel.php`.
+2. The entry file loads `.env`, then binds `path.base`.
+3. `config/*.php` is loaded into `Framework\Config\Config`.
+4. `App\Kernel::bootstrap()` registers every provider in `config/app.php`.
+5. `app()->boot()` runs on the `plugins_loaded` hook.
+6. A request arrives; the routing provider picks the surface (REST, admin page,
+   admin action, or front-end page) and dispatches through middleware to a
+   controller.
+
+Dependencies are resolved by **constructor injection** through the container:
 
 ```php
 final class LeadController
 {
-    public function __construct(private readonly LeadRepository $leads) {}
-
-    public function store(Request $request): RedirectResponse
-    {
-        $this->leads->create($request->input('name'));
-
-        return new RedirectResponse('admin.php?page=leads');
-    }
+    public function __construct(private readonly NoteService $notes) {}
 }
 ```
 
-### Controllers
+---
 
-A REST controller extends `Framework\Routing\Controller` and may declare its own
-routes with attributes:
+## Database Migrations
 
-```php
-final class LeadController extends Controller
-{
-    public function __construct(private readonly LeadRepository $leads) {}
-
-    #[Route('GET', 'leads')]
-    public function index(WP_REST_Request $request): WP_REST_Response
-    {
-        return $this->respond($this->leads->all());
-    }
-
-    #[Route('DELETE', 'leads/{id:\d+}', middleware: [RequireCapability::class])]
-    public function destroy(WP_REST_Request $request): WP_REST_Response
-    {
-        $this->leads->delete((int) $request->get_param('id'));
-
-        return $this->noContent();
-    }
-}
-```
-
-Mounting it with `(new LeadController())->registerRoutes($router)` inherits the
-enclosing group's prefix and middleware, so a controller mounted inside a
-protected group stays protected.
-
-### Middleware
-
-Middleware runs before the handler and returns a `WP_Error` to reject:
+Migrations live in `database/migrations/`, named `YYYY_MM_DD_HHMMSS_description.php`.
+Each is one reversible step: whatever `up()` creates, `down()` must remove.
 
 ```php
-final class RequireCapability implements Middleware
-{
-    public function __construct(private readonly string $capability = 'manage_options') {}
-
-    public function handle(WP_REST_Request $request): ?WP_Error
-    {
-        return current_user_can($this->capability) ? null : new WP_Error(/* ... */);
-    }
-}
-```
-
-The first middleware to return an error wins, so a group's broad check runs
-before a route's narrower one. Middleware is resolved from the container, so it
-can declare constructor dependencies too.
-
-This is a *permission* seam: it can only allow or deny, because WordPress owns
-the response. For middleware that can also rewrite the request and decorate the
-response, see the HTTP layer below.
-
-## The HTTP layer
-
-REST routes get their request/response lifecycle from WordPress. Anything else —
-an `admin_post_*` handler, an AJAX action, a shortcode that renders a form —
-has to build its own, and reaching for `$_POST` and `wp_safe_redirect()` in each
-one is how a plugin ends up with five different ideas of what "logged in" means.
-
-`Framework\Http` is that lifecycle, and it works the same for a form post and a
-headless JSON client.
-
-### The Request object
-
-`Framework\Http\Request` is the **only** class in the framework allowed to read
-`$_GET`, `$_POST`, `$_SERVER`, `$_COOKIE`, `$_FILES` or `php://input`. Everything
-downstream receives the object, which is what makes a controller testable without
-a web server.
-
-```php
-$request->all();                    // every parameter, merged
-$request->input('email');           // a parameter, whichever source carried it
-$request->query('page');            // the query string only
-$request->json();                   // the decoded JSON body, or null
-$request->method();                 // 'POST'
-$request->isMethod('post');         // true
-$request->expectsJson();            // Accept: application/json, or a JSON body
-$request->isJson();                 // Content-Type declares JSON
-```
-
-Construction is split from capture. `Request::capture()` reads the superglobals
-and is called once by `HttpServiceProvider`; `new Request(...)` takes the parts
-explicitly, which is what every test uses.
-
-### REST routes and the framework Request
-
-A controller may type-hint either request object.
-
-```php
-use Framework\Http\Request;      // the framework's — merged params, decoded JSON
-use WP_REST_Request;             // WordPress's — unchanged, still supported
-
-final class LeadController extends Controller
-{
-    #[Route('POST', 'leads')]
-    public function store(Request $request): WP_REST_Response
-    {
-        return $this->created(['email' => $request->input('email')]);
-    }
-}
-```
-
-The router binds the framework `Request` for the duration of each dispatch, so a
-controller that type-hints it receives the request WordPress just dispatched —
-including the URL-matched parameters and a decoded body — rather than the
-superglobal capture taken at plugin load. A constructor may type-hint it too; the
-binding is installed before the controller is resolved.
-
-The binding is **scoped to the dispatch** and the previous one is restored
-afterwards, because `Container::instance()` has no unset: without the restore, the
-REST request would stay in the container for the rest of the process and the next
-controller to ask for a `Request` would get the finished one. Under a persistent
-worker that is a routine failure, not a hypothetical.
-
-Nothing is required of a project that does not want this: if
-`HttpServiceProvider` is not registered, routing behaves exactly as before and
-the native `WP_REST_Request` is still injected for a parameter typed as such.
-
-One thing to know if you build a container by hand: the binding is installed in
-**the container the router was constructed with**. `RouteServiceProvider` passes
-its own, which is the same instance `app()` returns, so a controller calling
-`app(Request::class)` sees it. A hand-built `new Container()` is a *different*
-instance, and code resolving through `app()` would silently get nothing.
-
-**JSON bodies are folded in automatically.** A client posting
-`{"email": "a@b.test"}` with `Content-Type: application/json` reaches
-`$request->input('email')` exactly as a form post would — PHP does not populate
-`$_POST` for a non-form content type, so without this the payload would be
-invisible. Detection is by `Content-Type`, never by sniffing the body: a client
-that declares form encoding has told you what it sent.
-
-Parameters merge **query → body → JSON**, so the more specific source wins.
-
-### Responses
-
-All three implement `Framework\Http\Contracts\ResponseInterface`, whose contract
-is `send()` and `status()`.
-
-```php
-new JsonResponse(['id' => 7], ['status_code' => 201]);   // wp_send_json()
-new RedirectResponse('/thanks')->with('success', 'Saved'); // wp_safe_redirect()
-new ViewResponse(app_path('views/thanks.php'), ['name' => $name]);
-```
-
-`JsonResponse` wraps `wp_send_json()` rather than returning a `WP_REST_Response`,
-because a REST response is only rendered by the REST server — an AJAX handler
-returning one would emit nothing at all.
-
-`RedirectResponse::with()` stores a flash message in a **transient**, not a
-session: WordPress has no session layer, and starting a PHP one breaks page
-caching and needs `session_start()` before any output. The transient key is
-scoped per client, because a transient is site-global and a shared key would show
-one visitor's message to the next. Read it back with
-`RedirectResponse::readFlash()`, which consumes it.
-
-Its status must be a real redirect code — `301`, `302`, `303`, `307` or `308`.
-Anything else throws at construction, because `wp_redirect()` answers a non-3xx
-status with `wp_die()`, which ends the request with an error page instead of
-redirecting. Pass the `Request` as the third argument when one is available: it
-is what makes the flash cookie's `Secure` flag correct behind a TLS-terminating
-proxy, where `$_SERVER['HTTPS']` is unset.
-
-`ViewResponse` renders through output buffering, so a view can be captured to a
-string — for a test, or to embed in a larger document. `render()` is side-effect
-free; only `send()` writes, and it renders *before* committing a status, so a
-view that throws leaves the response untouched rather than half-sent. A view may
-not use the variable names `path`, `data`, `__path` or `__data`.
-
-### The middleware pipeline
-
-An onion: each layer runs, calls `$next`, and gets the response back on the way
-out — so it can add a header or a cookie to whatever the destination produced, or
-short-circuit by not calling `$next` at all.
-
-```php
-$response = app(Pipeline::class)
-    ->send(app(Request::class))
-    ->through([VerifyAdminNonce::class, Authenticate::class])
-    ->then(fn (Request $request) => new ViewResponse($viewPath));
-
-$response->send();
-```
-
-Three middlewares ship with it:
-
-| Class | Checks | Denies with |
-| --- | --- | --- |
-| `VerifyAdminNonce` | `wp_verify_nonce()`, action configurable | 403 |
-| `Authenticate` | `is_user_logged_in()`, with a token seam | 401, or a login redirect for a browser |
-| `Authorize` | `current_user_can()` for **every** capability given | 401 anonymous / 403 authenticated |
-
-`VerifyAdminNonce` defaults to the action `'-1'`, which is what `wp_nonce_field()`
-bakes into a form that was given no action — so a standard WordPress form post
-satisfies it unchanged. `-1` is a specific action and **not** a wildcard: a nonce
-minted for `save_lead` will be refused by it. Pass the action you created the
-nonce with.
-
-Rejections adapt to the client: a JSON caller gets a JSON document, a browser
-gets `wp_die()` or a redirect to the login form. In `Authorize`, `all-of` is
-deliberate — WordPress's own `authorize()` route option treats a list as OR.
-
-Middleware is resolved from the container, so it can declare constructor
-dependencies, and its `handle()` parameters **must be named `$request` and
-`$next`** — the pipeline passes both by name, because that is the only way the
-container matches an argument.
-
-`Authenticate` does not implement token authentication, on purpose: a framework
-should not decide how tokens are issued or verified. Override `resolveUser()` to
-do it, and return 0 to refuse — a rejected token is not rescued by a valid cookie:
-
-```php
-final class AuthenticateApiClient extends Authenticate
-{
-    protected function resolveUser(Request $request): int
-    {
-        return ApiTokens::verify($request->header('authorization')) ?? 0;
-    }
-}
-```
-
-The provider is registered by default. Remove
-`Framework\Http\HttpServiceProvider::class` from `config('app.providers')` if you
-do not want the request bound.
-
-## Validation
-
-Validation is driven by the **type-hint**, not by a call the author remembers to
-make. Type-hint a `FormRequest` subclass and the parameter binder validates
-before the action runs; on failure the action is never entered at all.
-
-```php
-namespace App\Http\Requests;
-
-use Framework\Http\Requests\FormRequest;
-
-final class StoreLeadRequest extends FormRequest
-{
-    protected function rules(): array
-    {
-        return [
-            'email' => 'required|email|max:255',
-            'name'  => 'required|string|max:100',
-            'age'   => 'nullable|integer|between:18,120',
-            'tags'  => 'array',
-            'tags.*' => 'string|max:20',
-        ];
-    }
-}
-```
-
-```php
-public function store(StoreLeadRequest $request): ResponseInterface
-{
-    $data = $request->validated();   // only the keys the rules named
-}
-```
-
-### The two failure modes
-
-This is the whole reason `FormRequest` exists as a class rather than a rule set.
-A failed validation is answered in the shape the *client* can use:
-
-| Client | Result |
-|---|---|
-| Browser form post | `302` back to the form, with `errors` and `old` flashed to a transient |
-| `Accept: application/json`, or a JSON body | `422` with `{"error": "validation_failed", "errors": {...}}` |
-| A route in `routes/api.php` | `WP_Error` with status `422` — the REST server does not send framework responses |
-
-The branch is decided by the request, not by which routes file the route lives
-in: an admin screen whose form is submitted by `fetch()` gets JSON, and a REST
-route opened in a browser gets a redirect. `Request::expectsJson()` is the test,
-and it is true for an `Accept: application/json` header *or* a JSON body.
-
-**Old input is flashed so the form can be re-rendered** with what the user typed.
-Password fields, nonces and `_method` are never flashed — a password repopulated
-from a transient has been written to the options table and into the next page's
-HTML.
-
-### The redirect target
-
-In order: the request class's `redirectTo()`, then a `redirect_to` form field
-(how a form states its own return address on an admin screen), then `HTTP_REFERER`
-**when it is on this site**, then the home page. WordPress has no
-`url()->previous()`, and an unvalidated client-supplied URL is an open redirect —
-so the referer is a candidate, not the answer.
-
-### The rule engine
-
-`Framework\Validation\Validator` is the engine underneath, and it is usable on
-its own — no request, no WordPress, no redirect. Data in, errors out.
-
-```php
-$validator = new Validator($data);
-$errors = $validator->validate(['email' => 'required|email']);   // field => list of messages
-
-$validator->passes();          // bool
-$validator->first('email');    // one message, or null
-$validator->messages();        // every message, flattened
-```
-
-A field with several broken rules reports **several** messages — an empty email
-produces both "required" and "email", because the user got two things wrong and
-one reload per mistake is the behaviour people hate.
-
-Rules: `required`, `nullable`, `sometimes`, `string`, `integer`, `numeric`,
-`boolean`, `array`, `email`, `url`, `date`, `in`, `not_in`, `min`, `max`,
-`between`, `size`, `regex`, `same`, `different`, `confirmed`, `accepted`, plus
-closures.
-
-```php
-'code' => 'regex:/^[A-Z]{1,3}\|[0-9]+$/',   // a pipe inside a pattern is content
-'tags' => ['array', fn (string $a, mixed $v): bool => count($v) <= 5],
-'pin'  => function (string $a, mixed $v, callable $fail): void {
-    if ($v !== '1234') { $fail('That PIN is wrong.'); }
-},
-```
-
-`min`/`max` measure by the value's own type — characters for a string, the value
-for a number, elements for an array — so `max:255` does the right thing on an
-email and on a price. `size` is the exact form.
-
-**A typo'd rule name throws.** `requird` would otherwise silently accept
-everything, which is the one failure a validator must never have.
-
-### What `validated()` guarantees
-
-`$request->input('is_admin')` returns a client-supplied value whether or not a
-rule mentioned it. `validated()` returns **only the keys the rules named**, so a
-field the author did not think about cannot arrive through it. If a key seems to
-be missing from `validated()`, it has no rule.
-
-Values are the raw input, not a cast one — `"30"` stays a string under an
-`integer` rule, because the rule checks a value rather than transforming it.
-Cast where it matters.
-
-### Overrides
-
-```php
-protected function messages(): array
-{
-    return ['email.required' => 'We need your email address.'];   // or 'name' for every rule on it
-}
-
-protected function attributes(): array
-{
-    return ['email' => 'email address'];   // used inside the default messages
-}
-
-protected function authorize(): bool|string
-{
-    return current_user_can('edit_posts') ?: 'You may not do that.';   // runs only if the rules pass
-}
-```
-
-`authorize()` runs *after* the rules, so a hook reading `$this->input('id')` does
-not also have to defend against the id being an array.
-
-## Views
-
-A view is a plain PHP file under `views/`. A controller names it and returns the
-result:
-
-```php
-public function index(ViewRenderer $views): ResponseInterface
-{
-    return $views->make('leads.index', ['leads' => $leads]);
-}
-```
-
-The renderer's job is small and specific: turn a **name** into a path. Without
-it, every action builds `base_path('views/leads/index.php')` itself, which is a
-delivery concern sitting in the wrong layer. Names are dotted — `leads.index` is
-`views/leads/index.php` — and three spellings of one file all work:
-`leads.index`, `leads/index`, `leads.index.php`.
-
-### Escaping
-
-```php
-<h1><?= e($title) ?></h1>
-<input name="email" value="<?= old('email') ?>">
-```
-
-`e()` escapes for HTML and quotes both quote styles, because a value in an
-attribute is a different context from one in text — without `ENT_QUOTES`,
-`value="<?= e($x) ?>"` lets an apostrophe close the attribute. It falls back to
-`htmlspecialchars()` so a view still renders in a queue worker or a WP-CLI
-export, and it is *not* `esc_html()`-only: the view layer does not require
-WordPress to be loaded.
-
-### Errors and old input
-
-After a failed validation redirects back, the renderer hands the view the errors
-and the input the user typed — read from the flash transient, so an action does
-not have to forward a payload it never looks at:
-
-```php
-<?php if ($errors ?? []): ?>
-    <p><?= e($error) ?></p>          <?php // the one-line summary ?>
-<?php endif; ?>
-
-<input name="email"
-       value="<?= old('email') ?>"
-       class="<?= ($errors ?? []) && isset($errors['email']) ? 'invalid' : '' ?>">
-
-<?php foreach ($errors['email'] ?? [] as $message): ?>
-    <span class="error"><?= e($message) ?></span>
-<?php endforeach; ?>
-```
-
-A variable is **absent** when nothing was flashed rather than present-and-empty,
-so `$errors ?? []` and `isset($errors['email'])` cover both states with one
-spelling.
-
-The flash is read **once per renderer** and cached. `RedirectResponse::readFlash()`
-consumes the transient — a message you could read twice would reappear on refresh
-— so a page rendering two partials that each want the errors would otherwise show
-them in only one, and work fine when tested with a single partial.
-
-### Composing without a template language
-
-There is no layout syntax, no inheritance, no `@extends`. A layout is an
-ordinary view and a child is rendered into a string:
-
-```php
-return $views->make('layout', [
-    'title'   => 'Leads',
-    'content' => $views->render('leads.index', ['leads' => $leads]),
-]);
-```
-
-Two things worth knowing:
-
-- **`make()` does not render.** It builds a `ViewResponse`; nothing is rendered
-  until `send()`. A controller's return value stays a value.
-- **`respond()` does**, returning an `HtmlResponse` — for when the markup is
-  needed before sending, and so a view that throws does so inside the action
-  rather than part-way through WordPress's output.
-
-### View names are not trusted
-
-A view name frequently comes from data — a settings screen storing "which
-template", an override table. A name containing `..` is **refused**, not
-normalized: normalizing would silently load *something*, and refusing names the
-mistake.
-
-One limitation is worth stating: a **directory whose name contains a dot is not
-addressable by name**, because the dot is already the separator. A `v1.2/`
-directory is reachable only as `v1.2/index.php` — spelled with the extension. The
-practical answer is not to put a dot in a view directory's name; the behaviour is
-pinned by a test so it is documented rather than rediscovered from a 404.
-
-### Configuration
-
-The root defaults to `<base>/views`. To move it:
-
-```php
-// config/app.php
-'views' => 'resources/views',   // relative to the plugin root, or absolute
-```
-
-## API resources
-
-A `JsonResource` maps domain data onto the shape an API client receives. Its job
-is not to convert an object to JSON — `json_encode()` does that. Its job is to
-decide what is *in* the response, and to make that decision something somebody
-wrote down in one place:
-
-```php
-namespace App\Http\Resources;
-
-use Framework\Support\JsonResource;
-
-final class LeadResource extends JsonResource
-{
-    protected function toArray(): array
-    {
-        return [
-            'id'         => $this->id,
-            'email'      => $this->email,
-            'created_at' => $this->created_at,
-        ];
-    }
-}
-```
-
-```php
-// a single record
-return $this->resources->make(LeadResource::make($lead));
-
-// many
-return $this->resources->make(LeadResource::collection($leads));
-```
-
-Returning the entity directly would have made every one of its fields part of
-the public contract. Adding a `password_hash` column, renaming `created` to
-`created_at`, introducing an internal `legacy_id` — each of those changes the
-response, and nothing warns you, because serializing an object has no opinion
-about what should be in it. With a resource, the db column that arrived
-yesterday is absent because nobody added a line for it.
-
-### Reading the wrapped data
-
-Inside `toArray()`, `$this->email` resolves in this order:
-
-1. a public property of the wrapped object;
-2. a getter — `email()`, then `getEmail()`, then `isEmail()`;
-3. a key on the wrapped array.
-
-Property syntax rather than `$this->data['email']` keeps a resource readable when
-the source changes shape: swapping an array for an entity edits the accessor
-paths, not every line.
-
-A field that resolves on none of the three **throws**. It does not become `null`.
-A silently-null `email` in a response reaches production and sits there
-unnoticed; an exception reaches the developer at the line that asked for it, and
-the message names the field:
-
-```
-Field [emial] does not exist on the data wrapped by App\Http\Resources\LeadResource.
-Use when() or whenLoaded() for a field that is genuinely optional — ...
-```
-
-That message is the whole feature. `emial` in a stack trace is a one-second fix.
-
-Use `has('field')` where a field's absence is expected rather than a mistake —
-mapping a union of two payload shapes, or a value that may be a scalar or an
-object. `has()` reports presence without throwing; it cannot distinguish "absent"
-from "present and null", so it is not a substitute for `when()` on a field the
-client should be told about conditionally.
-
-### Conditional fields — two different questions
-
-```php
-return [
-    'id'    => $this->id,
-    'phone' => $this->whenLoaded('phone'),                 // does the data have it?
-    'notes' => $this->when($this->includeNotes, $this->notes), // does the author want it?
-];
-```
-
-`whenLoaded()` tests the **data**: it emits the field when the wrapped subject
-exposes it. `when()` tests a **condition the author computed**. When the
-condition fails the key is omitted entirely — absent, not null — which is what
-lets a client tell "redacted" from "empty".
-
-Both can take a third argument to emit a value instead of omitting:
-
-```php
-'role' => $this->when($this->isAdmin, 'admin', 'member'),
-```
-
-**`when()` does not defer its value argument**, and this is the trap worth
-knowing. It is an ordinary function call, so PHP evaluates both arguments before
-it runs — `when($flag, $this->notes)` reads `$this->notes` whether or not the
-flag holds. On a row that has no `notes` key that read throws, which means the
-condition that was supposed to make the row safe is the thing that breaks it.
-
-A field that is both *optional* and *permissioned* nests the two:
-
-```php
-'notes' => $this->when($this->includeNotes, $this->whenLoaded('notes')),
-```
-
-`whenLoaded()` defers the read — it returns the marker when the key is absent, so
-the outer `when()` receives a value that never had to resolve.
-
-**One more trap**, because it is easy to write a test that looks like it covers
-this and does not. A declared property holding null is *present*:
-
-```php
-public readonly ?string $phone = null,   // property_exists() === true
-```
-
-So `whenLoaded('phone')` against that entity emits `"phone": null` — correctly,
-since the framework resolved a property that exists and found null. "The data
-does not carry this field" requires a subject on which the property is genuinely
-absent, which in PHP means a different class. The framework is reporting
-"there is no phone number", which a client needs to distinguish from "this
-response does not include phone".
-
-### Composition
-
-A resource nested in another resource is resolved for you:
-
-```php
-'company' => CompanyResource::make($this->company),
-```
-
-Anything `JsonSerializable` is resolved during pruning, so `json_encode()` on a
-resource produces the mapped object whether it is returned from a route or
-nested three levels deep.
-
-`with()` adds a key from outside the resource, for what the resource has no
-business knowing — a request id, a debug flag, a `meta` block:
-
-```php
-LeadResource::make($lead)->with('request_id', $requestId);
-```
-
-Added keys are merged **after** the mapped fields and win over a field of the
-same name, because an explicit addition is the more deliberate of the two
-statements.
-
-### Sparse fieldsets
-
-```php
-LeadResource::make($lead)->only(['email', 'created_at']);
-```
-
-`only()` is a **filter over the fields the resource already decided to emit**, per
-the JSON:API sparse-fieldset convention. It is not a permission mechanism, and
-that distinction is the one thing to get right:
-
-- A client asking for `?fields=password_hash` is asking for a field the resource
-  never mapped. The answer is "you cannot have it", not "here it is" — filtering
-  happens *after* `toArray()`, so a field is only ever narrowed, never reached.
-- `id` is always kept. A list of objects without identifiers is not usable.
-
-`requestedFields()` exposes the request for an outer layer — a controller parsing
-`?fields=` passes the list down and does not need to know how filtering works.
-
-### Collections
-
-`collection()` returns a `JsonResourceCollection` — a different type, not a mode
-of `JsonResource`, because the two answer different questions and a collection
-needs operations that are meaningless on one record.
-
-The output carries an envelope:
-
-```json
-{"data": [{"id": 1, ...}, {"id": 2, ...}]}
-```
-
-More bytes than a bare array, and the reason is room to grow. Pagination, a
-cursor, a `meta` block, a set of included relations all belong *next to* the
-list, and a bare array has nowhere to put them; turning an array into an object
-later is a breaking change for every client. Starting as an object is free.
-
-```php
-$leads = LeadResource::collection($rows);
-
-$leads->count();                  // how many items
-$leads->isEmpty();               // often a 404 or a different response, not an empty list
-$leads->keyById();               // re-map keyed by id, for a select box or a diffing client
-$leads->toList();                // the items without the envelope, for embedding
-$leads->only(['email']);         // applies to every item
-$leads->with('meta', $meta);     // a key alongside data
-```
-
-`keyById()` **skips** items with no id rather than keying them by an empty
-string, which would silently collapse several of them into one entry.
-
-Keys from an associative input — a `wpdb` result keyed by post id — are dropped.
-Not tidiness: `json_encode()` of an array with non-sequential integer keys
-produces a JSON **object**, so a client's `for` loop over `data` fails against a
-payload that looks correct in a browser. The keys are recoverable through
-`keyById()` when a caller genuinely wants them.
-
-Pagination is deliberately not built in. There is no paginator in this
-framework, and inventing an envelope shape for one nobody has written would be a
-guess clients then depend on. `with('meta', [...])` is the seam for when a
-project adds it.
-
-### A capability that a client cannot ask for
-
-`only()` narrows; it does not grant. A field gated behind a server-side decision
-is expressed *inside* the mapping, so a client naming it does not bring it into
-existence:
-
-```php
-// App\Http\Resources\LeadResource
-public bool $includeNotes = false;
-
-'notes' => $this->when($this->includeNotes, $this->whenLoaded('notes')),
-```
-
-Note the nested `whenLoaded()`. `when()` is an ordinary function call, so PHP
-evaluates **both** arguments before it runs — `when($flag, $this->notes)` reads
-`$this->notes` whether or not the flag holds, and on a row that has no `notes`
-key that read throws. The condition that was supposed to make the row safe is
-what breaks it.
-
-For a **single** resource the controller sets the flag:
-
-```php
-$resource = LeadResource::make($lead);
-$resource->includeNotes = $this->maySeeNotes();
-```
-
-A **collection** cannot be handled that way, and the reason is worth knowing. A
-`JsonResourceCollection` wraps its items lazily, so this does nothing at all:
-
-```php
-// WRONG — items() yields the raw rows, not resources
-foreach ($collection->items() as $item) {
-    $item->includeNotes = true;   // never runs: $item is an array
-}
-```
-
-The flag is set on nothing, `notes` is silently missing for every caller, and a
-test that only asserts the *absent* case passes. The collection case uses a
-class-level default set once per request, before the collection is built:
-
-```php
-LeadResource::grantNotes($this->maySeeNotes());
-
-return new JsonResponse(LeadResource::collection($this->leads()));
-```
-
-A static invites a value outliving its request, so the failure direction matters:
-request A is entitled, the value sticks, and request B is served A's grant. The
-test for it goes granted-then-revoked in that order, because the reverse order
-passes against a static that is never reset.
-
-### Protecting the route
-
-A REST route in WordPress is **public by default**, so a resource layer that
-publishes contact data needs an explicit check. This is the route's job, not the
-resource's — the resource is a plain mapping object a test can exercise without
-the CMS loaded:
-
-```php
-// routes/api.php
-$router->get('leads', LeadController::class, 'index')
-    ->middleware(RequireLeadRead::class);
-```
-
-```php
-// app/Http/Middleware/RequireLeadRead.php
-final class RequireLeadRead extends RequireCapability
-{
-    public function __construct()
-    {
-        parent::__construct('list_users');
-    }
-}
-```
-
-**The middleware is named as a class**, and the capability lives in that class's
-constructor. There is no `Middleware::class . ':capability'` parameter syntax —
-middleware is resolved by class name only, so that spelling registers a route
-whose middleware cannot be resolved. The failure is quiet in the worst way: the
-resolution throws, the adapter converts the throw into a denial, and the endpoint
-403s for *every* caller including administrators. It reads as a broken capability
-check rather than a typo in the route file.
-
-## Console
-
-Commands are registered in `app/Console/Kernel.php` and resolved from the
-container, so they can declare dependencies.
-
-```bash
-wp wp_mini make:provider LeadProvider
-wp wp_mini make:controller LeadController
-wp wp_mini make:route
-wp wp_mini make:migration create_leads_table
-```
-
-The prefix comes from `config('app.cli_prefix')`, so two projects bundling this
-framework do not collide. Generated files are written only when the target does
-not already exist.
-
-### `route:list`
-
-```bash
-wp wp_mini route:list
-```
-
-```
-Domain Method      URI / Hook                         Controller@Action                        Middleware
------------------------------------------------------------------------------------------------------------
-web    GET         admin_menu  (admin.php?page=lea... DashboardController@index                -
-web    POST        admin_post_leads_store  (admin-... DashboardController@store                AllowMiddleware
-api    GET         /wp-json/wp-mini-laravel/v1/leads  ReportController@index                   -
-api    GET         /wp-json/wp-mini-laravel/v1/lea... ReportController@show                    -
-
-4 route(s): 2 web, 2 api.
-```
-
-It is the only place the whole routing surface appears at once. A REST route is
-discoverable from `/wp-json`; a web route is discoverable from nowhere —
-`admin_menu` registrations are buried inside a callback, and an
-`admin_post_{action}` hook name is derived from the route path at registration
-time. The URI column therefore leads with the **hook**, since that is the string
-you would grep for in WordPress's source when a route does not fire.
-
-The command loads both routes files itself. Under WP-CLI none of `rest_api_init`,
-`admin_menu`, `admin_post` or `template_redirect` ever fire, so both routers
-would otherwise be empty and the command would report a plugin full of routes as
-having none. A routes file that fails to load is warned about and the rest is
-still listed, because a broken file usually takes only *some* routes with it and
-seeing which ones survived is how the mistake gets found.
-
-## Database migrations
-
-Migrations are versioned schema changes under `database/migrations/`, tracked in
-a `{prefix}plugin_migrations` table so each one runs exactly once.
-
-### Commands
-
-```bash
-wp wp_mini make:migration create_leads_table   # scaffold
-wp wp_mini migrate                             # apply everything pending
-wp wp_mini migrate:status                      # what has run, and when
-wp wp_mini migrate:rollback                    # undo the last batch
-wp wp_mini migrate:rollback --batch=2          # undo a specific batch
-```
-
-**`make:migration <name>`** writes `<timestamp>_<name>.php` into
-`database/migrations/` and does not overwrite an existing file. The name is
-normalized, so `create_leads_table`, `createLeadsTable` and `Create Leads Table`
-all produce the same file. The timestamp is minted from `date('Y_m_d_His')`.
-
-**`migrate`** applies every pending migration oldest-first as **one new batch**,
-printing each as it runs. It prints `Nothing to migrate.` when the database is
-already up to date. On failure it reports how many migrations stopped short, since
-the tracking table only records what completed — see
-[When a migration fails](#when-a-migration-fails).
-
-**`migrate:status`** prints one row per discovered migration — `Ran?`
-(`Yes`/`No`), filename, batch (or `-`), and class — followed by a total and a
-pending count. Recorded migrations whose files are gone are reported separately as
-a warning, because that is the one state `migrate` cannot repair on its own.
-
-**`migrate:rollback`** reverses the most recent batch newest-first, printing each
-as it goes, and warns when there is nothing to roll back. `--batch=<n>` targets a
-specific one; the value must be a positive integer, so `--batch=all` and
-`--batch=` are rejected rather than silently targeting batch 0. A batch that
-failed *partway* has recorded migrations, so its number from `migrate:status`
-does reverse them — but a batch that failed before recording anything cannot be
-rolled back at all. See
-[A failed batch burns its number](#a-failed-batch-burns-its-number).
-
-`wp wp_mini` is `config('app.cli_prefix')` — see
-[Rebranding this plugin](#rebranding-this-plugin) for changing it.
-
-### Writing one
-
-`wp wp_mini make:migration create_leads_table` renders this, and it is the shape
-to copy by hand if you are not using the generator:
-
-```php
-<?php
-
-namespace App\Database\Migrations;
-
 use Framework\Database\Migration;
+use wpdb;
 
 final class CreateLeadsTable extends Migration
 {
+    // Resolved from the container, so the handle is injected rather than
+    // reached for through `global $wpdb` — which is what lets it run against a
+    // test database without a WordPress install.
+    public function __construct(private ?wpdb $wpdb = null) {}
+
     public function up(): void
     {
-        global $wpdb;
+        $table = $this->wpdb->prefix . 'leads';
 
-        $table = $wpdb->prefix . 'leads';
-        $charset = $wpdb->get_charset_collate();
-
-        require_once ABSPATH . 'wp-admin/includes/upgrade.php';
-
-        dbDelta(sprintf(
-            'CREATE TABLE %s (
-                id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
-                email varchar(190) NOT NULL,
-                created_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY  (id)
-            ) %s;',
-            $table,
-            $charset
+        $this->wpdb->query(sprintf(
+            'CREATE TABLE `%s` (
+                `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+                `email` varchar(255) NOT NULL,
+                PRIMARY KEY (`id`)
+            ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+            $table
         ));
     }
 
     public function down(): void
     {
-        global $wpdb;
-
-        $wpdb->query(sprintf('DROP TABLE IF EXISTS `%s`', $wpdb->prefix . 'leads'));
+        $this->wpdb->query(
+            sprintf('DROP TABLE IF EXISTS `%s`', $this->wpdb->prefix . 'leads')
+        );
     }
 }
 ```
 
-`up()` and `down()` are mirror images: if `up()` creates, `down()` drops. There is
-no automatic reversal — a `down()` that does nothing leaves the schema changed
-while the tracking table forgets the migration, and re-running `migrate` will
-then fail.
+There is deliberately **no schema-builder DSL and no `dbDelta()`**. A migration
+already has the thing `dbDelta()` exists to substitute for — a record of what has
+been applied — so a plain `CREATE TABLE` runs exactly once and a failure is a
+failure rather than a diff that decided there was nothing to do. Migrations
+resolve from the container, so a constructor dependency is declared rather than
+reached for globally.
 
-The class extends `Framework\Database\Migration`, whose two methods are both
-abstract, so a migration that implements only `up()` is a fatal error rather than
-a silent no-op. The namespace follows `config('app.namespace')`, and the class
-name is derived from the filename — see
-[Filenames and class names](#filenames-and-class-names).
+The tracking table is `{wpdb->prefix}plugin_migrations` — keyed on the
+**WordPress** table prefix, not the plugin's. That means rebranding does not
+orphan applied migrations. Tables your migrations create still carry
+`$wpdb->prefix`, and those names are only yours to choose, never to rename after
+the fact.
 
-`dbDelta()` is what makes the migration re-runnable: it diffs the definition
-against the live table and issues only the `ALTER`s needed to reach it. It needs
-`wp-admin/includes/upgrade.php`, which is **not** loaded under WP-CLI's default
-bootstrap, hence the explicit `require_once`. Two rules are easy to get wrong and
-produce a table that silently does not match:
+---
 
-`dbDelta()` compares that definition against the live table and issues only the
-`ALTER`s needed, so a migration written this way is safe to re-run. It needs
-`upgrade.php`, which WP-CLI does not load by default.
+## Rebranding
 
-Migrations are resolved from the container, so one may take a constructor
-dependency instead of reaching for `global $wpdb`.
-
-### Filenames and class names
-
-The filename determines the class name: the timestamp is stripped and the rest is
-converted to StudlyCase.
-
-| File | Class |
-| --- | --- |
-| `2026_11_05_100000_create_leads_table.php` | `CreateLeadsTable` |
-| `20261105100000_create_leads_table.php` | `CreateLeadsTable` |
-
-Renaming one without the other makes `migrate` report that the file does not
-declare the class its name promises. A `.php` file in the directory that does not
-follow the convention is skipped rather than treated as a migration.
-
-### Batches
-
-Every `migrate` run allocates one new batch number and stamps everything it
-applies with it, so `migrate:rollback` undoes exactly the last run rather than
-guessing from timestamps. Migrations run oldest-first within a batch and reverse
-newest-first.
-
-### When a migration fails
-
-A failure **stops the batch**. Migrations that already completed stay recorded;
-the failed one and everything after it stay pending, and the original exception is
-reported. Re-running after fixing the file picks up where it stopped.
-
-`migrate` tells you how far the batch got by naming what it recorded:
-
-```
-ERROR   Migration [2026_11_05_110000_create_leads_table] failed to up: ...
-WARN    Recorded 1 of 3 migration(s); 2 stayed pending and will be retried.
-```
-
-Count that message from the tracking table, not from the `Migrating:` lines —
-one of those is printed for a migration that then failed, so counting them
-over-reports by one.
-
-The tracking table therefore never claims a migration that did not finish. Note
-that MySQL commits DDL implicitly, so a migration is *not* atomic — a migration
-that made two changes and failed between them leaves the first in place. Write
-`up()` so the first statement is the one that can fail, or make it idempotent.
-
-#### A failed batch burns its number
-
-A batch takes its number before its first migration runs, so a batch that fails
-immediately has consumed a number with **nothing recorded under it**. When that
-happens `migrate` says so:
-
-```
-WARN    This batch recorded nothing, so it cannot be rolled back.
-        migrate:rollback targets the previous batch instead.
-```
-
-This is the case to be careful in. `migrate:rollback` reverses the newest batch
-with *recorded migrations*, so after an empty failed batch it reverses the
-**previous** one — the last run that actually did something. That is deliberate: a
-batch with no rows has nothing to undo, and rolling back "nothing" silently would
-be worse. But it means a failed batch is not a rollback target, and `--batch=<n>`
-cannot reach it either.
-
-To recover, fix the migration and run `migrate` again; the failed migration and
-everything after it are still pending and will be retried in a fresh batch.
-
-### Where the tracking table lives
-
-It is `$wpdb->prefix . 'plugin_migrations'` — the WordPress table prefix, not
-`config('app.prefix')` — with three columns: `id`, `migration` (the filename
-without `.php`), `batch`. It is created lazily by any command that needs it,
-including `migrate:status`, so there is nothing to install first.
-
-`migration` carries a UNIQUE key, so the same migration cannot be recorded twice
-even if two processes race. `batch` is indexed because rollback reads it by value.
-A missing `batch` column is added automatically, which is how a table created by
-an earlier version of this framework is brought forward.
-
-Batch numbers are drawn from a WordPress option high-water mark rather than from
-`MAX(batch)`. Without it, migrate → rollback → migrate would reissue batch 1 for a
-different set of migrations, and a saved-off `--batch=1` would silently reverse
-the wrong ones.
-
-## Rebranding this plugin
-
-This repository is a starter: you clone it, give it your own identity, and build
-your plugin inside it. Two identities are in play and only one of them is yours.
-
-| Layers | Namespace | Whose | Rebrand? |
-| --- | --- | --- | --- |
-| `app/`, `core/` | `App\`, `Core\` | Yours | **Yes** |
-| `framework/` | `Framework\` | The library's | **No** |
-
-`framework/` is a separate Composer package (`devlinkstudios/wp-mini-laravel-framework`)
-consumed through a path repository and symlinked into `vendor/`. Its `Framework\`
-namespace is that package's — renaming it here forks the library, and every future
-framework update becomes a merge. Rebrand your own code, leave the library's alone.
-
-If you genuinely intend to fork the library, do it in its own repository first,
-publish it under your vendor name, then depend on your fork. That is a different
-job from rebranding a project, and this checklist will not do it correctly.
-
-### 1. Decide your identifiers
-
-Pick these before touching a file; the checklist below assumes they are settled.
-
-| Identifier | Default | Example | Where it lives |
-| --- | --- | --- | --- |
-| Plugin name | `WP Mini Laravel` | `Lead Bridge` | Plugin header, config, admin notice |
-| Slug / folder | `wp-mini-laravel` | `lead-bridge` | Entry file, `composer.json` |
-| Composer vendor | `devlinkstudios` | `acme` | Both `composer.json` files |
-| Constant prefix | `WP_MINI_LARAVEL_` | `LEAD_BRIDGE_` | Entry file |
-| Option prefix | `wp_mini_laravel_` | `lead_bridge_` | `config/app.php` |
-| Text domain | `wp-mini-laravel` | `lead-bridge` | All `__()` calls |
-| CLI prefix | `wp_mini` | `leadbridge` | `config/app.php` |
-| REST namespace | `wp-mini-laravel/v1` | `lead-bridge/v1` | `config/app.php` |
-| App namespace | `App` | `LeadBridge` | `config/app.php` + `composer.json` |
-| Core namespace | `Core` | `LeadBridge\Core` | `composer.json` |
-
-The four names that must be globally unique — **option prefix**, **CLI prefix**,
-**REST namespace** and **constant prefix** — are the ones that break something
-when two plugins share them. The rest are cosmetic.
-
-### 2. Replace, in this order
-
-Order matters: several steps depend on an earlier one, and the last step is what
-makes the rest take effect.
-
-1. **Move the directory** `wp-content/plugins/wp-mini-laravel/` to your slug, and
-   rename the entry file `wp-mini-laravel.php` to `<your-slug>.php`. Nothing
-   references either name from inside the code, so this is safe first.
-
-2. **`composer.json`** — set `name` to `<vendor>/<your-slug>`, rename the
-   `devlinkstudios/wp-mini-laravel-framework` requirement to
-   `<vendor>/wp-mini-laravel-framework` (the vendor half only), and repoint the
-   `App\` / `Core\` PSR-4 entries at your namespaces.
-
-3. **`framework/composer.json`** — set `name` to `<vendor>/wp-mini-laravel-framework`.
-   Leave its `Framework\` PSR-4 entry exactly as it is.
-
-4. **The entry file** (`<your-slug>.php`) — the plugin header (`Plugin Name`,
-   `Description`, `Author`, `Text Domain`), the constant
-   `WP_MINI_LARAVEL_BOOTED` (both the `defined()` check and the `define()`), and
-   the two `WP Mini Laravel:` strings in the admin notice.
-
-5. **`config/app.php`** — `name`, `prefix`, `cli_prefix`, `rest_namespace`, and
-   `namespace` (the `App` default; see step 9).
-
-6. **Namespaced code** — rename the `App\` namespace in `app/Kernel.php`,
-   `app/Providers/AppServiceProvider.php`, `app/Providers/RouteServiceProvider.php`,
-   `app/Console/Kernel.php` and `app/Console/Command.php`. `App\Console\Kernel`
-   is looked up by its literal name in `app/Kernel.php`, so both sides must agree.
-   `app/Kernel.php` itself is referenced as `\App\Kernel` from the entry file.
-
-7. **Text domain** — `wp-mini-laravel` appears in four `__()` calls:
-   `framework/Routing/Router.php` (×2), `framework/Routing/Middleware/RequireCapability.php`
-   and `framework/Routing/Middleware/RequireLogin.php`.
-
-8. **`framework/Routing/Router.php`** also carries four `WP_Error` codes strings
-   prefixed `wp_mini_laravel_` (`invalid_request`, `no_handler`,
-   `middleware_failed`, `middleware_contract`). These are part of your plugin's
-   public error surface, so rename them if you are renaming everything else.
-
-9. **`core/`** — currently empty apart from `.gitkeep`. If you rename the `Core\`
-   namespace, update the `Core\` PSR-4 entry in step 2; the directory name and
-   the namespace do not have to match.
-
-10. **`composer update && composer dump-autoload`** — required after any namespace
-    or package-name change. Nothing above takes effect until this runs, and
-    getting it wrong fails *silently* (see the warning below).
-
-Low-priority cosmetics, safe to leave: the `WP Mini Laravel:` prefixes in
-`framework/Routing/RouteServiceProvider.php`'s two `error_log()` calls, and the
-`wp_mini` fallbacks in `config('app.cli_prefix', 'wp_mini')` — those defaults are
-only reached if your config is missing the key, which the checklist above ensures
-it is not.
-
-### 3. What breaks quietly
-
-Every one of these fails without an error message, which is why they are listed
-together rather than left to discovery.
-
-- **A mismatched PSR-4 namespace does not fail.** Change `"App\\": "app/"` to
-  point at a namespace the classes do not declare, and `composer dump-autoload`
-  still reports success. The classes simply stop resolving — `App\Kernel` becomes
-  unloadable, and your plugin boots nothing. Composer maps prefixes to directories;
-  it does not check that the files agree.
-
-- **The option prefix is data, not a label.** `config('app.prefix')` prefixes
-  stored option names. Changing it on a live site orphans every existing row:
-  settings do not move, they become invisible. Safe before your first deploy,
-  a migration afterwards.
-
-- **The migration tracking table is named by the `$wpdb` prefix, not by yours.**
-  It is `{wpdb->prefix}plugin_migrations`, so rebranding does not orphan applied
-  migrations. Your migrations themselves live under `database/migrations/` and are
-  unaffected — but any table they create still carries `$wpdb->prefix`, and those
-  names are only yours to choose, never to rename after the fact.
-
-- **A changed CLI prefix is a breaking change for every script you have written.**
-  `wp wp_mini migrate` becomes whatever you set. Nothing warns you; the old
-  command simply stops existing.
-
-- **A stale `composer.lock` after a package rename gives a confusing error.** If
-  step 2 changes the framework requirement but you have not run `composer update`,
-  Composer reports the old package as missing rather than as renamed.
-
-### 4. Verify the rebrand
+The rebrander lives at **`framework/bin/init-plugin.php`** and is exposed as a
+Composer script. It takes `--key=value` flags (not positional arguments):
 
 ```bash
-# 1. Nothing default-named survives outside the framework library's own API.
-grep -rn --exclude-dir=vendor --exclude-dir=.git -iE "mini[-_ ]?laravel" . \
-  | grep -v "^./README.md"
+composer rebrand -- \
+  --name="Lead Bridge" \
+  --slug=lead-bridge \
+  --vendor=acme \
+  --namespace=LeadBridge
+```
 
-# 2. The suite still passes after the autoloader is rebuilt.
-composer dump-autoload && composer test
+`--vendor` defaults to `devlinkstudios`. Add `--dry-run` to preview every change
+without writing anything:
 
-# 3. The plugin actually boots — this is the check that catches a broken
-#    namespace, and the test that would fail if App\ stopped resolving.
+```bash
+composer rebrand -- --dry-run \
+  --name="Lead Bridge" \
+  --slug=lead-bridge \
+  --vendor=acme \
+  --namespace=LeadBridge
+```
+
+Anything not supplied is derived from the four required values — you never have
+to invent a REST namespace or a CLI prefix by hand (see the table below).
+
+### What it rewrites — the hybrid pass
+
+| Kind | Files | Example |
+| --- | --- | --- |
+| **Static structure** | Renamed entry file, `composer.json` name + PSR-4 maps, all namespaces in `app/`, `core/`, `config/`, `routes/`, `tests/` | `App\` → `LeadBridge\` |
+| **Config fallbacks** | The second argument of every `env()` call in `config/app.php` | `env('APP_NAME', 'Lead Bridge')` |
+| **Dotenv** | Identity keys in `.env.example` and `.env` (when present) | `APP_PREFIX="lead_bridge_"` |
+
+`framework/` is never rewritten. Its `Framework\` namespace and its fallback
+defaults are the library's own identity — the script prints what it left there
+so the boundary is visible rather than mysterious.
+
+### Identifiers
+
+| Identifier | Default | Example | Derived from |
+| --- | --- | --- | --- |
+| Plugin name | `WP Mini Laravel` | `Lead Bridge` | `--name` |
+| Slug / folder | `wp-mini-laravel` | `lead-bridge` | `--slug` |
+| Constant prefix | `WP_MINI_LARAVEL_` | `LEAD_BRIDGE_` | `SNAKE(namespace)_` |
+| Option prefix | `wp_mini_laravel_` | `lead_bridge_` | `SNAKE(slug)_` |
+| CLI prefix | `wp_mini` | `leadbridge` | `LOWER(namespace)` |
+| REST namespace | `wp-mini-laravel/v1` | `lead-bridge/v1` | `slug/v1` |
+| App namespace | `App` | `LeadBridge` | `--namespace` |
+| Core namespace | `Core` | `LeadBridge\Core` | `namespace\Core` |
+
+The four names that must be **globally unique** — option prefix, CLI prefix,
+REST namespace and constant prefix — are the ones that break something when two
+plugins share them. The rest are cosmetic. The script refuses a rebrand to any
+of the default values, because that changes nothing while reporting success.
+
+### After the rebrand
+
+```bash
+composer update && composer dump-autoload   # not optional — see below
+composer test
 composer test -- --filter PluginBootTest
 ```
 
-The first command should return only the handful of deliberate cosmetic strings
-from the end of step 2. If it returns nothing at all, you renamed the framework's
-namespace too — re-read the table at the top of this section.
+### What breaks quietly
+
+- **A mismatched PSR-4 namespace does not fail.** `composer dump-autoload`
+  reports success; the classes simply stop resolving and the plugin boots
+  nothing. Composer maps prefixes to directories and never checks they agree.
+- **The option prefix is data, not a label.** Changing it on a live site
+  orphans every stored row — settings become invisible.
+- **A changed CLI prefix is a breaking change** for every script you have
+  written. Nothing warns you; the old command stops existing.
+- **A stale `composer.lock` after a package rename** gives a confusing "package
+  not found" rather than "renamed".
+
+---
 
 ## Testing
 
 ```bash
-composer test            # ./vendor/bin/phpunit
-composer test:coverage   # requires xdebug or pcov
+vendor/bin/phpunit                       # the whole suite
+vendor/bin/phpunit --filter PluginBootTest
+composer test                            # same as vendor/bin/phpunit
+composer test:coverage                   # requires xdebug or pcov
 ```
 
-The suite does not load WordPress. `tests/bootstrap.php` installs a stub layer
-for the WordPress functions and classes the framework touches, so the whole
-framework is testable without a WordPress install. Anything about real HTTP
-behaviour should be verified against a live install.
+The suite does **not** load WordPress. `tests/bootstrap.php` installs a stub
+layer for the WordPress functions and classes the framework touches, so the
+whole framework is testable without a WordPress install.
 
-### Manual verification
+| Suite | Path | What it covers |
+| --- | --- | --- |
+| Unit | `tests/Unit/` | No infrastructure — pure logic against stubs. |
+| Integration | `tests/Integration/` | Adapters that really issue SQL, against in-memory doubles. |
+| Manual | `tests/manual/` | Probes for behaviour that cannot be reached from PHPUnit. |
 
-Some behaviour cannot be reached from inside a PHPUnit process, and a stubbed
-test for it would pass for the wrong reason. Those cases have scripts under
-`tests/manual/`, which load a real WordPress and clean up after themselves:
+Anything about real HTTP behaviour should be verified against a live install —
+a stubbed test for it would pass for the wrong reason.
 
-```bash
-php tests/manual/verify-http-lifecycle.php     # router binding, capture(), response send()
-php tests/manual/verify-review-fixes.php       # migration engine edge cases
-```
-
-`verify-http-lifecycle.php` starts an HTTP server on a free port and drives it
-with real requests. That is the only way to cover three things:
-
-- **`Request::capture()` with a JSON body.** `php://input` is empty in every CLI
-  process — it is populated only by a web SAPI, and piping a body on stdin does
-  not fill it. The PHPUnit test for capture covers the superglobals and records
-  this limitation rather than faking the body.
-- **`JsonResponse::send()` and `RedirectResponse::send()`.** Both terminate the
-  request, so the emitted status and headers can only be observed over the wire.
-- **The router's `Request` binding against a real `WP_REST_Server`**, so the
-  callback under test is the one WordPress actually calls.
-
-`app()` caches the container in a function-level static, so a test needing a
-genuinely fresh container must use `#[RunInSeparateProcess]`.
+---
 
 ## Configuration
 
-`config/app.php` holds the plugin's values; read them with `config('app.name')`.
-The `config()` helper is read-only — a missing key returns the default rather
-than writing anything back.
+All keys live in `config/app.php` and are read through `config()`:
 
-Values worth knowing:
+| Key | Env variable | Default |
+| --- | --- | --- |
+| `app.name` | `APP_NAME` | `WP Mini Laravel` |
+| `app.env` | `APP_ENV` | `production` |
+| `app.prefix` | `APP_PREFIX` | `wp_mini_laravel_` |
+| `app.namespace` | `APP_NAMESPACE` | `App` |
+| `app.views` | `APP_VIEWS_PATH` | `views` |
+| `app.cli_prefix` | `CLI_PREFIX` | `wp_mini` |
+| `app.rest_namespace` | `REST_NAMESPACE` | `wp-mini-laravel/v1` |
+| `app.providers` | — | the service provider list |
 
-| Key | Purpose |
-| --- | --- |
-| `namespace` | Root namespace for generated classes (`App`). |
-| `cli_prefix` | WP-CLI command namespace (`wp_mini`). |
-| `prefix` | Prefix for options, transients and meta keys. |
-| `rest_namespace` | REST namespace routes are published under. |
-| `providers` | The service providers bootstrapped at load. |
+**Never call `env()` outside `config/`.** See [Config over env](#config-over-env).
+
+---
 
 ## License
 
-MIT
+MIT.

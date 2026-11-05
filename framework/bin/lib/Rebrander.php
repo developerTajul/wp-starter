@@ -169,6 +169,14 @@ final class Rebrander
         $this->banner();
 
         $this->rewriteContents();
+
+        // The hybrid passes: structural rebranding above, then the dynamic
+        // configuration it feeds. `config/app.php`'s env() defaults are updated
+        // after the content pass so the identity strings this method looks for
+        // are the ones the project shipped with, not ones already rewritten.
+        $this->rewriteConfigFallbacks();
+        $this->rewriteDotenvFiles();
+
         $this->renameEntryFile();
 
         // Scanned here rather than in the main walk — see scanFrameworkDirectory()
@@ -255,7 +263,7 @@ final class Rebrander
                             . "  Rule index %d: %s\n"
                             . "  PCRE said: %s\n\n"
                             . "  Nothing has been written for this file, and the script has stopped.\n"
-                            . "  This is a bug in bin/lib/Rebrander.php, not in your project — the\n"
+                            . "  This is a bug in framework/bin/lib/Rebrander.php, not in your project — the\n"
                             . "  pattern is malformed, and continuing would overwrite files with\n"
                             . "  empty content.\n\n",
                             $relative,
@@ -1239,6 +1247,176 @@ TXT);
         fwrite(STDOUT, "\n    Step 1 is not optional: nothing above takes effect until the\n");
         fwrite(STDOUT, "    autoloader is rebuilt, and getting it wrong fails silently.\n");
         fwrite(STDOUT, "    Step 3 is the check that catches a broken namespace.\n");
+    }
+
+    // ---------------------------------------------------------- pass 1b: config fallbacks
+
+    /**
+     * Update the fallback defaults inside `config/app.php` so the `env()` calls
+     * carry the new project's values.
+     *
+     * These are the second arguments of the `env($key, $default)` calls: the
+     * values the project ships with by default and that a rebrand must move with
+     * the identity, while the configuration keys themselves (APP_NAME,
+     * APP_PREFIX, …) are static and stay as written.
+     *
+     * Only the seven keys that carry identity strings are rewritten here.
+     * `env('APP_ENV', 'production')` keeps its production default because the
+     * rebrand does not change the environment contract.
+     */
+    private function rewriteConfigFallbacks(): int
+    {
+        $path = $this->root . DIRECTORY_SEPARATOR . 'config' . DIRECTORY_SEPARATOR . 'app.php';
+
+        if (!is_file($path)) {
+            return 0;
+        }
+
+        $original = (string) file_get_contents($path);
+        $rewritten = $original;
+
+        $mapping = [
+            "'name' => env('APP_NAME', 'WP Mini Laravel')"
+                => "'name' => env('APP_NAME', '" . $this->plan->name . "')",
+            "'prefix' => env('APP_PREFIX', 'wp_mini_laravel_')"
+                => "'prefix' => env('APP_PREFIX', '" . $this->plan->optionPrefix . "')",
+            "'namespace' => env('APP_NAMESPACE', 'App')"
+                => "'namespace' => env('APP_NAMESPACE', '" . $this->plan->namespace . "')",
+            "'cli_prefix' => env('CLI_PREFIX', 'wp_mini')"
+                => "'cli_prefix' => env('CLI_PREFIX', '" . $this->plan->cliPrefix . "')",
+            "'rest_namespace' => env('REST_NAMESPACE', 'wp-mini-laravel/v1')"
+                => "'rest_namespace' => env('REST_NAMESPACE', '" . $this->plan->restNamespace . "')",
+        ];
+
+        $changed = 0;
+
+        foreach ($mapping as $old => $new) {
+            if (str_contains($rewritten, $old)) {
+                $rewritten = str_replace($old, $new, $rewritten);
+                $changed++;
+            }
+        }
+
+        if ($changed === 0) {
+            return 0;
+        }
+
+        $relative = 'config/app.php';
+        fwrite(STDOUT, sprintf(
+            "    %-58s %d replacement%s\n",
+            $relative,
+            $changed,
+            $changed === 1 ? ' ' : 's ' . $changed
+        ));
+
+        if (!$this->dryRun) {
+            $this->writeFile($path, $rewritten);
+        }
+
+        $this->changed[] = $relative;
+
+        return 1;
+    }
+
+    // --------------------------------------------------------- pass 1c: dotenv sync
+
+    /**
+     * Synchronise the dotenv files with the new identity.
+     *
+     * `.env.example` is updated unconditionally (it is the template and always
+     * belongs to this repository), while `.env` is updated only when it exists
+     * — on a fresh clone it is missing, so the caller copies the template.
+     */
+    private function rewriteDotenvFiles(): int
+    {
+        $changed = $this->rewriteDotenvFile('.env.example')
+            | $this->rewriteDotenvFile('.env');
+
+        return $changed;
+    }
+
+    /**
+     * Update one dotenv file in place with the new identity values.
+     *
+     * Existing lines are preserved and only the known identity keys are
+     * rewritten, so a project's own comments or additional keys survive. When a
+     * key is missing entirely it is appended so the file stays a complete
+     * template — this makes a second rebrand a no-op rather than a mutation.
+     */
+    private function rewriteDotenvFile(string $file): int
+    {
+        $path = $this->root . DIRECTORY_SEPARATOR . $file;
+
+        if (!is_file($path)) {
+            return 0;
+        }
+
+        $lines = (array) file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        $rebuild = false;
+        $result = [];
+
+        // Ordered longest-first so APP_NAME is handled before APP_* variants are
+        // ever considered as a prefix — although the regex below is anchored to
+        // the key itself, so the order is defensive rather than load-bearing.
+        $mapping = [
+            'APP_NAME'      => $this->plan->name,
+            'APP_PREFIX'    => $this->plan->optionPrefix,
+            'APP_NAMESPACE' => $this->plan->namespace,
+            'CLI_PREFIX'    => $this->plan->cliPrefix,
+            'REST_NAMESPACE' => $this->plan->restNamespace,
+        ];
+
+        foreach ($lines as $line) {
+            $updated = false;
+
+            foreach ($mapping as $key => $value) {
+                if (preg_match('/^(' . preg_quote($key, '/') . ')\\s*=/i', $line, $m)) {
+                    $result[] = sprintf('%s="%s"', $key, $value);
+                    $updated = true;
+                    $rebuild = true;
+                    break;
+                }
+            }
+
+            if (!$updated) {
+                $result[] = $line;
+            }
+        }
+
+        // Track which keys were already emitted so missing ones are appended only
+        // once — this makes a second rebrand a no-op rather than a mutation.
+        $emittedKeys = [];
+
+        foreach ($lines as $line) {
+            if (preg_match('/^([A-Z_]+)\s*=/i', $line, $m)) {
+                $emittedKeys[$m[1]] = true;
+            }
+        }
+
+        foreach ($mapping as $key => $value) {
+            if (!isset($emittedKeys[$key])) {
+                $result[] = sprintf('%s="%s"', $key, $value);
+                $rebuild = true;
+            }
+        }
+
+        if (!$rebuild) {
+            return 0;
+        }
+
+        $relative = $file;
+        fwrite(STDOUT, sprintf(
+            "    %-58s updated\n",
+            $relative
+        ));
+
+        if (!$this->dryRun) {
+            file_put_contents($path, implode("\n", $result) . "\n");
+        }
+
+        $this->changed[] = $relative;
+
+        return 1;
     }
 
     private function banner(): void

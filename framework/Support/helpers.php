@@ -5,6 +5,84 @@ use DevLinkStudios\WPServiceContainer\Container;
 use DevLinkStudios\WPServiceContainer\Contracts\ContainerInterface;
 use Framework\Config\Config;
 
+if (! function_exists('env')) {
+    /**
+     * Get an item from the environment, falling back to a default.
+     *
+     * Mirrors Laravel's `env()` helper: values are looked up in `$_ENV`, then
+     * `$_SERVER`, then `getenv()`. String booleans are coerced so
+     * `env('APP_DEBUG')` returns a real PHP bool rather than the string
+     * "true", and `(null)` / empty values resolve to null exactly like Laravel.
+     *
+     * @param string $key
+     * @param mixed  $default
+     * @return mixed
+     */
+    function env(string $key, mixed $default = null): mixed
+    {
+        $value = _env_get_from_superglobals($key);
+
+        // A missing key yields the caller's default verbatim — nothing is
+        // coerced when there is no value to parse.
+        if ($value === null) {
+            return $default;
+        }
+
+        // Match Laravel's string-to-value coercion rules:
+        //  - '(empty)'           -> ''  (nothing to change, already a string)
+        //  - '(null)'            -> null
+        //  - 'true'/'false'      -> (bool)
+        //  - '(true)'/'(false)'  -> (bool)
+        //  - ''                  -> null
+        if (is_string($value)) {
+            $normalized = strtolower($value);
+
+            if ($normalized === '(null)' || $normalized === '(empty)') {
+                return $normalized === '(empty)' ? '' : null;
+            }
+
+            if ($normalized === 'true' || $normalized === 'false') {
+                return $normalized === 'true';
+            }
+
+            if ($normalized === '(true)' || $normalized === '(false)') {
+                return $normalized === '(true)';
+            }
+
+            if ($value === '') {
+                return null;
+            }
+        }
+
+        return $value;
+    }
+
+    /**
+     * Look a key up across the three sources Laravel consults, in order.
+     *
+     * `$_ENV` wins over `$_SERVER` only when PHP is configured to populate
+     * `$_ENV` from the environment (various ini settings; some hosting panels
+     * leave it empty). `getenv()` is the most reliable fallback.
+     *
+     * @param string $key
+     * @return mixed
+     */
+    function _env_get_from_superglobals(string $key): mixed
+    {
+        if (array_key_exists($key, $_ENV)) {
+            return $_ENV[$key];
+        }
+
+        if (array_key_exists($key, $_SERVER)) {
+            return $_SERVER[$key];
+        }
+
+        $value = getenv($key);
+
+        return $value === false ? null : $value;
+    }
+}
+
 if (! function_exists('app')) {
     /**
      * Resolve the plugin's service container, or a service from it.

@@ -28,6 +28,15 @@ if (! file_exists(__DIR__ . '/vendor/autoload.php')) {
 
 require_once __DIR__ . '/vendor/autoload.php';
 
+// Load environment variables from the project root. `safeLoad()` is used so
+// the plugin never crashes on a host where a `.env` file does not exist — in
+// that case server-level environment variables are relied on instead. A
+// `load()` would throw if `.env` were missing, which breaks production
+// deployments that supply configuration at the platform level.
+if (class_exists(\Dotenv\Dotenv::class)) {
+    \Dotenv\Dotenv::createImmutable(__DIR__)->safeLoad();
+}
+
 // Idempotency guard: WordPress can include a plugin file more than once in a
 // request, and every line below this point re-runs if it does. Set only once
 // the dependencies are known to be present, so a failed vendor check does not

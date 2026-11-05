@@ -2,32 +2,32 @@
 declare(strict_types=1);
 
 return [
-    'name' => 'WP Mini Laravel',
-    'env' => 'development', // 'development' or 'production'
+    'name' => env('APP_NAME', 'WP Mini Laravel'),
+    'env' => env('APP_ENV', 'production'),
 
     // Prepended to every option, transient, meta key and nonce action the
     // plugin creates, so two installs sharing a database cannot collide.
-    'prefix' => 'wp_mini_laravel_',
+    'prefix' => env('APP_PREFIX', 'wp_mini_laravel_'),
 
     // Root namespace for generated/application classes. Consuming projects
     // override this with their own (e.g. 'LeadBridge').
-    'namespace' => 'App',
+    'namespace' => env('APP_NAMESPACE', 'App'),
 
     // Where view names resolve from, relative to the plugin root or absolute.
     // A relative path is the normal case: an absolute one in a config file is a
     // path that is wrong on every other machine, and the repo is what gets
     // shared. Resolution is dotted — 'leads.index' -> views/leads/index.php.
-    'views' => 'views',
+    'views' => env('APP_VIEWS_PATH', 'views'),
 
     // Namespace for WP-CLI commands, so two projects bundling this framework
     // do not register commands under the same name.
-    'cli_prefix' => 'wp_mini',
+    'cli_prefix' => env('CLI_PREFIX', 'wp_mini'),
 
     // The REST namespace every route is published under. WordPress exposes it
     // at /wp-json/{rest_namespace}/ and uses it to scope route discovery, so it
     // must be unique per plugin — two plugins sharing one would have their
     // route tables merged and their `permission_callback`s both consulted.
-    'rest_namespace' => 'wp-mini-laravel/v1',
+    'rest_namespace' => env('REST_NAMESPACE', 'wp-mini-laravel/v1'),
 
     'providers' => [
         \App\Providers\AppServiceProvider::class,
