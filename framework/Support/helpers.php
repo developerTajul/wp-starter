@@ -57,9 +57,7 @@ if (! function_exists('base_path')) {
             throw new \RuntimeException('Base path is not bound in the container.');
         }
 
-        $base = rtrim((string) app('path.base'), '/\\');
-
-        return $base . ($path ? DIRECTORY_SEPARATOR . ltrim($path, '/\\') : '');
+        return base_path_join((string) app('path.base'), $path);
     }
 }
 
@@ -72,7 +70,7 @@ if (! function_exists('app_path')) {
      */
     function app_path(string $path = ''): string
     {
-        return base_path('app' . ($path ? DIRECTORY_SEPARATOR . $path : ''));
+        return base_path_join(base_path(), 'app', $path);
     }
 }
 
@@ -85,7 +83,45 @@ if (! function_exists('config_path')) {
      */
     function config_path(string $path = ''): string
     {
-        return base_path('config' . ($path ? DIRECTORY_SEPARATOR . $path : ''));
+        return base_path_join(base_path(), 'config', $path);
+    }
+}
+
+if (! function_exists('base_path_join')) {
+    /**
+     * Join path segments with the ONE separator the base path already uses.
+     *
+     * The base path belongs to the caller: it may be a native Windows path with
+     * backslashes or a WordPress-supplied forward-slash path. Appending
+     * DIRECTORY_SEPARATOR assumes the two agree, which they do not on Windows —
+     * a forward-slash root would produce `H:/site/app\Providers`, and a literal
+     * `\a` in that path is a Windows escape sequence, not a directory.
+     *
+     * Preferring a forward slash when the root already uses one also produces
+     * stable, comparable strings on every platform, which matters to any test
+     * or cache key built from a path.
+     *
+     * @param string $base  The root, without a trailing separator.
+     * @param string ...$segments
+     * @return string
+     */
+    function base_path_join(string $base, string ...$segments): string
+    {
+        $separator = str_contains($base, '\\') && !str_contains($base, '/')
+            ? '\\'
+            : '/';
+
+        $base = rtrim($base, '/\\');
+
+        foreach ($segments as $segment) {
+            $segment = trim($segment, '/\\');
+
+            if ($segment !== '') {
+                $base .= $separator . $segment;
+            }
+        }
+
+        return $base;
     }
 }
 

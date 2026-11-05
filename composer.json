@@ -22,9 +22,20 @@
   "autoload-dev": {
     "psr-4": {
       "Tests\\": "tests/"
-    }
+    },
+    "classmap": [
+      "tests/stubs/wp-classes.php"
+    ]
   },
   "require-dev": {
     "phpunit/phpunit": "^10.5"
+  },
+  "scripts": {
+    "test": "phpunit",
+    "test:coverage": "phpunit --coverage-text"
+  },
+  "config": {
+    "sort-packages": true,
+    "optimize-autoloader": true
   }
 }

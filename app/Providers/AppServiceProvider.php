@@ -9,7 +9,7 @@ class AppServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
-        // $this->app->bind(SomeInterface::class, SomeClass::class);
+        // $this->container->bind(SomeInterface::class, SomeClass::class);
     }
 
     public function boot(): void
