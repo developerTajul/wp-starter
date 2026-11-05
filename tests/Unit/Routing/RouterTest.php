@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Routing;
 
+use Framework\Http\Responses\RedirectResponse;
 use DevLinkStudios\WPServiceContainer\Container;
 use Framework\Routing\RouteResolver;
 use Framework\Routing\Router;
@@ -621,7 +622,10 @@ final class RouterTest extends TestCase
         $result = $this->permission('posts');
 
         $this->assertInstanceOf(WP_Error::class, $result);
-        $this->assertSame('wp_mini_laravel_permission_callback_failed', $result->get_error_code());
+        $this->assertSame(
+            RedirectResponse::resolvePrefix() . 'permission_callback_failed',
+            $result->get_error_code()
+        );
         $this->assertStringContainsString('thisFunctionDoesNotExist', $result->get_error_message());
     }
 
@@ -646,7 +650,10 @@ final class RouterTest extends TestCase
         $result = $this->permission('posts');
 
         $this->assertInstanceOf(WP_Error::class, $result);
-        $this->assertSame('wp_mini_laravel_permission_callback_failed', $result->get_error_code());
+        $this->assertSame(
+            RedirectResponse::resolvePrefix() . 'permission_callback_failed',
+            $result->get_error_code()
+        );
 
         // The message names the callback and carries the reason, so a wiring bug
         // is distinguishable from a route that genuinely denies this user.

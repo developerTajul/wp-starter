@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Framework\Console\Commands;
 
+use Framework\Config\Config;
 use Framework\Console\Command;
 use Framework\Routing\Adapters\RestApiRouterAdapter;
 use Framework\Routing\Adapters\WordPressRouterAdapter;
@@ -60,7 +61,7 @@ class RouteListCommand extends Command
 
     public function getName(): string
     {
-        return config('app.cli_prefix', 'wp_mini') . ' route:list';
+        return config('app.cli_prefix', Config::DEFAULT_CLI_PREFIX) . ' route:list';
     }
 
     public function getDescription(): string

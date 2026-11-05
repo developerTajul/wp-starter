@@ -5,6 +5,7 @@ namespace Framework\Routing;
 
 use DevLinkStudios\WPServiceContainer\Container;
 use Framework\Http\Request;
+use Framework\Http\Responses\RedirectResponse;
 use Framework\Routing\Contracts\Middleware;
 use Framework\Routing\Contracts\RouterInterface;
 use Framework\Routing\Exceptions\RouteRegistrationException;
@@ -480,7 +481,7 @@ class Router implements RouterInterface
             return $this->resolver->callPermission($callback, $request);
         } catch (Throwable $e) {
             return new WP_Error(
-                'wp_mini_laravel_permission_callback_failed',
+                RedirectResponse::resolvePrefix() . 'permission_callback_failed',
                 sprintf(
                     'Route [%s] could not run its permission callback [%s]: %s',
                     $route->getDisplayPath(),

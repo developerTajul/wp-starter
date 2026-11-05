@@ -4,7 +4,10 @@ declare(strict_types=1);
 namespace Tests\Unit\Routing;
 
 use DevLinkStudios\WPServiceContainer\Container;
+use Framework\Config\Config;
 use Framework\Http\Request;
+use Framework\Http\Requests\FormRequest;
+use Framework\Http\Responses\RedirectResponse;
 use Framework\Routing\Adapters\RestApiRouterAdapter;
 use Framework\Routing\Exceptions\RouteRegistrationException;
 use Framework\Routing\RouteResolver;
@@ -249,6 +252,193 @@ final class RestApiRouterAdapterTest extends TestCase
         $this->assertSame(500, $result->get_error_data()['status']);
     }
 
+    // ------------------------------------------------------------- error codes
+
+    /**
+     * **Every error code this adapter raises is prefixed from the same seam.**
+     *
+     * ## Why this is a test and not a tidy-up
+     *
+     * The body of a `WP_Error` is read by humans; the *code* is read by clients.
+     * A consuming app checks `error.code` to decide what to do, and it does so by
+     * matching a prefix — so a code that keeps the old prefix after a rebrand is
+     * not a cosmetic leftover, it is a branch in someone else's front end that
+     * stops firing.
+     *
+     * Five of the six codes here were hardcoded while a sixth was derived, which
+     * is the version of this that is worst to find: the derived one makes the
+     * file *look* rebrand-aware, so the literals beside it read as deliberate.
+     *
+     * ## Why the assertion is made against a *rebranded* config
+     *
+     * Asserting against the resolved prefix under the shipped config would pass
+     * for a hardcoded literal too — `RedirectResponse::DEFAULT_PREFIX` and
+     * `config/app.php`'s `prefix` are both `wp_mini_laravel_`, so the two are the
+     * same string and the assertion cannot tell them apart. That is not a
+     * hypothetical: the first version of this test did exactly that, and stayed
+     * green when a code was reverted to a literal.
+     *
+     * So the fixture config is loaded first, with a prefix deliberately unlike the
+     * default. Now a derived code changes with it and a literal does not — which
+     * is the only shape of this test that can fail.
+     *
+     * @see \Tests\Fixtures\config\app.php
+     */
+    public function test_every_error_code_carries_the_configured_prefix(): void
+    {
+        $this->loadRebrandedConfig();
+
+        $prefix = RedirectResponse::resolvePrefix();
+
+        $this->assertSame(
+            'acme_',
+            $prefix,
+            'Precondition: the fixture config must actually be in effect, or this test proves nothing.'
+        );
+
+        foreach ($this->errorCodes() as $scenario => $code) {
+            $this->assertStringStartsWith(
+                $prefix,
+                $code,
+                sprintf(
+                    'The [%s] error code [%s] does not start with the configured prefix [%s] — it is '
+                    . 'hardcoded, so a rebranded install would hand clients a code they do not match on.',
+                    $scenario,
+                    $code,
+                    $prefix
+                )
+            );
+        }
+
+        $this->restoreShippedConfig();
+    }
+
+    /**
+     * And the codes are still *distinct* after the prefix is stripped.
+     *
+     * Deriving six codes from one seam makes it easy to derive the same one
+     * twice — a copy-paste that every prefix assertion above would happily pass.
+     * A client cannot tell two failures apart if they arrive under one code, and
+     * the collisions would be between the paths least likely to be exercised by
+     * hand: a handler that was never set, and a middleware that threw.
+     *
+     * @see test_every_error_code_carries_the_configured_prefix()
+     */
+    public function test_each_failure_path_has_its_own_code(): void
+    {
+        $this->loadRebrandedConfig();
+
+        $codes = $this->errorCodes();
+
+        $this->assertSame(
+            count($codes),
+            count(array_unique($codes)),
+            sprintf('Two failure paths share an error code: %s', implode(', ', $codes))
+        );
+
+        $this->restoreShippedConfig();
+    }
+
+    /**
+     * One error code per failure path, each reached by actually triggering it.
+     *
+     * ## Why each path is provoked rather than the codes being read off the file
+     *
+     * A list of expected strings checked against itself proves nothing. Each entry
+     * below is the code that came back from a real call — so a path that stopped
+     * producing an error at all fails here rather than silently dropping out of
+     * the set.
+     *
+     * ## Why all three are declared before the single flush
+     *
+     * `flush()` publishes once and no-ops afterwards, and the adapter refuses a
+     * duplicate path — so the three scenarios cannot be registered one at a time.
+     * Declaring them together and flushing once is also the shape a real
+     * application has, which makes this closer to the thing under test.
+     *
+     * ## What is *not* in the list, and why
+     *
+     * `no_handler` — its guard is unreachable, because `publish()` validates the
+     * whole set before registering anything. See
+     * {@see test_the_no_handler_guard_is_unreachable_because_publish_validates_first()}.
+     * `controller_failed` needs a class the container cannot build, so it is
+     * asserted separately below. The two that remain here are the paths a request
+     * can actually reach.
+     *
+     * @return array<string, string> scenario => the code it produced
+     */
+    private function errorCodes(): array
+    {
+        $this->router->get('throwing', Fixtures\ReportController::class, 'index')
+            ->middleware(Fixtures\ThrowingMiddleware::class);
+
+        $this->router->get('loose', Fixtures\ReportController::class, 'index')
+            ->middleware(Fixtures\LooseMiddleware::class);
+
+        $this->router->flush();
+
+        $request = new WP_REST_Request();
+
+        return [
+            'a throwing middleware' => $this->permissionCallback(0)($request)->get_error_code(),
+            'a middleware breaking its contract' => $this->permissionCallback(1)($request)->get_error_code(),
+        ];
+    }
+
+    /**
+     * The controller-resolution failure, asserted on its own.
+     *
+     * Separate because it is the only path that depends on the container *not*
+     * having a class — and the container is shared across a test, so provoking it
+     * here rather than inside {@see errorCodes()} keeps that helper's other
+     * scenarios from inheriting a deliberately-unbuildable state.
+     */
+    public function test_an_unbuildable_controller_reports_its_own_code(): void
+    {
+        $this->loadRebrandedConfig();
+
+        $this->router->get('leads', 'App\\Http\\Controllers\\Api\\NotRegisteredController', 'index');
+
+        $this->router->flush();
+
+        $result = $this->restCallback(0)(new WP_REST_Request());
+
+        $this->assertInstanceOf(WP_Error::class, $result);
+        $this->assertSame(
+            RedirectResponse::resolvePrefix() . 'controller_failed',
+            $result->get_error_code()
+        );
+
+        $this->restoreShippedConfig();
+    }
+
+    /**
+     * The `no_handler` guard is unreachable through this adapter, and that is
+     * pinned here rather than left as a note.
+     *
+     * `destination()` still answers with a "this route has no handler" `WP_Error`,
+     * but `publish()` validates the whole set first and throws
+     * {@see RouteRegistrationException} before WordPress is told anything — so a
+     * handler-less route never reaches a callback. The guard is dead code on this
+     * path.
+     *
+     * Asserting *that* is what keeps the code above honest: it is the reason the
+     * prefix test covers six codes rather than seven, and it means a later change
+     * that makes the guard reachable shows up as a failure here — where someone
+     * will notice the seventh code needs prefixing — rather than as a rebranded
+     * install quietly emitting an unprefixed one.
+     */
+    public function test_the_no_handler_guard_is_unreachable_because_publish_validates_first(): void
+    {
+        $this->router->getRoutes();
+        $this->router->registrar()->get('unhandled');
+
+        $this->expectException(RouteRegistrationException::class);
+        $this->expectExceptionMessageMatches('/has no handler/');
+
+        $this->router->flush();
+    }
+
     // ------------------------------------------------------------- the domain
 
     public function test_the_domain_is_api(): void
@@ -269,7 +459,156 @@ final class RestApiRouterAdapterTest extends TestCase
         );
     }
 
+    // ------------------------------------------------------------- rest marker
+
+    /**
+     * A failing `FormRequest` on a REST route has to answer with a `WP_Error`,
+     * because the REST server serializes a callback's return value rather than
+     * sending it — and nothing about the request itself distinguishes a REST
+     * dispatch from a web one. The adapter states the domain explicitly for the
+     * duration of the call, and these two tests pin both halves: that it is set
+     * while the controller runs, and that it is clear afterwards.
+     */
+    public function test_the_rest_marker_is_set_while_the_controller_runs(): void
+    {
+        Fixtures\MarkerProbeController::reset();
+
+        $this->router->get('probe', Fixtures\MarkerProbeController::class, 'probe');
+        $this->router->flush();
+
+        $this->restCallback()(new WP_REST_Request());
+
+        $this->assertTrue(
+            Fixtures\MarkerProbeController::$observed,
+            'A REST dispatch must mark itself before the handler runs.'
+        );
+    }
+
+    /**
+     * A stuck marker would make the *next* dispatch on a persistent worker answer
+     * a web request with a `WP_Error`, which a browser cannot render — a bug that
+     * only appears under a long-running process.
+     */
+    public function test_the_rest_marker_is_cleared_after_the_dispatch(): void
+    {
+        Fixtures\MarkerProbeController::reset();
+
+        $this->router->get('probe', Fixtures\MarkerProbeController::class, 'probe');
+        $this->router->flush();
+
+        $this->restCallback()(new WP_REST_Request());
+
+        $this->assertFalse(FormRequest::$restDispatch, 'The marker must not outlive its dispatch.');
+    }
+
+    public function test_the_rest_marker_is_cleared_even_when_the_handler_throws(): void
+    {
+        Fixtures\MarkerProbeController::reset();
+        Fixtures\MarkerProbeController::$throw = true;
+
+        $this->router->get('probe', Fixtures\MarkerProbeController::class, 'probe');
+        $this->router->flush();
+
+        try {
+            $this->restCallback()(new WP_REST_Request());
+        } catch (\Throwable) {
+            // The controller's own failure is not what this test is about — the
+            // adapter reports it in its own way. What matters is the marker.
+        }
+
+        $this->assertFalse(FormRequest::$restDispatch, 'A throwing handler must not leave the marker set.');
+    }
+
+    /**
+     * A form request on a REST route must answer with a `WP_Error`, because the
+     * REST server serializes a callback's return value rather than sending it.
+     * This is the end-to-end version of that rule: route registered, callback
+     * fired, WordPress-shaped error out.
+     */
+    public function test_a_failing_form_request_on_a_rest_route_returns_a_wp_error(): void
+    {
+        $this->router->post('leads', Fixtures\FormRequestController::class, 'store');
+        $this->router->flush();
+
+        $result = $this->restCallback()($this->jsonRequest(['email' => 'not-an-email']));
+
+        $this->assertInstanceOf(WP_Error::class, $result);
+        $this->assertSame(422, $result->get_status());
+        $this->assertSame('validation_failed', $result->get_error_code());
+    }
+
+    public function test_a_valid_form_request_on_a_rest_route_reaches_the_action(): void
+    {
+        $this->router->post('leads', Fixtures\FormRequestController::class, 'store');
+        $this->router->flush();
+
+        $result = $this->restCallback()($this->jsonRequest(['email' => 'a@b.test']));
+
+        $this->assertSame(['stored' => 'a@b.test'], $result);
+    }
+
+    /**
+     * A REST request carrying JSON, as a headless client sends it.
+     *
+     * The JSON body rather than `set_params()` because that is the shape the
+     * framework actually reads: `Request::fromRestRequest()` splits WordPress's
+     * parameter buckets by source, and a body arrives either as a decoded JSON
+     * document or as a raw body — not as an undifferentiated `params` bag. A test
+     * that used `set_params()` would be asserting against a shape no real request
+     * produces.
+     *
+     * @param array<string, mixed> $body
+     */
+    private function jsonRequest(array $body, string $method = 'POST'): WP_REST_Request
+    {
+        $request = new WP_REST_Request();
+        $request->set_method($method);
+        $request->set_body((string) json_encode($body));
+        $request->set_header('content-type', 'application/json');
+
+        return $request;
+    }
+
+    // ------------------------------------------------------------------- config
+
+    /**
+     * Put a rebranded config in front of the code under test.
+     *
+     * `Config` is a static store with no setter, so a fixture directory loaded
+     * through the supported `load()` is the only way to do this without a global
+     * write. `flush()` first, because `load()` merges by filename and a previously
+     * loaded `app` key would otherwise survive underneath.
+     */
+    private function loadRebrandedConfig(): void
+    {
+        Config::flush();
+        Config::load(__DIR__ . '/../../Fixtures/config');
+    }
+
+    /**
+     * Put the shipped config back.
+     *
+     * Not merely politeness: a static config left rebranded would change how every
+     * later test in the run resolves a prefix, and the failure would land in
+     * whichever test happened to run next rather than here.
+     */
+    private function restoreShippedConfig(): void
+    {
+        Config::flush();
+        Config::load(dirname(__DIR__, 3) . '/config');
+    }
+
     // ----------------------------------------------------------------- helpers
+
+    /**
+     * The callback WordPress would invoke for the first registered route.
+     *
+     * @return callable(WP_REST_Request): mixed
+     */
+    private function restCallback(int $index = 0): callable
+    {
+        return WpStub::$registeredRoutes[self::NAMESPACE][$index]['callback'];
+    }
 
     /**
      * @return callable(WP_REST_Request): (WP_Error|bool|null)

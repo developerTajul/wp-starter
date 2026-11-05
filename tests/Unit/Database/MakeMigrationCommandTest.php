@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Database;
 
+use Framework\Config\Config;
 use Framework\Database\Commands\MakeMigrationCommand;
 use Framework\Database\MigrationFile;
 use PHPUnit\Framework\TestCase;
@@ -282,7 +283,7 @@ final class MakeMigrationCommandTest extends TestCase
 
     public function test_the_name_is_prefixed_with_the_cli_prefix(): void
     {
-        $prefix = config('app.cli_prefix', 'wp_mini');
+        $prefix = config('app.cli_prefix', Config::DEFAULT_CLI_PREFIX);
 
         $this->assertSame("{$prefix} make:migration", (new TestableMakeMigrationCommand())->getName());
     }

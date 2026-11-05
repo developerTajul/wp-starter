@@ -165,6 +165,12 @@ final class PluginBootTest extends TestCase
     /**
      * WordPress can fire rest_api_init more than once in a process. The second
      * firing must not re-register the routes and throw out of the action.
+     *
+     * Asserted as "the second firing adds nothing", not as a hard-coded count.
+     * The count used to be `1` because `ping` was the only route; adding a
+     * second route to `routes/api.php` then failed a test that has nothing to do
+     * with how many routes exist. What this test is about is *re-registration*,
+     * so that is what it compares.
      */
     #[RunInSeparateProcess]
     public function test_firing_rest_api_init_twice_does_not_throw(): void
@@ -175,12 +181,20 @@ final class PluginBootTest extends TestCase
 
         app()->boot();
 
-        WpStub::doAction('rest_api_init');
-        WpStub::doAction('rest_api_init');
-
         $namespace = (string) config('app.rest_namespace');
 
-        $this->assertCount(1, WpStub::$registeredRoutes[$namespace]);
+        WpStub::doAction('rest_api_init');
+        $afterFirst = WpStub::$registeredRoutes[$namespace];
+
+        WpStub::doAction('rest_api_init');
+        $afterSecond = WpStub::$registeredRoutes[$namespace];
+
+        $this->assertNotSame([], $afterFirst, 'The first firing should register the routes.');
+        $this->assertCount(
+            count($afterFirst),
+            $afterSecond,
+            'A second rest_api_init must not register the routes again.'
+        );
     }
 
     /**

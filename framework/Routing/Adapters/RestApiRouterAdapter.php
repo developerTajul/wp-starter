@@ -4,6 +4,8 @@ declare(strict_types=1);
 namespace Framework\Routing\Adapters;
 
 use Framework\Http\Request;
+use Framework\Http\Requests\FormRequest;
+use Framework\Http\Responses\RedirectResponse;
 use Framework\Routing\Contracts\Middleware;
 use Framework\Routing\Exceptions\RouteRegistrationException;
 use Framework\Routing\Route;
@@ -148,36 +150,101 @@ final class RestApiRouterAdapter extends AbstractRouterAdapter
         // type-hint the framework Request too — resolving first and binding
         // afterwards would leave the constructor holding a stale capture.
         return $this->withHttpRequest($httpRequest, function () use ($route, $request, $httpRequest): mixed {
-            return $this->dispatch(
-                $route,
-                $httpRequest,
-                fn (): mixed => $this->destination($route, $request)
-            );
+            return $this->withRestMarker(function () use ($route, $request, $httpRequest): mixed {
+                return $this->dispatch(
+                    $route,
+                    $httpRequest,
+                    fn (): mixed => $this->destination($route, $request)
+                );
+            });
         });
     }
 
     /**
+     * Mark the dispatch as REST for the duration of the call.
+     *
+     * A failing {@see \Framework\Http\Requests\FormRequest} has to answer as a
+     * `WP_Error` here rather than as a framework response, because the REST
+     * server serializes whatever a callback returns and does not send framework
+     * responses. Nothing about the request itself says which domain it is on —
+     * both paths build the same `Request` — so the domain is stated here, by the
+     * code that knows it.
+     *
+     * Restored in a `finally` rather than reset afterwards, so a controller that
+     * throws still leaves the flag clear. A stuck flag would make the *next*
+     * dispatch on this worker answer with a `WP_Error` on a web route, which is
+     * exactly the kind of bug that only appears under a persistent process.
+     *
+     * @param callable(): mixed $callback
+     *
      * @return mixed
+     */
+    private function withRestMarker(callable $callback): mixed
+    {
+        $previous = FormRequest::$restDispatch;
+        FormRequest::$restDispatch = true;
+
+        try {
+            return $callback();
+        } finally {
+            FormRequest::$restDispatch = $previous;
+        }
+    }
+
+    /**
+     * Invoke the route's controller or handler.
+     *
+     * ## Why this calls the resolver directly and not `callController()`
+     *
+     * `AbstractRouterAdapter::callController()` takes a `Framework\Http\Request`
+     * because the *web* adapter hands it one — that class is shared between the
+     * two domains, so its signature had to pick a request type, and it picked the
+     * web one.
+     *
+     * This path holds a `WP_REST_Request`. Passing it to `callController()` was a
+     * `TypeError` at the moment any REST controller route was reached, and it went
+     * unnoticed because the adapter only dispatches routes registered *into it*,
+     * and this project's REST surface is still owned by the legacy
+     * {@see \Framework\Routing\Router}. {@see RouteResolver::call()} is the
+     * REST-shaped entry point and is what the legacy router has always used, so
+     * both now go through the same binder with the same rules.
      */
     private function destination(Route $route, WP_REST_Request $request): mixed
     {
         $controller = $route->getController();
 
         if ($controller !== null) {
-            return $this->callController($controller, $route->getAction() ?? 'index', $request);
+            try {
+                $instance = $this->container->resolve($controller);
+            } catch (Throwable $e) {
+                // Reported in the domain's own shape rather than thrown: an
+                // escaping throwable here is an opaque 500 out of a REST callback
+                // with nothing naming the class that could not be built.
+                return new WP_Error(
+                    RedirectResponse::resolvePrefix() . 'controller_failed',
+                    sprintf(
+                        'Could not build controller [%s]: %s',
+                        $controller,
+                        $e->getMessage()
+                    ),
+                    ['status' => 500]
+                );
+            }
+
+            return $this->resolver->call($instance, $route->getAction() ?? 'index', $request);
         }
 
         $handler = $route->getHandler();
 
         if ($handler === null) {
             return new WP_Error(
-                'wp_mini_laravel_no_handler',
+                RedirectResponse::resolvePrefix() . 'no_handler',
                 __('This route has no handler.', 'wp-mini-laravel'),
                 ['status' => 500]
             );
         }
 
-        return ($handler)($request);
+        return $this->resolver->callHandler($handler, $request);
     }
 
     /**
@@ -215,7 +282,7 @@ final class RestApiRouterAdapter extends AbstractRouterAdapter
     protected function failed(Route $route, string $message): mixed
     {
         return new WP_Error(
-            'wp_mini_laravel_route_failed',
+            RedirectResponse::resolvePrefix() . 'route_failed',
             sprintf('Route [%s] failed: %s', $route->getDisplayPath(), $message),
             ['status' => 400]
         );
@@ -289,7 +356,7 @@ final class RestApiRouterAdapter extends AbstractRouterAdapter
             return $this->resolver->callPermission($callback, $request);
         } catch (Throwable $e) {
             return new WP_Error(
-                'wp_mini_laravel_permission_callback_failed',
+                RedirectResponse::resolvePrefix() . 'permission_callback_failed',
                 sprintf(
                     'Route [%s] could not run its permission callback [%s]: %s',
                     $route->getDisplayPath(),
@@ -321,7 +388,7 @@ final class RestApiRouterAdapter extends AbstractRouterAdapter
             $result = $middleware->handle($request);
         } catch (Throwable $e) {
             return new WP_Error(
-                'wp_mini_laravel_middleware_failed',
+                RedirectResponse::resolvePrefix() . 'middleware_failed',
                 __('The request could not be authorized.', 'wp-mini-laravel'),
                 ['status' => rest_authorization_required_code()]
             );
@@ -333,7 +400,7 @@ final class RestApiRouterAdapter extends AbstractRouterAdapter
         // from the final "allowed" return below.
         if ($result !== null && !$result instanceof WP_Error) {
             return new WP_Error(
-                'wp_mini_laravel_middleware_contract',
+                RedirectResponse::resolvePrefix() . 'middleware_contract',
                 sprintf(
                     'Middleware [%s] must return a WP_Error to deny or null to allow; [%s] returned.',
                     $middlewareClass,

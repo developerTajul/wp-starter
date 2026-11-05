@@ -35,17 +35,26 @@ app/                       Your application.
   Console/Kernel.php         The command registry.
   Console/Command.php        Base class for your own commands.
   Http/Controllers/          Generated controllers land here.
+    Api/                       REST controllers (JSON in, resources out).
+  Http/Middleware/           Route guards — e.g. RequireLeadRead.
+  Http/Resources/            JsonResource classes — the public shape of a payload.
   Providers/                 Your service providers.
 config/app.php             Configuration values.
 routes/api.php             REST route definitions.
+routes/web.php             Web route definitions (admin screens, form handlers).
+views/                     PHP view files, named with dots: leads.index.
+  layout.php                 The demo screen's shell.
 database/migrations/       Versioned schema changes.
 framework/                 The reusable machinery (a separate Composer library).
   Config/                    The configuration repository.
   Console/                   Console kernel, base Command, make:* generators.
   Database/                  Migrator, Migration base class, migrate:* commands.
   Http/                      Request, responses, and the middleware pipeline.
+    Requests/                  FormRequest — self-validating request objects.
   Routing/                   Router, routes, controllers, middleware.
-  Support/helpers.php        app(), config(), base_path(), app_path()...
+  Support/                   ViewRenderer, JsonResource, and the global helpers.
+    helpers.php                app(), config(), base_path(), view(), e(), old()...
+  Validation/                The rule engine behind FormRequest.
 stubs/                     Templates the make:* commands render.
 tests/                     PHPUnit suite (WordPress is stubbed, not loaded).
 core/                      Your own PSR-4 namespace (Core\), currently empty.
@@ -417,6 +426,528 @@ final class AuthenticateApiClient extends Authenticate
 The provider is registered by default. Remove
 `Framework\Http\HttpServiceProvider::class` from `config('app.providers')` if you
 do not want the request bound.
+
+## Validation
+
+Validation is driven by the **type-hint**, not by a call the author remembers to
+make. Type-hint a `FormRequest` subclass and the parameter binder validates
+before the action runs; on failure the action is never entered at all.
+
+```php
+namespace App\Http\Requests;
+
+use Framework\Http\Requests\FormRequest;
+
+final class StoreLeadRequest extends FormRequest
+{
+    protected function rules(): array
+    {
+        return [
+            'email' => 'required|email|max:255',
+            'name'  => 'required|string|max:100',
+            'age'   => 'nullable|integer|between:18,120',
+            'tags'  => 'array',
+            'tags.*' => 'string|max:20',
+        ];
+    }
+}
+```
+
+```php
+public function store(StoreLeadRequest $request): ResponseInterface
+{
+    $data = $request->validated();   // only the keys the rules named
+}
+```
+
+### The two failure modes
+
+This is the whole reason `FormRequest` exists as a class rather than a rule set.
+A failed validation is answered in the shape the *client* can use:
+
+| Client | Result |
+|---|---|
+| Browser form post | `302` back to the form, with `errors` and `old` flashed to a transient |
+| `Accept: application/json`, or a JSON body | `422` with `{"error": "validation_failed", "errors": {...}}` |
+| A route in `routes/api.php` | `WP_Error` with status `422` — the REST server does not send framework responses |
+
+The branch is decided by the request, not by which routes file the route lives
+in: an admin screen whose form is submitted by `fetch()` gets JSON, and a REST
+route opened in a browser gets a redirect. `Request::expectsJson()` is the test,
+and it is true for an `Accept: application/json` header *or* a JSON body.
+
+**Old input is flashed so the form can be re-rendered** with what the user typed.
+Password fields, nonces and `_method` are never flashed — a password repopulated
+from a transient has been written to the options table and into the next page's
+HTML.
+
+### The redirect target
+
+In order: the request class's `redirectTo()`, then a `redirect_to` form field
+(how a form states its own return address on an admin screen), then `HTTP_REFERER`
+**when it is on this site**, then the home page. WordPress has no
+`url()->previous()`, and an unvalidated client-supplied URL is an open redirect —
+so the referer is a candidate, not the answer.
+
+### The rule engine
+
+`Framework\Validation\Validator` is the engine underneath, and it is usable on
+its own — no request, no WordPress, no redirect. Data in, errors out.
+
+```php
+$validator = new Validator($data);
+$errors = $validator->validate(['email' => 'required|email']);   // field => list of messages
+
+$validator->passes();          // bool
+$validator->first('email');    // one message, or null
+$validator->messages();        // every message, flattened
+```
+
+A field with several broken rules reports **several** messages — an empty email
+produces both "required" and "email", because the user got two things wrong and
+one reload per mistake is the behaviour people hate.
+
+Rules: `required`, `nullable`, `sometimes`, `string`, `integer`, `numeric`,
+`boolean`, `array`, `email`, `url`, `date`, `in`, `not_in`, `min`, `max`,
+`between`, `size`, `regex`, `same`, `different`, `confirmed`, `accepted`, plus
+closures.
+
+```php
+'code' => 'regex:/^[A-Z]{1,3}\|[0-9]+$/',   // a pipe inside a pattern is content
+'tags' => ['array', fn (string $a, mixed $v): bool => count($v) <= 5],
+'pin'  => function (string $a, mixed $v, callable $fail): void {
+    if ($v !== '1234') { $fail('That PIN is wrong.'); }
+},
+```
+
+`min`/`max` measure by the value's own type — characters for a string, the value
+for a number, elements for an array — so `max:255` does the right thing on an
+email and on a price. `size` is the exact form.
+
+**A typo'd rule name throws.** `requird` would otherwise silently accept
+everything, which is the one failure a validator must never have.
+
+### What `validated()` guarantees
+
+`$request->input('is_admin')` returns a client-supplied value whether or not a
+rule mentioned it. `validated()` returns **only the keys the rules named**, so a
+field the author did not think about cannot arrive through it. If a key seems to
+be missing from `validated()`, it has no rule.
+
+Values are the raw input, not a cast one — `"30"` stays a string under an
+`integer` rule, because the rule checks a value rather than transforming it.
+Cast where it matters.
+
+### Overrides
+
+```php
+protected function messages(): array
+{
+    return ['email.required' => 'We need your email address.'];   // or 'name' for every rule on it
+}
+
+protected function attributes(): array
+{
+    return ['email' => 'email address'];   // used inside the default messages
+}
+
+protected function authorize(): bool|string
+{
+    return current_user_can('edit_posts') ?: 'You may not do that.';   // runs only if the rules pass
+}
+```
+
+`authorize()` runs *after* the rules, so a hook reading `$this->input('id')` does
+not also have to defend against the id being an array.
+
+## Views
+
+A view is a plain PHP file under `views/`. A controller names it and returns the
+result:
+
+```php
+public function index(ViewRenderer $views): ResponseInterface
+{
+    return $views->make('leads.index', ['leads' => $leads]);
+}
+```
+
+The renderer's job is small and specific: turn a **name** into a path. Without
+it, every action builds `base_path('views/leads/index.php')` itself, which is a
+delivery concern sitting in the wrong layer. Names are dotted — `leads.index` is
+`views/leads/index.php` — and three spellings of one file all work:
+`leads.index`, `leads/index`, `leads.index.php`.
+
+### Escaping
+
+```php
+<h1><?= e($title) ?></h1>
+<input name="email" value="<?= old('email') ?>">
+```
+
+`e()` escapes for HTML and quotes both quote styles, because a value in an
+attribute is a different context from one in text — without `ENT_QUOTES`,
+`value="<?= e($x) ?>"` lets an apostrophe close the attribute. It falls back to
+`htmlspecialchars()` so a view still renders in a queue worker or a WP-CLI
+export, and it is *not* `esc_html()`-only: the view layer does not require
+WordPress to be loaded.
+
+### Errors and old input
+
+After a failed validation redirects back, the renderer hands the view the errors
+and the input the user typed — read from the flash transient, so an action does
+not have to forward a payload it never looks at:
+
+```php
+<?php if ($errors ?? []): ?>
+    <p><?= e($error) ?></p>          <?php // the one-line summary ?>
+<?php endif; ?>
+
+<input name="email"
+       value="<?= old('email') ?>"
+       class="<?= ($errors ?? []) && isset($errors['email']) ? 'invalid' : '' ?>">
+
+<?php foreach ($errors['email'] ?? [] as $message): ?>
+    <span class="error"><?= e($message) ?></span>
+<?php endforeach; ?>
+```
+
+A variable is **absent** when nothing was flashed rather than present-and-empty,
+so `$errors ?? []` and `isset($errors['email'])` cover both states with one
+spelling.
+
+The flash is read **once per renderer** and cached. `RedirectResponse::readFlash()`
+consumes the transient — a message you could read twice would reappear on refresh
+— so a page rendering two partials that each want the errors would otherwise show
+them in only one, and work fine when tested with a single partial.
+
+### Composing without a template language
+
+There is no layout syntax, no inheritance, no `@extends`. A layout is an
+ordinary view and a child is rendered into a string:
+
+```php
+return $views->make('layout', [
+    'title'   => 'Leads',
+    'content' => $views->render('leads.index', ['leads' => $leads]),
+]);
+```
+
+Two things worth knowing:
+
+- **`make()` does not render.** It builds a `ViewResponse`; nothing is rendered
+  until `send()`. A controller's return value stays a value.
+- **`respond()` does**, returning an `HtmlResponse` — for when the markup is
+  needed before sending, and so a view that throws does so inside the action
+  rather than part-way through WordPress's output.
+
+### View names are not trusted
+
+A view name frequently comes from data — a settings screen storing "which
+template", an override table. A name containing `..` is **refused**, not
+normalized: normalizing would silently load *something*, and refusing names the
+mistake.
+
+One limitation is worth stating: a **directory whose name contains a dot is not
+addressable by name**, because the dot is already the separator. A `v1.2/`
+directory is reachable only as `v1.2/index.php` — spelled with the extension. The
+practical answer is not to put a dot in a view directory's name; the behaviour is
+pinned by a test so it is documented rather than rediscovered from a 404.
+
+### Configuration
+
+The root defaults to `<base>/views`. To move it:
+
+```php
+// config/app.php
+'views' => 'resources/views',   // relative to the plugin root, or absolute
+```
+
+## API resources
+
+A `JsonResource` maps domain data onto the shape an API client receives. Its job
+is not to convert an object to JSON — `json_encode()` does that. Its job is to
+decide what is *in* the response, and to make that decision something somebody
+wrote down in one place:
+
+```php
+namespace App\Http\Resources;
+
+use Framework\Support\JsonResource;
+
+final class LeadResource extends JsonResource
+{
+    protected function toArray(): array
+    {
+        return [
+            'id'         => $this->id,
+            'email'      => $this->email,
+            'created_at' => $this->created_at,
+        ];
+    }
+}
+```
+
+```php
+// a single record
+return $this->resources->make(LeadResource::make($lead));
+
+// many
+return $this->resources->make(LeadResource::collection($leads));
+```
+
+Returning the entity directly would have made every one of its fields part of
+the public contract. Adding a `password_hash` column, renaming `created` to
+`created_at`, introducing an internal `legacy_id` — each of those changes the
+response, and nothing warns you, because serializing an object has no opinion
+about what should be in it. With a resource, the db column that arrived
+yesterday is absent because nobody added a line for it.
+
+### Reading the wrapped data
+
+Inside `toArray()`, `$this->email` resolves in this order:
+
+1. a public property of the wrapped object;
+2. a getter — `email()`, then `getEmail()`, then `isEmail()`;
+3. a key on the wrapped array.
+
+Property syntax rather than `$this->data['email']` keeps a resource readable when
+the source changes shape: swapping an array for an entity edits the accessor
+paths, not every line.
+
+A field that resolves on none of the three **throws**. It does not become `null`.
+A silently-null `email` in a response reaches production and sits there
+unnoticed; an exception reaches the developer at the line that asked for it, and
+the message names the field:
+
+```
+Field [emial] does not exist on the data wrapped by App\Http\Resources\LeadResource.
+Use when() or whenLoaded() for a field that is genuinely optional — ...
+```
+
+That message is the whole feature. `emial` in a stack trace is a one-second fix.
+
+Use `has('field')` where a field's absence is expected rather than a mistake —
+mapping a union of two payload shapes, or a value that may be a scalar or an
+object. `has()` reports presence without throwing; it cannot distinguish "absent"
+from "present and null", so it is not a substitute for `when()` on a field the
+client should be told about conditionally.
+
+### Conditional fields — two different questions
+
+```php
+return [
+    'id'    => $this->id,
+    'phone' => $this->whenLoaded('phone'),                 // does the data have it?
+    'notes' => $this->when($this->includeNotes, $this->notes), // does the author want it?
+];
+```
+
+`whenLoaded()` tests the **data**: it emits the field when the wrapped subject
+exposes it. `when()` tests a **condition the author computed**. When the
+condition fails the key is omitted entirely — absent, not null — which is what
+lets a client tell "redacted" from "empty".
+
+Both can take a third argument to emit a value instead of omitting:
+
+```php
+'role' => $this->when($this->isAdmin, 'admin', 'member'),
+```
+
+**`when()` does not defer its value argument**, and this is the trap worth
+knowing. It is an ordinary function call, so PHP evaluates both arguments before
+it runs — `when($flag, $this->notes)` reads `$this->notes` whether or not the
+flag holds. On a row that has no `notes` key that read throws, which means the
+condition that was supposed to make the row safe is the thing that breaks it.
+
+A field that is both *optional* and *permissioned* nests the two:
+
+```php
+'notes' => $this->when($this->includeNotes, $this->whenLoaded('notes')),
+```
+
+`whenLoaded()` defers the read — it returns the marker when the key is absent, so
+the outer `when()` receives a value that never had to resolve.
+
+**One more trap**, because it is easy to write a test that looks like it covers
+this and does not. A declared property holding null is *present*:
+
+```php
+public readonly ?string $phone = null,   // property_exists() === true
+```
+
+So `whenLoaded('phone')` against that entity emits `"phone": null` — correctly,
+since the framework resolved a property that exists and found null. "The data
+does not carry this field" requires a subject on which the property is genuinely
+absent, which in PHP means a different class. The framework is reporting
+"there is no phone number", which a client needs to distinguish from "this
+response does not include phone".
+
+### Composition
+
+A resource nested in another resource is resolved for you:
+
+```php
+'company' => CompanyResource::make($this->company),
+```
+
+Anything `JsonSerializable` is resolved during pruning, so `json_encode()` on a
+resource produces the mapped object whether it is returned from a route or
+nested three levels deep.
+
+`with()` adds a key from outside the resource, for what the resource has no
+business knowing — a request id, a debug flag, a `meta` block:
+
+```php
+LeadResource::make($lead)->with('request_id', $requestId);
+```
+
+Added keys are merged **after** the mapped fields and win over a field of the
+same name, because an explicit addition is the more deliberate of the two
+statements.
+
+### Sparse fieldsets
+
+```php
+LeadResource::make($lead)->only(['email', 'created_at']);
+```
+
+`only()` is a **filter over the fields the resource already decided to emit**, per
+the JSON:API sparse-fieldset convention. It is not a permission mechanism, and
+that distinction is the one thing to get right:
+
+- A client asking for `?fields=password_hash` is asking for a field the resource
+  never mapped. The answer is "you cannot have it", not "here it is" — filtering
+  happens *after* `toArray()`, so a field is only ever narrowed, never reached.
+- `id` is always kept. A list of objects without identifiers is not usable.
+
+`requestedFields()` exposes the request for an outer layer — a controller parsing
+`?fields=` passes the list down and does not need to know how filtering works.
+
+### Collections
+
+`collection()` returns a `JsonResourceCollection` — a different type, not a mode
+of `JsonResource`, because the two answer different questions and a collection
+needs operations that are meaningless on one record.
+
+The output carries an envelope:
+
+```json
+{"data": [{"id": 1, ...}, {"id": 2, ...}]}
+```
+
+More bytes than a bare array, and the reason is room to grow. Pagination, a
+cursor, a `meta` block, a set of included relations all belong *next to* the
+list, and a bare array has nowhere to put them; turning an array into an object
+later is a breaking change for every client. Starting as an object is free.
+
+```php
+$leads = LeadResource::collection($rows);
+
+$leads->count();                  // how many items
+$leads->isEmpty();               // often a 404 or a different response, not an empty list
+$leads->keyById();               // re-map keyed by id, for a select box or a diffing client
+$leads->toList();                // the items without the envelope, for embedding
+$leads->only(['email']);         // applies to every item
+$leads->with('meta', $meta);     // a key alongside data
+```
+
+`keyById()` **skips** items with no id rather than keying them by an empty
+string, which would silently collapse several of them into one entry.
+
+Keys from an associative input — a `wpdb` result keyed by post id — are dropped.
+Not tidiness: `json_encode()` of an array with non-sequential integer keys
+produces a JSON **object**, so a client's `for` loop over `data` fails against a
+payload that looks correct in a browser. The keys are recoverable through
+`keyById()` when a caller genuinely wants them.
+
+Pagination is deliberately not built in. There is no paginator in this
+framework, and inventing an envelope shape for one nobody has written would be a
+guess clients then depend on. `with('meta', [...])` is the seam for when a
+project adds it.
+
+### A capability that a client cannot ask for
+
+`only()` narrows; it does not grant. A field gated behind a server-side decision
+is expressed *inside* the mapping, so a client naming it does not bring it into
+existence:
+
+```php
+// App\Http\Resources\LeadResource
+public bool $includeNotes = false;
+
+'notes' => $this->when($this->includeNotes, $this->whenLoaded('notes')),
+```
+
+Note the nested `whenLoaded()`. `when()` is an ordinary function call, so PHP
+evaluates **both** arguments before it runs — `when($flag, $this->notes)` reads
+`$this->notes` whether or not the flag holds, and on a row that has no `notes`
+key that read throws. The condition that was supposed to make the row safe is
+what breaks it.
+
+For a **single** resource the controller sets the flag:
+
+```php
+$resource = LeadResource::make($lead);
+$resource->includeNotes = $this->maySeeNotes();
+```
+
+A **collection** cannot be handled that way, and the reason is worth knowing. A
+`JsonResourceCollection` wraps its items lazily, so this does nothing at all:
+
+```php
+// WRONG — items() yields the raw rows, not resources
+foreach ($collection->items() as $item) {
+    $item->includeNotes = true;   // never runs: $item is an array
+}
+```
+
+The flag is set on nothing, `notes` is silently missing for every caller, and a
+test that only asserts the *absent* case passes. The collection case uses a
+class-level default set once per request, before the collection is built:
+
+```php
+LeadResource::grantNotes($this->maySeeNotes());
+
+return new JsonResponse(LeadResource::collection($this->leads()));
+```
+
+A static invites a value outliving its request, so the failure direction matters:
+request A is entitled, the value sticks, and request B is served A's grant. The
+test for it goes granted-then-revoked in that order, because the reverse order
+passes against a static that is never reset.
+
+### Protecting the route
+
+A REST route in WordPress is **public by default**, so a resource layer that
+publishes contact data needs an explicit check. This is the route's job, not the
+resource's — the resource is a plain mapping object a test can exercise without
+the CMS loaded:
+
+```php
+// routes/api.php
+$router->get('leads', LeadController::class, 'index')
+    ->middleware(RequireLeadRead::class);
+```
+
+```php
+// app/Http/Middleware/RequireLeadRead.php
+final class RequireLeadRead extends RequireCapability
+{
+    public function __construct()
+    {
+        parent::__construct('list_users');
+    }
+}
+```
+
+**The middleware is named as a class**, and the capability lives in that class's
+constructor. There is no `Middleware::class . ':capability'` parameter syntax —
+middleware is resolved by class name only, so that spelling registers a route
+whose middleware cannot be resolved. The failure is quiet in the worst way: the
+resolution throws, the adapter converts the throw into a denial, and the endpoint
+403s for *every* caller including administrators. It reads as a broken capability
+check rather than a typo in the route file.
 
 ## Console
 

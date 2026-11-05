@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Framework\Database\Commands;
 
+use Framework\Config\Config;
 use Framework\Console\Command;
 use Framework\Database\Exceptions\MigrationException;
 use Framework\Database\Migrator;
@@ -21,7 +22,7 @@ class MigrateRollbackCommand extends Command
 
     public function getName(): string
     {
-        return config('app.cli_prefix', 'wp_mini') . ' migrate:rollback';
+        return config('app.cli_prefix', Config::DEFAULT_CLI_PREFIX) . ' migrate:rollback';
     }
 
     public function getDescription(): string

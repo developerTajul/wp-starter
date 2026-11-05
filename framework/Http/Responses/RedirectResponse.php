@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Framework\Http\Responses;
 
+use Framework\Config\Config;
 use Framework\Http\Contracts\ResponseInterface;
 use Framework\Http\Exceptions\HttpException;
 use Framework\Http\Request;
@@ -55,6 +56,30 @@ final class RedirectResponse implements ResponseInterface
      * round trip or a slow page load.
      */
     public const FLASH_TTL = 300;
+
+    /**
+     * The option prefix used when configuration has not loaded, or has no value.
+     *
+     * ## Why this is public, and why it is not just a default argument
+     *
+     * The flash transient key is `{prefix}flash_{scope}`, and the prefix comes
+     * from `config('app.prefix')`. When the config layer is absent — PHPUnit, a
+     * WP-CLI command, any code running before the entry file boots — that call
+     * returns null and this fallback is what the key is actually built from.
+     *
+     * That made the fallback load-bearing rather than decorative, and it had to
+     * be published. A test double that reconstructs the key is a second
+     * implementation of this convention, and the two agree only as long as they
+     * name the same literal. They did — but only because both spelled out the
+     * library's own name by hand, so neither moved when the project's prefix
+     * did. The suite passed while storing under one key and reading from
+     * another, because the project's real prefix is not this one.
+     *
+     * Exposing it gives the double something to read instead of something to
+     * copy: {@see \Tests\Support\FlashStore} now derives the key the same way
+     * this class does, and a change to the fallback reaches both.
+     */
+    public const DEFAULT_PREFIX = Config::DEFAULT_PREFIX;
 
     /**
      * The status codes `wp_redirect()` accepts. Anything else is a hard stop.
@@ -223,6 +248,33 @@ final class RedirectResponse implements ResponseInterface
     }
 
     /**
+     * The option prefix the flash key is built from.
+     *
+     * Public so that anything reconstructing a flash key — a test double, a
+     * debugging tool, an admin screen listing pending messages — derives it the
+     * same way rather than re-implementing the rule. Two implementations of a
+     * key convention are two things that can disagree, and the disagreement is
+     * invisible: the message is written under one key, read from another, and
+     * the symptom is a missing notice rather than an error.
+     *
+     * A `config()` that returns null is treated as absent, not as an empty
+     * string. `config('app.prefix', $default)` only returns the default when the
+     * key is missing entirely; a key present and set to `''` — which is what an
+     * unloaded config layer leaves behind — falls through as an empty string and
+     * would build the key `flash_7`, shared by every site using this library.
+     */
+    public static function resolvePrefix(): string
+    {
+        if (!function_exists('config')) {
+            return self::DEFAULT_PREFIX;
+        }
+
+        $prefix = config('app.prefix', self::DEFAULT_PREFIX);
+
+        return is_string($prefix) && $prefix !== '' ? $prefix : self::DEFAULT_PREFIX;
+    }
+
+    /**
      * The transient key this request reads and writes.
      *
      * Derived per client, because a transient is site-global: a shared key would
@@ -240,7 +292,7 @@ final class RedirectResponse implements ResponseInterface
      */
     private static function flashKey(bool $create, bool $secure = false): ?string
     {
-        $prefix = function_exists('config') ? (string) config('app.prefix', 'wp_mini_laravel_') : 'wp_mini_laravel_';
+        $prefix = self::resolvePrefix();
 
         if (function_exists('get_current_user_id')) {
             $userId = (int) get_current_user_id();

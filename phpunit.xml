@@ -17,6 +17,14 @@
         <testsuite name="Unit">
             <directory>tests/Unit</directory>
         </testsuite>
+        <!--
+            Adapters that really issue SQL / really touch WordPress, exercised
+            against the in-memory doubles in tests/Support. Split from Unit so a
+            run can exclude them, and so "unit" keeps meaning "no infrastructure".
+        -->
+        <testsuite name="Integration">
+            <directory>tests/Integration</directory>
+        </testsuite>
     </testsuites>
 
     <source>

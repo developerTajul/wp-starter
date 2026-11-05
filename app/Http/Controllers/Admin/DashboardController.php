@@ -3,6 +3,9 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Admin;
 
+use Framework\Http\Contracts\ResponseInterface;
+use Framework\Support\ViewRenderer;
+
 /**
  * The plugin's admin screen.
  *
@@ -22,9 +25,12 @@ namespace App\Http\Controllers\Admin;
  * array is a REST idiom and is refused with a message naming the route, because
  * the alternative is the literal text "Array" on the page.
  *
- * Nothing here calls a WordPress function. The screen renders from data the
- * framework handed it, which is what keeps the controller testable without the
- * CMS loaded.
+ * ## Why the renderer is injected rather than called as a helper
+ *
+ * `view()` is available and returns the same thing, but a type-hint makes the
+ * dependency visible in the signature and lets a test hand in a renderer pointed
+ * at fixture views without touching the application's own. The helper is the
+ * convenience; the injection is the seam.
  *
  * ## Why this does not extend Framework\Routing\Controller
  *
@@ -37,22 +43,49 @@ namespace App\Http\Controllers\Admin;
  */
 final class DashboardController
 {
-    /**
-     * Render the dashboard screen.
-     *
-     * Returning a string rather than a rendered view for now: this project has no
-     * view layer yet, and a screen that proves the whole path — route, admin_menu
-     * registration, container resolution, dispatch, response — is more useful
-     * than one that only proves the view renderer works.
-     */
-    public function index(): string
+    public function __construct(private readonly ViewRenderer $views)
     {
-        return '<div class="wrap">'
-            . '<h1>WP Mini Laravel</h1>'
-            . '<p>Routing is wired up. This screen was registered by '
-            . '<code>Framework\\Routing\\Adapters\\WordPressRouterAdapter</code> on '
-            . '<code>admin_menu</code>, and dispatched through the HTTP pipeline.</p>'
-            . '<p>Run <code>wp wp_mini route:list</code> to see every registered route.</p>'
-            . '</div>';
+    }
+
+    /**
+     * Render the dashboard screen as a response.
+     *
+     * Returns the `ViewResponse` rather than a string, so the status and headers
+     * are the view layer's to decide rather than the dispatcher's. The body is
+     * handed to the layout as `$content`, which is how composition works without
+     * a template language — render the child to a string, pass it inward.
+     *
+     * Nothing here calls a WordPress function. The screen renders from data the
+     * framework handed it, which is what keeps the controller testable without
+     * the CMS loaded.
+     */
+    public function index(): ResponseInterface
+    {
+        return $this->views->make('layout', [
+            'title' => 'WP Mini Laravel',
+            'content' => $this->views->render('dashboard', [
+                'routesCommand' => 'wp wp_mini route:list',
+                'providers' => $this->providers(),
+            ]),
+        ]);
+    }
+
+    /**
+     * The providers the router is currently configured with.
+     *
+     * Read from config rather than listed here, so the screen reports what the
+     * application actually booted instead of what someone remembered to update —
+     * a distinction that matters the moment a provider is commented out to debug
+     * something and the screen keeps claiming it is registered.
+     *
+     * @return list<string>
+     */
+    private function providers(): array
+    {
+        $providers = config('app.providers', []);
+
+        return is_array($providers)
+            ? array_values(array_map('strval', $providers))
+            : [];
     }
 }

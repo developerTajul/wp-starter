@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Database;
 
+use Framework\Config\Config;
 use Framework\Database\Commands\MigrateCommand;
 use Framework\Database\Commands\MigrateRollbackCommand;
 use Framework\Database\Commands\MigrateStatusCommand;
@@ -224,7 +225,7 @@ final class MigrationCommandsTest extends TestCase
 
     public function test_command_names_are_prefixed(): void
     {
-        $prefix = config('app.cli_prefix', 'wp_mini');
+        $prefix = config('app.cli_prefix', Config::DEFAULT_CLI_PREFIX);
 
         $this->assertSame("{$prefix} migrate", $this->migrateCommand()->getName());
         $this->assertSame("{$prefix} migrate:rollback", $this->rollbackCommand()->getName());

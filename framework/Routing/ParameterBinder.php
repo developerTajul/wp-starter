@@ -4,7 +4,9 @@ declare(strict_types=1);
 namespace Framework\Routing;
 
 use DevLinkStudios\WPServiceContainer\Container;
+use Framework\Http\Contracts\ResponseInterface;
 use Framework\Http\Request;
+use Framework\Http\Requests\FormRequest;
 use Framework\Routing\Exceptions\RouteRegistrationException;
 use Framework\Routing\Exceptions\RouteResolutionException;
 use ReflectionMethod;
@@ -51,9 +53,69 @@ use Throwable;
  * each adapter resolves through the same container but reports a failure in its
  * own response shape. It does not choose an action. It returns the action's
  * value untouched, so each domain renders it as it must.
+ *
+ * ## A `FormRequest` parameter short-circuits the call
+ *
+ * A parameter typed as a {@see FormRequest} subclass is built around the request
+ * and validated *before* the action runs. When validation fails the action is
+ * never entered, and the form request's own failure response — a redirect for a
+ * browser, a `422` for a JSON client — is returned in place of the action's
+ * value.
+ *
+ * This is the one place a controller's contract can be enforced without the
+ * author's cooperation, and it is deliberately here rather than in a middleware
+ * or the controller: the type-hint is the declaration, and the binder is the only
+ * code that reads it before the call.
+ *
+ * The returned response is a {@see ResponseInterface}. Every domain can render
+ * one — the web adapter sends it as-is — and a domain that cannot translate it
+ * yet reports that rather than swallowing it, so a half-wired surface is loud.
+ *
+ * A failure short-circuits the *call*, not the *binding*. Every parameter is
+ * still bound — and a parameter no request value can satisfy still raises — so
+ * the two defects stay distinguishable: a rejected form is something the user
+ * can fix, and an unbindable parameter is something only the route author can.
+ * Binding the rest also keeps the result independent of where in the signature
+ * the form request sits.
  */
 final class ParameterBinder
 {
+    /**
+     * The response a failing `FormRequest` produced, if any.
+     *
+     * Held rather than thrown because the framework has no global exception
+     * handler to catch a `ValidationException` from — see {@see FormRequest} for
+     * the full reasoning. The value travels back through `call()`'s return, which
+     * is the same channel an action's response uses, so every caller already
+     * handles it.
+     *
+     * Widened past {@see ResponseInterface} because a REST route's failure is a
+     * `WP_Error` — the only shape WordPress's REST server renders. The binder
+     * does not care which it is; it hands the value back untouched, exactly as it
+     * does with an action's own return value.
+     *
+     * ## Why it is scoped to one dispatch and not merely cleared
+     *
+     * This is mutable state on a collaborator that outlives the request: one
+     * binder is held by a resolver, and the resolver by an adapter, for the
+     * lifetime of the process. Any path that *arms* this and then leaves without
+     * consuming it — a handler that throws, an adapter that discards the
+     * arguments, a future entry point that calls {@see arguments()} directly —
+     * leaves a failure response pointing at the request that is already over. The
+     * next dispatch on the same worker would then return that stale redirect (or
+     * `WP_Error`) instead of running its action, which reads as an intermittent
+     * authorization bug under a persistent process and never reproduces locally.
+     *
+     * Clearing it in the two places that consume it is not enough, because
+     * "the places that consume it" is exactly the set that grows. So the state is
+     * never allowed to outlive a dispatch: {@see armed()} resets it on entry and
+     * {@see disarm()} resets it in a `finally`, and neither the arming site nor
+     * the consuming site has to remember anything.
+     *
+     * @var ResponseInterface|\WP_Error|null
+     */
+    private ResponseInterface|\WP_Error|null $shortCircuit = null;
+
     public function __construct(private readonly Container $container)
     {
     }
@@ -61,10 +123,14 @@ final class ParameterBinder
     /**
      * Call one action on an already-resolved controller.
      *
+     * Returns the action's value, or — when a `FormRequest` parameter it declared
+     * failed validation — that request's failure response, with the action never
+     * invoked.
+     *
      * @param class-string $requestClass The type a parameter must declare to
      *                                   receive the request object itself.
      *
-     * @return mixed The action's return value.
+     * @return mixed The action's return value, or a failure response.
      *
      * @throws RouteRegistrationException When the action is missing or not public.
      * @throws RouteResolutionException   When a request value cannot satisfy a
@@ -77,9 +143,29 @@ final class ParameterBinder
         ParameterSource $source,
         string $requestClass
     ): mixed {
-        $arguments = $this->arguments($controller, $action, $request, $source, $requestClass);
+        // Scoped to this one dispatch — see $shortCircuit. The reset on entry is
+        // what makes a leak *impossible* rather than merely unlikely: even if
+        // some future path left the property armed, the next dispatch clears it
+        // before it can be read.
+        $this->shortCircuit = null;
 
-        return $this->container->call([$controller, $action], $arguments);
+        try {
+            $arguments = $this->arguments($controller, $action, $request, $source, $requestClass);
+
+            // Validation refused the request. The action is not called at all —
+            // that is the whole contract of a FormRequest, and calling through
+            // anyway to let the controller "decide" is how a half-validated
+            // record gets saved.
+            if ($this->shortCircuit !== null) {
+                return $this->shortCircuit;
+            }
+
+            return $this->container->call([$controller, $action], $arguments);
+        } finally {
+            // Unconditional, including on a throw: this is the half of the fix
+            // that covers the paths nobody has written yet.
+            $this->shortCircuit = null;
+        }
     }
 
     /**
@@ -98,17 +184,28 @@ final class ParameterBinder
         ParameterSource $source,
         string $requestClass
     ): mixed {
-        $reflection = new \ReflectionFunction(\Closure::fromCallable($handler));
-        $arguments = $this->bindParameters(
-            $reflection->getParameters(),
-            $request,
-            $source,
-            $requestClass,
-            $reflection->getName(),
-            'closure'
-        );
+        // Scoped to this one dispatch, exactly as call() does — see $shortCircuit.
+        $this->shortCircuit = null;
 
-        return $this->container->call($handler, $arguments);
+        try {
+            $reflection = new \ReflectionFunction(\Closure::fromCallable($handler));
+            $arguments = $this->bindParameters(
+                $reflection->getParameters(),
+                $request,
+                $source,
+                $requestClass,
+                $reflection->getName(),
+                'closure'
+            );
+
+            if ($this->shortCircuit !== null) {
+                return $this->shortCircuit;
+            }
+
+            return $this->container->call($handler, $arguments);
+        } finally {
+            $this->shortCircuit = null;
+        }
     }
 
     /**
@@ -191,6 +288,36 @@ final class ParameterBinder
                 continue;
             }
 
+            // A FormRequest type-hint is built around the request and validated
+            // here, before anything else reads a parameter. Checked ahead of the
+            // value lookup because a FormRequest is not a *source* of values —
+            // it is a gate in front of the action.
+            if ($this->isFormRequest($type)) {
+                /** @var class-string $formClass */
+                $formClass = $type->getName();
+                $form = $this->bindFormRequest($formClass, $request);
+
+                if ($form === null) {
+                    // Validation failed and its response has been recorded. The
+                    // action will not be called, but the loop keeps going rather
+                    // than returning here, and the reason is the same one that
+                    // makes every parameter get bound in the success case: a
+                    // parameter whose type no request value can satisfy is a
+                    // *route* defect, and it must be reported as one whether or
+                    // not the form happened to pass.
+                    //
+                    // Returning early hid that defect behind the validation
+                    // failure — fix the form, and the `TypeError` appears — and it
+                    // made binding depend on parameter order, because a parameter
+                    // declared *before* the form was bound and then discarded.
+                    continue;
+                }
+
+                $arguments[$name] = $form;
+
+                continue;
+            }
+
             $value = array_key_exists($name, $routeParameters)
                 ? $routeParameters[$name]
                 : $source->value($name);
@@ -215,11 +342,109 @@ final class ParameterBinder
     }
 
     /**
+     * Whether a declared type is a FormRequest subclass.
+     *
+     * `is_subclass_of` rather than `is_a`, because the type is a *name* here and
+     * `is_a` with a string is happy to match the abstract base itself — a
+     * parameter typed as `FormRequest` directly could never be built (it is
+     * abstract, and has no `rules()`), so it is left to fail where it is
+     * resolved, with the container's own message about an abstract class.
+     *
+     * `class_exists` guards the reflection: a type name that no autoloader can
+     * resolve is left alone rather than reported, because the container's
+     * failure names the missing class, which is the more useful message.
+     */
+    private function isFormRequest(?ReflectionType $type): bool
+    {
+        if (!$type instanceof ReflectionNamedType || $type->isBuiltin()) {
+            return false;
+        }
+
+        $name = $type->getName();
+
+        return class_exists($name) && is_subclass_of($name, FormRequest::class);
+    }
+
+    /**
+     * Build and validate a FormRequest, recording its failure response.
+     *
+     * Returns null when validation failed — the failure response has been
+     * recorded on {@see $shortCircuit}, the action will not be called, and this
+     * parameter is left out of the argument list. The caller keeps binding the
+     * remaining parameters. Returns the validated request otherwise.
+     *
+     * The request handed to the form request is the domain's own request object,
+     * which is why this takes `mixed`: a REST dispatch passes the framework
+     * `Request` built by {@see \Framework\Http\Request::fromRestRequest()}, and a
+     * web dispatch passes the captured one. Both are `Framework\Http\Request`,
+     * which is what {@see FormRequest::fromRequest()} declares — and the `mixed`
+     * here is the same seam `call()` already has for that reason.
+     *
+     * @param class-string $class
+     */
+    private function bindFormRequest(string $class, mixed $request): ?FormRequest
+    {
+        // A REST dispatch hands the binder a `WP_REST_Request`, because that is
+        // what a REST controller action's own parameters read — but a
+        // `FormRequest` validates a framework `Request`, which is the only object
+        // that merges the sources and decodes a JSON body. Translating here rather
+        // than in the adapter keeps the rule in one place: a form request works on
+        // either domain because the binder normalizes what it is given.
+        if (!$request instanceof Request) {
+            $request = $this->toHttpRequest($request);
+        }
+
+        if (!$request instanceof Request) {
+            // A hand-wired caller passing something neither shape. Refusing is
+            // better than validating an empty payload and reporting every field as
+            // missing, which reads as "the form rejects everything".
+            throw new RouteResolutionException(sprintf(
+                'A FormRequest-typed parameter needs a %s or a WP_REST_Request to validate '
+                . 'against, but the dispatch supplied [%s].',
+                Request::class,
+                get_debug_type($request)
+            ));
+        }
+
+        /** @var FormRequest $form */
+        $form = $class::fromRequest($request);
+        $form->validate();
+
+        if ($form->fails()) {
+            $this->shortCircuit = $form->failureResponse();
+
+            return null;
+        }
+
+        return $form;
+    }
+
+    /**
+     * Build a framework Request from a REST request, when one was supplied.
+     *
+     * Duck-typed on `fromRestRequest()` rather than type-hinted against
+     * `WP_REST_Request`, for the same reason {@see Request::fromRestRequest()}
+     * is: the framework has to load and be testable without WordPress, and a
+     * hard reference to a WordPress class in a signature would make this file
+     * unloadable outside a WordPress install.
+     *
+     * Returns null when the value is neither shape, so the caller reports it.
+     */
+    private function toHttpRequest(mixed $request): ?Request
+    {
+        if (!is_object($request) || !method_exists($request, 'get_params')) {
+            return null;
+        }
+
+        return Request::fromRestRequest($request);
+    }
+
+    /**
      * Convert a request value into the shape the declared type actually expects.
      *
      * Only `bool` needs this, and it needs it badly. A request body of
      * `{"published": "false"}` reaches a `bool $published` parameter as the
-     * non-empty string "false", and PHP coerces a non-empty string to `true` —
+     * non-empty string `"false"`, and PHP coerces a non-empty string to `true` —
      * so the controller publishes the record. `"0"` happens to coerce correctly,
      * which is what makes this treacherous: only some of the false-y spellings
      * invert.

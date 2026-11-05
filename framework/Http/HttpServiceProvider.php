@@ -7,12 +7,14 @@ use DevLinkStudios\WPServiceContainer\Container;
 use DevLinkStudios\WPServiceContainer\Contracts\ContainerInterface;
 use DevLinkStudios\WPServiceContainer\ServiceProvider;
 use Framework\Http\Middleware\Pipeline;
+use Framework\Support\ViewRenderer;
 
 /**
  * Binds the HTTP layer into the container.
  *
  * Register `Framework\Http\HttpServiceProvider::class` in `config('app.providers')`
- * to have {@see Request} and {@see Pipeline} resolvable by type-hint.
+ * to have {@see Request}, {@see Pipeline} and {@see ViewRenderer} resolvable by
+ * type-hint.
  *
  * ## Why the request is a singleton, and what that costs
  *
@@ -58,6 +60,20 @@ class HttpServiceProvider extends ServiceProvider
                 // the cast is a statement of that fact rather than a guess.
                 $container instanceof Container ? $container : app()
             )
+        );
+
+        // Shared, because a renderer carries state that must survive between
+        // renders: the shared variable bag a project fills in `boot()`, the view
+        // root (resolved from config and cached), and the flash payload — which
+        // is *consumed* from the transient on first read. A per-use renderer
+        // would mean a project's `share()` calls vanished, and a page rendering
+        // two partials read the flash twice: the second read empty, because the
+        // first destroyed the transient.
+        //
+        // Cheap to hold for the process: no views are opened at construction.
+        $this->container->singleton(
+            ViewRenderer::class,
+            static fn (ContainerInterface $container): ViewRenderer => new ViewRenderer()
         );
     }
 }

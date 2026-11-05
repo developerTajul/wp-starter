@@ -13,6 +13,12 @@ return [
     // override this with their own (e.g. 'LeadBridge').
     'namespace' => 'App',
 
+    // Where view names resolve from, relative to the plugin root or absolute.
+    // A relative path is the normal case: an absolute one in a config file is a
+    // path that is wrong on every other machine, and the repo is what gets
+    // shared. Resolution is dotted — 'leads.index' -> views/leads/index.php.
+    'views' => 'views',
+
     // Namespace for WP-CLI commands, so two projects bundling this framework
     // do not register commands under the same name.
     'cli_prefix' => 'wp_mini',
@@ -25,6 +31,13 @@ return [
 
     'providers' => [
         \App\Providers\AppServiceProvider::class,
+
+        // Binds Core\Note\Domain\NoteRepositoryContract to its $wpdb-backed
+        // adapter, which is what lets the container build NoteService. Listed
+        // before the routing providers so a route that resolves the service
+        // during boot finds the binding already in place.
+        \App\Providers\RepositoryServiceProvider::class,
+
         \App\Providers\RouteServiceProvider::class,
         \Framework\Database\MigrationServiceProvider::class,
 

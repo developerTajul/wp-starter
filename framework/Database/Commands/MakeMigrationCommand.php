@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Framework\Database\Commands;
 
+use Framework\Config\Config;
 use Framework\Console\GeneratorCommand;
 use Framework\Database\MigrationFile;
 use RuntimeException;
@@ -35,7 +36,7 @@ class MakeMigrationCommand extends GeneratorCommand
 
     public function getName(): string
     {
-        return config('app.cli_prefix', 'wp_mini') . ' make:migration';
+        return config('app.cli_prefix', Config::DEFAULT_CLI_PREFIX) . ' make:migration';
     }
 
     public function getDescription(): string
@@ -55,7 +56,7 @@ class MakeMigrationCommand extends GeneratorCommand
      */
     protected function getNamespace(): string
     {
-        return (string) config('app.namespace', 'App') . '\\Database\\Migrations';
+        return (string) config('app.namespace', Config::DEFAULT_NAMESPACE) . '\\Database\\Migrations';
     }
 
     protected function getStubPath(): string
@@ -108,13 +109,13 @@ class MakeMigrationCommand extends GeneratorCommand
             '{{ table }}' => $this->guessTable(),
             // The stub's docblock names the command that produced it, which is
             // the CLI prefix as configured rather than this framework's default.
-            '{{ cli_prefix }}' => (string) config('app.cli_prefix', 'wp_mini'),
+            '{{ cli_prefix }}' => (string) config('app.cli_prefix', Config::DEFAULT_CLI_PREFIX),
         ];
     }
 
     protected function getPostWriteHint(): ?string
     {
-        return 'Implement up() and down(), then run: wp ' . config('app.cli_prefix', 'wp_mini') . ' migrate';
+        return 'Implement up() and down(), then run: wp ' . config('app.cli_prefix', Config::DEFAULT_CLI_PREFIX) . ' migrate';
     }
 
     /**

@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Framework\Console\Commands;
 
+use Framework\Config\Config;
 use Framework\Console\GeneratorCommand;
 
 class MakeProviderCommand extends GeneratorCommand
@@ -11,7 +12,7 @@ class MakeProviderCommand extends GeneratorCommand
     {
         // Read dynamically so a consuming project can rename the CLI namespace
         // without touching framework code.
-        return config('app.cli_prefix', 'wp_mini') . ' make:provider';
+        return config('app.cli_prefix', Config::DEFAULT_CLI_PREFIX) . ' make:provider';
     }
 
     public function getDescription(): string
@@ -28,7 +29,7 @@ class MakeProviderCommand extends GeneratorCommand
     {
         // Providers live in a namespace of their own, so this never returns
         // bare config('app.namespace') the way the base class does.
-        return config('app.namespace', 'App') . '\\Providers';
+        return config('app.namespace', Config::DEFAULT_NAMESPACE) . '\\Providers';
     }
 
     protected function getStubPath(): string

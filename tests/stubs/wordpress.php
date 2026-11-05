@@ -42,9 +42,26 @@ if (!function_exists('add_filter')) {
 }
 
 if (!function_exists('current_user_can')) {
+    /**
+     * Answers per capability, not blanket.
+     *
+     * A stub that returned the same answer whatever it was asked is how two
+     * guards asking for *different* capabilities stayed green while disagreeing:
+     * `list_users` and `edit_others_posts` were both "yes", so the middleware
+     * admitted a caller the controller then silently showed nothing to. Nothing
+     * in the suite could see it, because the suite never let the two answers
+     * differ.
+     *
+     * So the stub records what it was asked and consults a per-capability map
+     * first. `$currentUserCan` stays as the fallback for the many tests that do
+     * not care which capability is checked — a test that *does* care sets
+     * {@see WpStub::$capabilities} and gets a real distinction.
+     */
     function current_user_can(string $capability): bool
     {
-        return WpStub::$currentUserCan;
+        WpStub::$capabilitiesAsked[] = $capability;
+
+        return WpStub::$capabilities[$capability] ?? WpStub::$currentUserCan;
     }
 }
 

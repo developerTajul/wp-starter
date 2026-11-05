@@ -230,21 +230,42 @@ final class ResponseTest extends TestCase
         $this->assertSame([false], $recorded['cookieSecure']);
     }
 
+    /**
+     * The transient key a flash payload lands under, built the way the class
+     * builds it.
+     *
+     * The prefix has to come from `RedirectResponse::resolvePrefix()` rather than
+     * from `config()`. Under PHPUnit the config layer is empty — it is loaded by
+     * the entry file, which a unit test does not run — so the prefix the class
+     * actually uses is its *fallback*, and a test that asks config gets nothing
+     * and has to invent a fallback of its own.
+     *
+     * Spelling that fallback out here is what made these tests pass on the
+     * unbranded project and fail on every rebranded one: the literal agreed with
+     * the class only because both had written down the library's own name. They
+     * stored under one key and the class read from another.
+     */
+    private function flashKey(string $scope): string
+    {
+        return RedirectResponse::resolvePrefix() . 'flash_' . $scope;
+    }
+
     public function test_read_flash_returns_and_consumes_the_stored_values(): void
-    {        WpStub::$currentUserId = 7;
-        WpStub::$transients['wp_mini_laravel_flash_7'] = ['success' => 'Saved'];
+    {
+        WpStub::$currentUserId = 7;
+        WpStub::$transients[$this->flashKey('7')] = ['success' => 'Saved'];
 
         $this->assertSame(['success' => 'Saved'], RedirectResponse::readFlash());
 
         // Consumed: a second read must find nothing, or the message would
         // reappear on every refresh.
         $this->assertSame([], RedirectResponse::readFlash());
-        $this->assertArrayNotHasKey('wp_mini_laravel_flash_7', WpStub::$transients);
+        $this->assertArrayNotHasKey($this->flashKey('7'), WpStub::$transients);
     }
 
     public function test_read_flash_is_empty_for_an_anonymous_client_with_no_cookie(): void
     {
-        WpStub::$transients['wp_mini_laravel_flash_' . str_repeat('a', 32)] = ['success' => 'x'];
+        WpStub::$transients[$this->flashKey(str_repeat('a', 32))] = ['success' => 'x'];
 
         $this->assertSame([], RedirectResponse::readFlash());
     }

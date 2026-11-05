@@ -3,13 +3,14 @@ declare(strict_types=1);
 
 namespace Framework\Console\Commands;
 
+use Framework\Config\Config;
 use Framework\Console\GeneratorCommand;
 
 class MakeControllerCommand extends GeneratorCommand
 {
     public function getName(): string
     {
-        return config('app.cli_prefix', 'wp_mini') . ' make:controller';
+        return config('app.cli_prefix', Config::DEFAULT_CLI_PREFIX) . ' make:controller';
     }
 
     public function getDescription(): string
@@ -24,7 +25,7 @@ class MakeControllerCommand extends GeneratorCommand
 
     protected function getNamespace(): string
     {
-        return config('app.namespace', 'App') . '\\Http\\Controllers';
+        return config('app.namespace', Config::DEFAULT_NAMESPACE) . '\\Http\\Controllers';
     }
 
     protected function getStubPath(): string

@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Console;
 
+use Framework\Config\Config;
 use DevLinkStudios\WPServiceContainer\Container;
 use Framework\Console\Commands\MakeControllerCommand;
 use Framework\Console\Commands\MakeProviderCommand;
@@ -45,7 +46,7 @@ final class ConsoleWiringTest extends TestCase
      */
     public function test_command_names_are_prefixed(): void
     {
-        $prefix = config('app.cli_prefix', 'wp_mini');
+        $prefix = config('app.cli_prefix', Config::DEFAULT_CLI_PREFIX);
 
         $this->assertSame("{$prefix} make:provider", (new MakeProviderCommand())->getName());
         $this->assertSame("{$prefix} make:controller", (new MakeControllerCommand())->getName());

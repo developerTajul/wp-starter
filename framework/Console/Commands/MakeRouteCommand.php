@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Framework\Console\Commands;
 
+use Framework\Config\Config;
 use Framework\Console\GeneratorCommand;
 
 /**
@@ -19,7 +20,7 @@ class MakeRouteCommand extends GeneratorCommand
 
     public function getName(): string
     {
-        return config('app.cli_prefix', 'wp_mini') . ' make:route';
+        return config('app.cli_prefix', Config::DEFAULT_CLI_PREFIX) . ' make:route';
     }
 
     public function getDescription(): string
@@ -59,7 +60,7 @@ class MakeRouteCommand extends GeneratorCommand
 
     protected function getNamespace(): string
     {
-        return (string) config('app.namespace', 'App');
+        return (string) config('app.namespace', Config::DEFAULT_NAMESPACE);
     }
 
     protected function getPostWriteHint(): ?string

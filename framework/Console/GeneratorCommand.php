@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Framework\Console;
 
+use Framework\Config\Config;
 use RuntimeException;
 
 /**
@@ -76,7 +77,7 @@ abstract class GeneratorCommand extends Command
      */
     protected function getNamespace(): string
     {
-        return (string) config('app.namespace', 'App');
+        return (string) config('app.namespace', Config::DEFAULT_NAMESPACE);
     }
 
     public function handle(array $args, array $assocArgs): void

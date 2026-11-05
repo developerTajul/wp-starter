@@ -34,9 +34,33 @@ final class WpStub
     public static array $registeredRoutes = [];
 
     /**
-     * The response of the next current_user_can() call, or the default.
+     * The blanket answer of current_user_can(), for capabilities not listed in
+     * {@see $capabilities}.
      */
     public static bool $currentUserCan = true;
+
+    /**
+     * Per-capability answers, as capability => bool.
+     *
+     * Consulted before {@see $currentUserCan}, so a test can hold one capability
+     * and lack another — which is the only way to catch two guards that ask for
+     * *different* capabilities. A blanket answer cannot: it makes them agree by
+     * construction, and the disagreement ships.
+     *
+     * @var array<string, bool>
+     */
+    public static array $capabilities = [];
+
+    /**
+     * Every capability current_user_can() was asked about, in order.
+     *
+     * For asserting that a guard asks the capability it is *supposed* to, which
+     * is a different question from whether it granted — a check that asks the
+     * wrong capability and happens to be granted is the bug this catches.
+     *
+     * @var list<string>
+     */
+    public static array $capabilitiesAsked = [];
 
     public static bool $userLoggedIn = false;
 
@@ -156,6 +180,8 @@ final class WpStub
         self::$actions = [];
         self::$registeredRoutes = [];
         self::$currentUserCan = true;
+        self::$capabilities = [];
+        self::$capabilitiesAsked = [];
         self::$userLoggedIn = false;
         self::$options = [];
         self::$transients = [];

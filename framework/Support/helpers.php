@@ -141,3 +141,104 @@ if (! function_exists('config')) {
         return Config::get($key, $default);
     }
 }
+
+if (! function_exists('view')) {
+    /**
+     * Render a view, or build a response for one.
+     *
+     *     view('leads.index', ['leads' => $leads])          // -> ViewResponse
+     *     view('emails.receipt', $data)->render()           // -> string
+     *
+     * Returning the response rather than the string is what makes the two-argument
+     * call the common case: a controller returns it and the dispatcher sends it.
+     * A caller that wants the markup asks for it explicitly, which reads as the
+     * deliberate act it is.
+     *
+     * @param array<string, mixed> $data
+     */
+    function view(string $name = '', array $data = []): \Framework\Http\Responses\ViewResponse
+    {
+        /** @var \Framework\Support\ViewRenderer $renderer */
+        $renderer = app(\Framework\Support\ViewRenderer::class);
+
+        return $renderer->make($name, $data);
+    }
+}
+
+if (! function_exists('e')) {
+    /**
+     * Escape a value for HTML output.
+     *
+     * The one helper a view needs on nearly every line, and the reason it exists
+     * is that the alternative — reaching for `esc_html()` — is WordPress-specific
+     * and unavailable the moment a view is rendered outside the CMS (a WP-CLI
+     * export, an email built in a queue worker, a test). `esc_html()` is used when
+     * it is loaded, so a view still gets WordPress's filters and translations;
+     * `htmlspecialchars()` is the fallback that keeps the view renderable
+     * anywhere.
+     *
+     * Quoting both quote styles is deliberate and not a default worth trusting:
+     * a value interpolated into an attribute is escaped for a *different* context
+     * than one in text, and `ENT_QUOTES` is the only mode that is correct in
+     * both. Without it, `value="<?= e($x) ?>"` lets an apostrophe end the
+     * attribute and inject a handler.
+     *
+     * A null renders as the empty string rather than the literal "null" — the
+     * overwhelmingly common case is an optional field, and `value="null"` in a
+     * form is never what was meant.
+     *
+     * @param mixed $value
+     */
+    function e(mixed $value): string
+    {
+        if ($value === null) {
+            return '';
+        }
+
+        // A bool or an array has no sensible string form, and both are the kind
+        // of value that reaches a template by accident. Rendering them as '' and
+        // a JSON document respectively beats "1" and "Array".
+        if (is_bool($value)) {
+            return $value ? '1' : '';
+        }
+
+        if (is_array($value) || is_object($value)) {
+            $encoded = json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+            $value = $encoded === false ? '' : $encoded;
+        }
+
+        $string = (string) $value;
+
+        return function_exists('esc_html')
+            ? esc_html($string)
+            : htmlspecialchars($string, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    }
+}
+
+if (! function_exists('old')) {
+    /**
+     * A submitted value from the previous request, escaped for an attribute.
+     *
+     * The pair a form field actually needs — repopulate the value, escape it for
+     * the context it lands in — collapsed into one call, because writing
+     * `e(app(ViewRenderer::class)->oldValue('email'))` in every input is how a
+     * project ends up with one input that forgot to.
+     *
+     * Returns `$default` when nothing was flashed, so a create form and an edit
+     * form can share one template.
+     *
+     * @param mixed $default
+     */
+    function old(string $field, mixed $default = ''): string
+    {
+        try {
+            /** @var \Framework\Support\ViewRenderer $renderer */
+            $renderer = app(\Framework\Support\ViewRenderer::class);
+        } catch (\Throwable) {
+            return e($default);
+        }
+
+        return e($renderer->oldValue($field, $default));
+    }
+}

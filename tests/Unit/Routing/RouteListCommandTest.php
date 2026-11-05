@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Routing;
 
+use Framework\Config\Config;
 use DevLinkStudios\WPServiceContainer\Container;
 use Framework\Console\Commands\RouteListCommand;
 use Framework\Routing\Adapters\RestApiRouterAdapter;
@@ -379,7 +380,7 @@ final class RouteListCommandTest extends TestCase
     public function test_the_command_name_is_prefixed(): void
     {
         $this->assertSame(
-            config('app.cli_prefix', 'wp_mini') . ' route:list',
+            config('app.cli_prefix', Config::DEFAULT_CLI_PREFIX) . ' route:list',
             $this->command()->getName()
         );
     }

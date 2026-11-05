@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Framework\Database\Commands;
 
+use Framework\Config\Config;
 use Framework\Console\Command;
 use Framework\Database\Exceptions\MigrationException;
 use Framework\Database\Migrator;
@@ -24,7 +25,7 @@ class MigrateCommand extends Command
 
     public function getName(): string
     {
-        return config('app.cli_prefix', 'wp_mini') . ' migrate';
+        return config('app.cli_prefix', Config::DEFAULT_CLI_PREFIX) . ' migrate';
     }
 
     public function getDescription(): string

@@ -39,10 +39,34 @@ class HttpException extends RuntimeException
      * A directory lands here too, since `is_file()` excludes it. An empty *file*
      * does not — it renders as an empty string, which is a legitimate (if
      * unhelpful) view rather than an error.
+     *
+     * ## Why the candidates are named
+     *
+     * A view *name* goes through two readings — dotted (`leads.index`) and
+     * literal (`receipt.v2.php`) — and a name that misses under both is a name
+     * whose author picked the wrong one. Reporting only the dotted path says
+     * "there is no such file", which is true and unhelpful: the usual mistake is
+     * a literal filename written with dots in it, whose dotted reading points at
+     * a directory that was never meant. Naming both is what turns "not found"
+     * into "you meant the other reading".
+     *
+     * The paths are optional because a caller that looked in exactly one place —
+     * or that has a resolved path from elsewhere — still needs this to read
+     * sensibly.
      */
-    public static function viewNotFound(string $path): self
+    public static function viewNotFound(string $view, ?string $dotted = null, ?string $literal = null): self
     {
-        return new self(sprintf('View [%s] does not exist or is not a readable file.', $path));
+        $message = sprintf('View [%s] does not exist or is not a readable file.', $view);
+
+        if ($dotted !== null) {
+            $message .= sprintf(' Tried [%s]', $dotted);
+        }
+
+        if ($literal !== null && $literal !== $dotted) {
+            $message .= sprintf(' and the literal filename [%s]', $literal);
+        }
+
+        return new self($message . '.');
     }
 
     /**
