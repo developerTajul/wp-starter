@@ -327,3 +327,137 @@ if (!function_exists('wp_die')) {
         throw new RuntimeException('wp_die(): ' . $message);
     }
 }
+
+// ------------------------------------------------------------- admin menu layer
+
+if (!function_exists('add_menu_page')) {
+    /**
+     * @param callable $callback
+     */
+    function add_menu_page(
+        string $pageTitle,
+        string $menuTitle,
+        string $capability,
+        string $menuSlug,
+        $callback = null,
+        string $iconUrl = '',
+        ?int $position = null
+    ): string {
+        WpStub::$menuPages[] = [
+            'page_title' => $pageTitle,
+            'menu_title' => $menuTitle,
+            'capability' => $capability,
+            'menu_slug' => $menuSlug,
+            'callback' => $callback,
+            'icon_url' => $iconUrl,
+            'position' => $position,
+        ];
+
+        // WordPress returns the hook suffix the page is registered under, and a
+        // caller uses it to enqueue assets for that one screen. The stub composes
+        // the same shape ("toplevel_page_{slug}") so a test can assert on it.
+        return 'toplevel_page_' . $menuSlug;
+    }
+}
+
+if (!function_exists('add_submenu_page')) {
+    /**
+     * @param callable $callback
+     */
+    function add_submenu_page(
+        string $parentSlug,
+        string $pageTitle,
+        string $menuTitle,
+        string $capability,
+        string $menuSlug,
+        $callback = null,
+        ?int $position = null
+    ): string {
+        WpStub::$submenuPages[] = [
+            'parent_slug' => $parentSlug,
+            'page_title' => $pageTitle,
+            'menu_title' => $menuTitle,
+            'capability' => $capability,
+            'menu_slug' => $menuSlug,
+            'callback' => $callback,
+            'position' => $position,
+        ];
+
+        return $parentSlug . '_page_' . $menuSlug;
+    }
+}
+
+if (!function_exists('admin_url')) {
+    function admin_url(string $path = '', string $scheme = 'admin'): string
+    {
+        $base = WpStub::$adminUrl ?? 'http://example.test/wp-admin/';
+
+        return $path === '' ? $base : rtrim($base, '/') . '/' . ltrim($path, '/');
+    }
+}
+
+if (!function_exists('wp_nonce_field')) {
+    /**
+     * @param bool $referer
+     */
+    function wp_nonce_field(string $action = '-1', string $name = '_wpnonce', bool $referer = true, bool $display = true): string
+    {
+        // `wp_create_nonce()` rather than a literal, so a form rendered by a view
+        // under test carries a nonce that genuinely verifies — a hardcoded string
+        // would make VerifyAdminNonce look like it worked when it did not.
+        $field = sprintf(
+            '<input type="hidden" id="%s" name="%s" value="%s" />',
+            $name,
+            $name,
+            wp_create_nonce($action)
+        );
+
+        if ($display) {
+            echo $field;
+        }
+
+        return $field;
+    }
+}
+
+// ------------------------------------------------------------- front-end layer
+
+if (!function_exists('is_admin')) {
+    function is_admin(): bool
+    {
+        return WpStub::$isAdmin;
+    }
+}
+
+if (!function_exists('home_url')) {
+    function home_url(string $path = '', ?string $scheme = null): string
+    {
+        $base = WpStub::$homeUrl ?? 'http://example.test';
+
+        return $path === '' ? $base : rtrim($base, '/') . '/' . ltrim($path, '/');
+    }
+}
+
+if (!function_exists('wp_parse_url')) {
+    /**
+     * @return array<string, int|string>|string|int|false|null
+     */
+    function wp_parse_url(string $url, int $component = -1)
+    {
+        return parse_url($url, $component);
+    }
+}
+
+if (!function_exists('untrailingslashit')) {
+    function untrailingslashit(string $value): string
+    {
+        return rtrim($value, '/\\');
+    }
+}
+
+if (!function_exists('trailingslashit')) {
+    function trailingslashit(string $value): string
+    {
+        return rtrim($value, '/\\') . '/';
+    }
+}

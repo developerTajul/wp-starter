@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Framework\Routing;
 
+use Framework\Routing\Contracts\RouterInterface;
 use Framework\Routing\Exceptions\RouteRegistrationException;
 
 /**
@@ -24,7 +25,13 @@ class RouteRegistrar
     /** @var list<class-string<Contracts\Middleware>> */
     private array $middleware = [];
 
-    public function __construct(private readonly Router $router)
+    /**
+     * Typed against the interface rather than {@see Router}, so the same fluent
+     * surface — and every group, prefix and middleware rule below — serves the
+     * REST router and both web adapters. `Router` implements it, so a routes file
+     * that types its parameter as `RouteRegistrar` is unchanged.
+     */
+    public function __construct(private readonly RouterInterface $router)
     {
     }
 
@@ -234,7 +241,7 @@ class RouteRegistrar
             $route->uses($controller, $action ?? 'index');
         }
 
-        $this->router->add($route);
+        $this->router->addRoute($route);
 
         return $route;
     }
