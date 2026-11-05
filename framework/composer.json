@@ -1,0 +1,19 @@
+{
+  "name": "devlinkstudios/wp-mini-laravel-framework",
+  "description": "Framework-agnostic plugin architecture core: container wiring, configuration and helpers.",
+  "type": "library",
+  "license": "MIT",
+  "require": {
+    "php": "^8.2",
+    "devlinkstudios/wp-service-container": "^1.0",
+    "psr/log": "^3.0"
+  },
+  "autoload": {
+    "psr-4": {
+      "Framework\\": "./"
+    },
+    "files": [
+      "Support/helpers.php"
+    ]
+  }
+}

@@ -1,0 +1,83 @@
+# ---------------------------------------------------------------
+# Dependency directories
+# ---------------------------------------------------------------
+# vendor/ is rebuilt from composer.json + composer.lock. Note that
+# vendor/devlinkstudios/wp-mini-laravel-framework is a symlink into
+# ./framework (path repository), so the framework source is committed
+# separately and never lives inside vendor.
+/vendor/
+node_modules/
+
+# composer.lock IS committed on purpose: reproducible dependency
+# resolution across machines and deploys.
+
+# ---------------------------------------------------------------
+# Build & tooling artifacts
+# ---------------------------------------------------------------
+# PHPUnit cache only. The test suite (tests/) and phpunit.xml are
+# COMMITTED on purpose: CI/CD and collaborators need them. They are
+# stripped from production archives via .gitattributes export-ignore.
+.phpunit.cache/
+.phpunit.result.cache
+
+# PHP CS Fixer / PHPStan / Psalm / Rector
+.php-cs-fixer.cache
+.php-cs-fixer.php
+.php-cs-fixer.dist.php
+/phpstan.neon
+/phpstan.neon.dist
+/psalm.xml
+/psalm.xml.dist
+/rector.php
+/phpdoc.xml
+/phpdoc.xml.dist
+
+# ---------------------------------------------------------------
+# WordPress specific
+# ---------------------------------------------------------------
+wp-content/debug.log
+.htaccess
+
+# ---------------------------------------------------------------
+# Environment files
+# ---------------------------------------------------------------
+# Keep the example templates so new installs know what to define.
+.env
+.env.*
+!.env.example
+!.env.dist
+
+# ---------------------------------------------------------------
+# Logs
+# ---------------------------------------------------------------
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+composer.phar
+
+# Build / runtime output directories
+/logs/
+/build/
+/dist/
+
+# ---------------------------------------------------------------
+# IDE & Editor files
+# ---------------------------------------------------------------
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+
+# ---------------------------------------------------------------
+# OS files
+# ---------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini

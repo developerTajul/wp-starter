@@ -1,0 +1,55 @@
+# ---------------------------------------------------------------
+# Production archives (git archive / GitHub "Download ZIP")
+# ---------------------------------------------------------------
+# These paths stay in the repository for CI/CD and collaboration,
+# but are stripped from the shipped plugin archive.
+/tests            export-ignore
+/phpunit.xml      export-ignore
+/phpunit.xml.dist export-ignore
+/.github          export-ignore
+/.gitignore       export-ignore
+/.gitattributes   export-ignore
+/.env.example     export-ignore
+
+# ---------------------------------------------------------------
+# Line ending normalization
+# ---------------------------------------------------------------
+# Text files are stored in the repository with LF, regardless of the
+# authoring OS. This stops CRLF/LF churn on mixed Windows/Linux teams
+# and keeps PHPUnit snapshots and fixtures byte-comparable in CI.
+* text=auto eol=lf
+
+# Explicitly declare the types we author.
+*.php    text eol=lf
+*.stub   text eol=lf
+*.json   text eol=lf
+*.md     text eol=lf
+*.yml    text eol=lf
+*.yaml   text eol=lf
+*.xml    text eol=lf
+*.dist   text eol=lf
+*.neon   text eol=lf
+*.txt    text eol=lf
+
+# Windows-only scripts keep CRLF so they run in cmd.exe / PowerShell.
+*.bat    text eol=crlf
+*.cmd    text eol=crlf
+
+# Binary files must never be normalized or diffed as text.
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.ico    binary
+*.svg    text eol=lf
+*.zip    binary
+*.gz     binary
+*.phar   binary
+
+# ---------------------------------------------------------------
+# Diff behavior
+# ---------------------------------------------------------------
+# composer.lock is machine-generated; keep it out of review noise.
+/composer.lock -diff linguist-generated
+# Dependencies are never reviewed line by line.
+/vendor/**     -diff linguist-vendored

@@ -1,0 +1,22 @@
+{
+  "name": "devlinkstudios/wp-mini-laravel",
+  "description": "Enterprise-Grade Framework-agnostic WordPress plugin architecture.",
+  "type": "wordpress-plugin",
+  "license": "MIT",
+  "require": {
+    "php": "^8.2",
+    "devlinkstudios/wp-mini-laravel-framework": "*@dev"
+  },
+  "repositories": [
+    {
+      "type": "path",
+      "url": "./framework"
+    }
+  ],
+  "autoload": {
+    "psr-4": {
+      "App\\": "app/",
+      "Core\\": "core/"
+    }
+  }
+}
