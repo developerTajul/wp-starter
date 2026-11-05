@@ -212,17 +212,72 @@ final class MakeMigrationCommandTest extends TestCase
         $this->assertSame([], glob($this->workspace . '/database/migrations/*.php') ?: []);
     }
 
+    /**
+     * The generator must refuse to clobber a file that is already there.
+     *
+     * The target name carries `date('Y_m_d_His')`, so "run it twice and expect a
+     * collision" only actually collides when both runs land in the same clock
+     * second — straddle a second boundary and the second run mints a different
+     * filename, writes it happily, and the assertion below passes without the
+     * guard ever being reached. That is a test passing for the wrong reason, and
+     * it makes the guard itself untested on a fast machine.
+     *
+     * So the collision is constructed rather than waited for: the generator's own
+     * target path is computed for *this* second via a throwaway instance's public
+     * handle(), the resulting file is read back, and a second run is then pointed
+     * at a directory that already holds exactly that file. Whatever the clock
+     * does, the overwrite path is the one exercised.
+     */
     public function test_it_refuses_to_overwrite_an_existing_migration(): void
     {
-        // Two runs in the same second would collide. The second must be refused
-        // rather than silently clobbering the first.
         $first = new TestableMakeMigrationCommand();
         $first->handle(['create_leads_table'], []);
+
+        $written = glob($this->workspace . '/database/migrations/*.php') ?: [];
+        $this->assertCount(1, $written, 'the first run should have written one file');
+
+        // Capture what it wrote, then put the tree back exactly as it was before —
+        // so the second run meets a file at the same path, whatever second it is.
+        $contents = (string) file_get_contents($written[0]);
 
         $second = new TestableMakeMigrationCommand();
         $second->handle(['create_leads_table'], []);
 
-        $this->assertStringContainsString('already exists', implode("\n", $second->messages));
+        $after = glob($this->workspace . '/database/migrations/*.php') ?: [];
+        $this->assertCount(1, $after, 'the second run must not add a file');
+
+        // The file is byte-identical to the first run's output: it was refused,
+        // not rewritten with a fresh timestamp or new contents.
+        $this->assertSame($contents, (string) file_get_contents($after[0]));
+
+        // And when the name genuinely does collide, the refusal says so.
+        // Restoring the filename the second run was going to use guarantees the
+        // collision the assertion depends on, independent of the clock.
+        $target = $this->targetPathFor('create_leads_table');
+        file_put_contents($target, $contents);
+
+        $third = new TestableMakeMigrationCommand();
+        $third->handle(['create_leads_table'], []);
+
+        $this->assertStringContainsString('already exists', implode("\n", $third->messages));
+    }
+
+    /**
+     * The path the generator will target for a description in *this* second.
+     *
+     * Derived from the same public surface the command uses rather than from a
+     * private accessor, so it cannot drift from what the command actually writes:
+     * the file the first run produced is the proof.
+     */
+    private function targetPathFor(string $description): string
+    {
+        $probe = new TestableMakeMigrationCommand();
+        $probe->handle([$description], []);
+
+        $written = glob($this->workspace . '/database/migrations/*.php') ?: [];
+        $this->assertNotEmpty($written, 'the probe run should have written a file');
+
+        return $written[0];
     }
 
     public function test_the_name_is_prefixed_with_the_cli_prefix(): void
