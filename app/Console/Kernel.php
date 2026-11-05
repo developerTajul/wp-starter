@@ -26,5 +26,6 @@ class Kernel extends BaseKernel
         \Framework\Database\Commands\MigrateCommand::class,
         \Framework\Database\Commands\MigrateRollbackCommand::class,
         \Framework\Database\Commands\MigrateStatusCommand::class,
+        \Framework\Console\Commands\RouteListCommand::class,
     ];
 }

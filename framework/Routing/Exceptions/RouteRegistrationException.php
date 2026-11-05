@@ -44,4 +44,25 @@ final class RouteRegistrationException extends RuntimeException
             $path
         ));
     }
+
+    /**
+     * Two form handlers derived the same `admin_post_{action}` name.
+     *
+     * Raised rather than resolved because there is no safe way to pick: both
+     * routes are published on one hook, `add_action()` does not replace an
+     * existing callback, and so *both* would run on one submission — leaving the
+     * second controller to act on a request the first was written for. The
+     * symptom would be a handler that appears to work while doing the wrong
+     * thing, which is worse than a refusal naming both routes.
+     */
+    public static function duplicateAction(string $action, string $first, string $second): self
+    {
+        return new self(sprintf(
+            'Routes [%s] and [%s] both publish the form action [%s]. Give one of them a '
+            . 'distinct path or name with ->name(), or set the [action] option on it explicitly.',
+            $first,
+            $second,
+            $action
+        ));
+    }
 }

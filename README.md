@@ -97,7 +97,15 @@ before anything depending on it can be constructed.
 
 ## Routing
 
-Routes live in `routes/api.php`, which receives a fluent registrar:
+There are two routers, one per WordPress domain, and both speak the same fluent
+API. Which one a routes file receives is the only difference:
+
+| File | Router | WordPress mechanism |
+| --- | --- | --- |
+| `routes/api.php` | REST | `rest_api_init` → `register_rest_route()` |
+| `routes/web.php` | web | `admin_menu`, `admin_post_{action}`, `template_redirect` |
+
+`routes/api.php` receives a fluent registrar:
 
 ```php
 return function (RouteRegistrar $router): void {
@@ -120,9 +128,73 @@ means WordPress rejects a non-numeric id with a 404 before the controller runs.
 Every route is reached under `config('app.rest_namespace')`, by default
 `/wp-json/wp-mini-laravel/v1/`.
 
+### Web routes
+
+WordPress reaches a web screen through three unrelated mechanisms, and nothing in
+core presents them as one idea. This router does:
+
+```php
+return function (WordPressRouterAdapter $router): void {
+    // admin_menu → add_menu_page()
+    $router->adminPage('leads', DashboardController::class, 'index')
+        ->withOptions([
+            'page_title' => 'Lead Enquiries',
+            'menu_title' => 'Leads',
+            'capability' => 'manage_options',
+            'icon'       => 'dashicons-email',
+            'position'   => 26,
+        ]);
+
+    // admin_menu → add_submenu_page()
+    $router->adminPage('leads-settings', SettingsController::class, 'index')
+        ->withOptions(['parent_slug' => 'leads']);
+
+    // admin_post_leads_store (and the _nopriv hook)
+    $router->adminAction('leads-store', LeadController::class, 'store');
+
+    // template_redirect
+    $router->page('thank-you', ThankYouController::class, 'index');
+};
+```
+
+`get()`/`post()` also work, and infer the surface from the verb: a `POST` is
+taken to be a form handler, a `GET` to be a front-end page. That inference is a
+convenience for the obvious case, not a claim about an ambiguous one — a `GET`
+route that is really an admin screen should say `adminPage()`.
+
+Two behaviours worth knowing, both of which exist to prevent bugs that are hard
+to diagnose:
+
+- **Form handlers register on both `admin_post_{action}` and
+  `admin_post_nopriv_{action}`.** Registering only the first is the classic
+  mistake: the form works while logged in and 404s for everyone else.
+- **Two routes cannot derive the same action name.** `PUT leads/{id}` and
+  `DELETE leads/{id}` would both want `leads`, and WordPress would then fire
+  *both* callbacks on one submission. Registration throws instead, and non-POST
+  verbs get a suffix (`leads_put`, `leads_delete`) so the collision does not
+  arise.
+
+Web controllers are plain classes — they do not extend `Framework\Routing\Controller`,
+which is REST-shaped. They receive the Phase 4 `Request` and return a
+`ResponseInterface` or a string, and know nothing about WordPress:
+
+```php
+final class LeadController
+{
+    public function __construct(private readonly LeadRepository $leads) {}
+
+    public function store(Request $request): RedirectResponse
+    {
+        $this->leads->create($request->input('name'));
+
+        return new RedirectResponse('admin.php?page=leads');
+    }
+}
+```
+
 ### Controllers
 
-A controller extends `Framework\Routing\Controller` and may declare its own
+A REST controller extends `Framework\Routing\Controller` and may declare its own
 routes with attributes:
 
 ```php
@@ -361,6 +433,37 @@ wp wp_mini make:migration create_leads_table
 The prefix comes from `config('app.cli_prefix')`, so two projects bundling this
 framework do not collide. Generated files are written only when the target does
 not already exist.
+
+### `route:list`
+
+```bash
+wp wp_mini route:list
+```
+
+```
+Domain Method      URI / Hook                         Controller@Action                        Middleware
+-----------------------------------------------------------------------------------------------------------
+web    GET         admin_menu  (admin.php?page=lea... DashboardController@index                -
+web    POST        admin_post_leads_store  (admin-... DashboardController@store                AllowMiddleware
+api    GET         /wp-json/wp-mini-laravel/v1/leads  ReportController@index                   -
+api    GET         /wp-json/wp-mini-laravel/v1/lea... ReportController@show                    -
+
+4 route(s): 2 web, 2 api.
+```
+
+It is the only place the whole routing surface appears at once. A REST route is
+discoverable from `/wp-json`; a web route is discoverable from nowhere —
+`admin_menu` registrations are buried inside a callback, and an
+`admin_post_{action}` hook name is derived from the route path at registration
+time. The URI column therefore leads with the **hook**, since that is the string
+you would grep for in WordPress's source when a route does not fire.
+
+The command loads both routes files itself. Under WP-CLI none of `rest_api_init`,
+`admin_menu`, `admin_post` or `template_redirect` ever fire, so both routers
+would otherwise be empty and the command would report a plugin full of routes as
+having none. A routes file that fails to load is warned about and the rest is
+still listed, because a broken file usually takes only *some* routes with it and
+seeing which ones survived is how the mistake gets found.
 
 ## Database migrations
 

@@ -121,6 +121,36 @@ final class WpStub
      */
     public static ?string $loginUrl = null;
 
+    /**
+     * Top-level admin screens, in the order `add_menu_page()` was called.
+     *
+     * @var list<array<string, mixed>>
+     */
+    public static array $menuPages = [];
+
+    /**
+     * Submenu screens, in the order `add_submenu_page()` was called.
+     *
+     * @var list<array<string, mixed>>
+     */
+    public static array $submenuPages = [];
+
+    /**
+     * What `admin_url()` is rooted at.
+     */
+    public static ?string $adminUrl = null;
+
+    /**
+     * What `home_url()` is rooted at.
+     */
+    public static ?string $homeUrl = null;
+
+    /**
+     * What `is_admin()` reports — the flag that decides whether a request is an
+     * admin screen or a front-end page.
+     */
+    public static bool $isAdmin = false;
+
     public static function reset(): void
     {
         self::$actions = [];
@@ -138,6 +168,11 @@ final class WpStub
         self::$died = [];
         self::$statusHeaders = [];
         self::$loginUrl = null;
+        self::$menuPages = [];
+        self::$submenuPages = [];
+        self::$adminUrl = null;
+        self::$homeUrl = null;
+        self::$isAdmin = false;
     }
 
     /**
