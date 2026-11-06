@@ -9,6 +9,7 @@ use Framework\Routing\Contracts\Middleware;
 use Framework\Routing\Contracts\RouterInterface;
 use Framework\Routing\Exceptions\RouteRegistrationException;
 use Framework\Routing\Exceptions\RouteResolutionException;
+use Framework\Routing\NamedRoutes;
 use Framework\Routing\Route;
 use Framework\Routing\RouteRegistrar;
 use Framework\Routing\RouteResolver;
@@ -68,7 +69,17 @@ abstract class AbstractRouterAdapter implements RouterInterface
 
     public function __construct(
         protected readonly Container $container,
-        protected readonly RouteResolver $resolver
+        protected readonly RouteResolver $resolver,
+        /**
+         * Where named routes are recorded for URL generation.
+         *
+         * Optional so the dozens of existing constructions — tests, probes, a
+         * project building an adapter by hand — keep working. When it is omitted a
+         * private registry is used, which means that adapter's names are
+         * unreachable from `route()`: correct for a caller that never generates a
+         * URL, and the reason the service providers always pass the shared one.
+         */
+        protected readonly NamedRoutes $namedRoutes = new NamedRoutes()
     ) {
     }
 
@@ -131,22 +142,53 @@ abstract class AbstractRouterAdapter implements RouterInterface
         return array_values(array_unique($this->routes, SORT_REGULAR));
     }
 
-    public function get(string $path, ?string $controller = null, ?string $action = null): Route
+    /**
+     * The fluent verbs, as the router itself exposes them.
+     *
+     * Each one delegates to a fresh registrar, so a caller holding an adapter gets
+     * exactly the routes a routes file would — including the domain's surface
+     * decision, since a web adapter's registrar is a {@see \Framework\Routing\WebRouteRegistrar}.
+     * A REST router's `get()` is therefore an endpoint and a web router's is an
+     * admin screen, which is the one place the two domains' `get()` differ.
+     *
+     * The action takes either spelling: a controller class name with its action
+     * alongside, or a `[Controller::class, 'method']` pair.
+     *
+     * @param string|array{0: string, 1: string}|callable|null $controller
+     *
+     * @throws RouteRegistrationException
+     */
+    public function get(string $path, string|array|callable|null $controller = null, ?string $action = null): Route
     {
         return $this->registrar()->get($path, $controller, $action);
     }
 
-    public function post(string $path, ?string $controller = null, ?string $action = null): Route
+    /**
+     * @param string|array{0: string, 1: string}|callable|null $controller
+     *
+     * @throws RouteRegistrationException
+     */
+    public function post(string $path, string|array|callable|null $controller = null, ?string $action = null): Route
     {
         return $this->registrar()->post($path, $controller, $action);
     }
 
-    public function put(string $path, ?string $controller = null, ?string $action = null): Route
+    /**
+     * @param string|array{0: string, 1: string}|callable|null $controller
+     *
+     * @throws RouteRegistrationException
+     */
+    public function put(string $path, string|array|callable|null $controller = null, ?string $action = null): Route
     {
         return $this->registrar()->put($path, $controller, $action);
     }
 
-    public function delete(string $path, ?string $controller = null, ?string $action = null): Route
+    /**
+     * @param string|array{0: string, 1: string}|callable|null $controller
+     *
+     * @throws RouteRegistrationException
+     */
+    public function delete(string $path, string|array|callable|null $controller = null, ?string $action = null): Route
     {
         return $this->registrar()->delete($path, $controller, $action);
     }
@@ -160,6 +202,20 @@ abstract class AbstractRouterAdapter implements RouterInterface
      * twice" is a property of WordPress, not of the mechanism — every adapter
      * needs it, and forgetting it is a silent duplicate registration rather than
      * an error.
+     *
+     * ## Why the named-route registry is fed from here
+     *
+     * `publish()` is where the adapter decides the things a URL needs and writes
+     * them back onto the routes — the `admin_post_{action}` name in particular,
+     * which is derived from the route and recorded as an option. Registering with
+     * {@see NamedRoutes} *after* that means the generator reads the same final
+     * names WordPress was hooked on, rather than re-deriving them and risking a
+     * second rule that drifts from the first.
+     *
+     * It is also the earliest correct moment: before a flush the adapter's routes
+     * are registered but not published, so their surfaces and action names are not
+     * settled. A generator asked for a URL at that point is asking about a route
+     * that does not exist yet, and {@see UrlGenerator::route()} says so by name.
      */
     public function flush(): void
     {
@@ -170,6 +226,8 @@ abstract class AbstractRouterAdapter implements RouterInterface
         $this->flushed = true;
 
         $this->publish();
+
+        $this->namedRoutes->add($this);
     }
 
     public function hasFlushed(): bool

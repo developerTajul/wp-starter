@@ -336,6 +336,191 @@ class Migrator
     }
 
     /**
+     * Every batch number that has at least one recorded migration, oldest first.
+     *
+     * The batch *high-water mark* is deliberately not used for this. It records
+     * the newest number ever handed out, which includes a batch that failed
+     * before recording anything — rolling that back is a no-op that burns a pass,
+     * and reporting it as a batch that exists is simply untrue. This answers the
+     * different question "what is there to reverse", which is what
+     * {@see \Framework\Database\Commands\MigrateRefreshCommand} and any future
+     * `rollback --all` both need.
+     *
+     * Sorted numerically rather than left in query order: batches are integers,
+     * so `10` must not sort before `9` the way it would as a string, and no
+     * `ORDER BY` in a caller should have to know that.
+     *
+     * @return list<int>
+     */
+    public function batches(): array
+    {
+        $this->ensureTrackingTable();
+
+        // `SELECT DISTINCT` would be the obvious query and is deliberately not
+        // used: the tracking table holds at most a few hundred rows, so deduping
+        // in PHP costs nothing, while `DISTINCT` would be the fourth shape of
+        // SELECT this class issues — and the test double that stands in for
+        // `$wpdb` is a deliberately loud parser that rejects anything it does not
+        // recognise. A query it cannot read is a query no test can pin, so the
+        // simplest statement that answers the question is also the only one that
+        // stays verifiable.
+        $rows = $this->appliedMigrations();
+
+        $batches = array_values(array_unique(array_map(
+            static fn (int $batch): int => $batch,
+            array_values($rows)
+        )));
+
+        sort($batches);
+
+        return $batches;
+    }
+
+    /**
+     * Reverse every applied migration, newest batch first.
+     *
+     * ## Why this does not just loop `rollback()`
+     *
+     * `rollback()` reads the newest batch on each call, so a loop would work —
+     * but each pass is a fresh `SELECT MAX(\`batch\`)`, and the batch list is
+     * known up front. More importantly, a caller that captures the list *before*
+     * reversing anything can report the full set it intends to touch, which is
+     * what lets `migrate:refresh` say what it is about to do before it does it.
+     *
+     * The list is walked newest-first and **reversed** from `batches()` order for
+     * the same reason `rollbackBatch()` sorts its rows newest-first: a later batch
+     * may depend on a structure an earlier one created.
+     *
+     * A failure propagates and stops the sweep. The batches already reversed are
+     * genuinely reversed and their rows are gone, so re-running resumes rather
+     * than repeating — the same truthful-half-state contract `rollback()` has.
+     *
+     * @param callable(string): void|null $onProgress
+     * @return list<string> Identifiers reversed, in execution order.
+     *
+     * @throws MigrationException
+     */
+    public function rollbackAll(?callable $onProgress = null): array
+    {
+        $reverted = [];
+
+        foreach (array_reverse($this->batches()) as $batch) {
+            foreach ($this->rollbackBatch($batch, $onProgress) as $identifier) {
+                $reverted[] = $identifier;
+            }
+        }
+
+        return $reverted;
+    }
+
+    /**
+     * Drop the migration-created tables and forget that anything ran.
+     *
+     * ## What it drops, and the line it does not cross
+     *
+     * Only tables that **migrations were recorded as creating** — the `down()` of
+     * each applied migration is what removes them, not a `DROP TABLE` invented
+     * here. That distinction is the whole safety story: a table this plugin did
+     * not create has a row in the tracking table only if some migration recorded
+     * it, and a `migrate:fresh` that swept the database would be a command that
+     * deletes a WordPress install's posts when a developer types it against the
+     * wrong `wp-config.php`.
+     *
+     * `down()` is not called at all, though. It is tempting — one code path, and
+     * every migration already knows how to reverse itself — but `down()` is
+     * *compensating* logic, and a fresh start is not a compensation. Reversing
+     * runs each migration's own idea of undo, which for a migration that renamed
+     * a column means renaming it back: a real data-losing operation performed for
+     * no reason, since the very next thing `fresh` does is drop the table anyway.
+     * Worse, a `down()` that throws would abort a command whose entire purpose is
+     * to not depend on anything working.
+     *
+     * So the tables are dropped directly, and the tracking table with them.
+     *
+     * ## Why the tracking table is dropped rather than emptied
+     *
+     * `DELETE FROM` would leave the table and its AUTO_INCREMENT in place, and the
+     * high-water mark option behind it. Both are cheap to recreate —
+     * {@see ensureTrackingTable()} runs before the first migration — and dropping
+     * makes "fresh" true of the whole migration state rather than only of its
+     * rows. The batch counter is reset in the same breath for the same reason: a
+     * fresh database that reports batch 47 is a state no one can reason about.
+     *
+     * @return list<string> Table names dropped, in the order dropped.
+     *
+     * @throws MigrationException When a drop fails.
+     */
+    public function dropAllTables(): array
+    {
+        $db = $this->db();
+
+        // Read *before* anything is dropped: the tracked names are the input to
+        // this whole operation, and once the tracking table is gone there is no
+        // way to learn what should have been dropped.
+        $this->ensureTrackingTable();
+        $tracked = array_keys($this->appliedMigrations());
+
+        // Only identifiers whose file still exists can be dropped by `down()`,
+        // and the rest cannot be resolved to a table at all. A file deleted from
+        // disk is reported by `migrate:status` and is not this command's to guess
+        // about — dropping an unknown table name would be exactly the wild sweep
+        // the docblock above rules out.
+        $known = [];
+
+        foreach ($this->discover() as $migration) {
+            $known[$migration->identifier] = $migration;
+        }
+
+        $dropped = [];
+
+        // Newest first for the same reason rollback is: a dependent table is
+        // created after the table it references.
+        usort($tracked, static fn (string $a, string $b): int => strcmp($b, $a));
+
+        foreach ($tracked as $identifier) {
+            $migration = $known[$identifier] ?? null;
+
+            if ($migration === null) {
+                continue;
+            }
+
+            $instance = $this->resolve($migration);
+
+            $this->guardAgainstPartialWrite($db);
+
+            try {
+                $instance->down();
+            } catch (Throwable $e) {
+                throw MigrationException::stepFailed('down', $identifier, $e);
+            }
+
+            $dropped[] = $identifier;
+        }
+
+        // Last, and unconditionally: even with nothing tracked, a fresh database
+        // must not be left holding a tracking table that describes a schema it no
+        // longer has. `DROP TABLE IF EXISTS` because on a truly fresh install
+        // `ensureTrackingTable()` above is the only thing that created it.
+        if ($db->query(sprintf('DROP TABLE IF EXISTS `%s`', $this->escapeIdentifier($this->getTableName()))) === false) {
+            throw new MigrationException(sprintf(
+                'Unable to drop the migration tracking table [%s]: %s',
+                $this->getTableName(),
+                $db->last_error !== '' ? $db->last_error : 'unknown database error'
+            ));
+        }
+
+        if (function_exists('delete_option')) {
+            delete_option($this->highWaterOption());
+        }
+
+        // The high-water mark is gone, so the next batch is 1 — reset the cached
+        // read too, or a long-lived process would keep serving the old number.
+        $this->lastRunApplied = [];
+
+        return $dropped;
+    }
+
+    /**
      * Identifiers recorded as ran whose file is no longer on disk.
      *
      * Surfaced rather than hidden because it is the one state the migrator cannot

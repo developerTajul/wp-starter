@@ -29,6 +29,19 @@ It performs two kinds of rebranding in one pass:
 - **Static (structural)** — the plugin header in the renamed entry file, the `composer.json` package name and PSR-4 maps, and every `App\` / `Core\` namespace across `app/`, `core/`, `config/`, `routes/` and `tests/`.
 - **Dynamic (`.env`)** — the `env()` **fallback defaults** in `config/app.php` (the second argument of each `env()` call), plus the identity values in `.env.example` and `.env`.
 
+**The layers are prefixed, not replaced.** `App` and `Core` name architectural
+layers (delivery and domain), not the project's identity, so `--namespace=X`
+turns `App\Database` into `X\App\Database` and `Core\Note` into `X\Core\Note`.
+The PSR-4 maps follow: `"X\\App\\" => "app/"` and `"X\\Core\\" => "core/"`, and
+`config/app.php` falls back to `env('APP_NAMESPACE', 'X\App')`. Never flatten the
+layers to a bare root — it erases the zone boundary from every `use` statement.
+
+Two exemptions are deliberate: `tests/Integration/RebranderTest.php` is skipped
+by path (its fixtures encode the starter's identity on purpose), and an `App` /
+`Core` that is a **path segment** under `Tests\` (e.g.
+`Tests\Integration\App\Repositories`) is not rewritten — only the `use App\...`
+import in that file is.
+
 Relocated from `bin/` to `framework/bin/` so the script ships with the framework layer. Never edit files under `framework/` when rebranding a project — see the README's rebranding section.
 
 ## Dependency injection

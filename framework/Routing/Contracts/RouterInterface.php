@@ -54,6 +54,14 @@ interface RouterInterface
      * so what it receives is the registrar rather than the router. Having the
      * interface expose it is what makes `web.php` and `api.php` the same file
      * shape over two different mechanisms.
+     *
+     * **The declared return type is the floor, not the whole story.** A web router
+     * returns {@see \Framework\Routing\WebRouteRegistrar} — a `RouteRegistrar`
+     * subclass that also carries `adminPage()`, `adminAction()` and `page()`,
+     * because a web route's mechanism cannot be inferred from its verb. A routes
+     * file that only needs `group()` and the verbs is free to type against this
+     * base class and will work against either router; `routes/web.php` types
+     * against the subclass, since it uses the surface helpers.
      */
     public function registrar(): RouteRegistrar;
 
@@ -108,21 +116,40 @@ interface RouterInterface
 
     /**
      * Register one GET route.
+     *
+     * ## What a GET means depends on the router
+     *
+     * The action and the verb are the same everywhere; the mechanism is not. On
+     * the API router this is a REST endpoint. On a web router it is a wp-admin
+     * screen — see {@see \Framework\Routing\WebRouteRegistrar} — because WordPress
+     * has no general front-end router, so a front-end page is the case that says
+     * so (`page()`).
+     *
+     * The action takes either spelling: a controller class name with its action
+     * alongside, or a `[Controller::class, 'method']` pair.
+     *
+     * @param string|array{0: string, 1: string}|callable|null $controller
      */
-    public function get(string $path, ?string $controller = null, ?string $action = null): Route;
+    public function get(string $path, string|array|callable|null $controller = null, ?string $action = null): Route;
 
     /**
      * Register one POST route.
+     *
+     * @param string|array{0: string, 1: string}|callable|null $controller
      */
-    public function post(string $path, ?string $controller = null, ?string $action = null): Route;
+    public function post(string $path, string|array|callable|null $controller = null, ?string $action = null): Route;
 
     /**
      * Register one PUT route.
+     *
+     * @param string|array{0: string, 1: string}|callable|null $controller
      */
-    public function put(string $path, ?string $controller = null, ?string $action = null): Route;
+    public function put(string $path, string|array|callable|null $controller = null, ?string $action = null): Route;
 
     /**
      * Register one DELETE route.
+     *
+     * @param string|array{0: string, 1: string}|callable|null $controller
      */
-    public function delete(string $path, ?string $controller = null, ?string $action = null): Route;
+    public function delete(string $path, string|array|callable|null $controller = null, ?string $action = null): Route;
 }

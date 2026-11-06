@@ -276,12 +276,7 @@ final class RouteListCommandTest extends TestCase
     public function test_it_loads_the_routes_files_itself(): void
     {
         $loader = $this->loaderWithRoutes([
-            'routes/web.php' => <<<'PHP'
-                <?php
-                return function (\Framework\Routing\RouteRegistrar $router): void {
-                    $router->get('from-the-file', \stdClass::class, 'shorten');
-                };
-                PHP,
+            'routes/web.php' => $this->facadeRoutes("Route::get('from-the-file', [\stdClass::class, 'shorten']);"),
         ]);
 
         $output = $this->render($loader);
@@ -291,8 +286,47 @@ final class RouteListCommandTest extends TestCase
         // long path would fail for a route that loaded perfectly — a test that
         // reports the column width as a routing bug.
         $this->assertStringContainsString('stdClass@shorten', $output);
-        $this->assertStringContainsString('template_redirect', $output);
+
+        // `admin_menu`, because an unnamed `get()` in a web routes file is an
+        // admin screen — that is the surface this dispatch infers, and the hook
+        // column is where the inference becomes visible. This was
+        // `template_redirect` while a bare `get()` meant "front-end page"; the
+        // assertion moved with the meaning rather than being relaxed to match
+        // whatever the command happened to print.
+        $this->assertStringContainsString('admin_menu', $output);
         $this->assertStringNotContainsString('No routes registered', $output);
+    }
+
+    /**
+     * **A facade-shaped routes file is the happy path, and this is it.**
+     *
+     * The fixture above calls `Route::get(...)` — the shape every routes file in
+     * this project now has. It loads only because {@see RouteLoader} aims the
+     * facade at the router for the duration of the `require`; a file read any
+     * other way throws "the facade was called outside a routes file" and
+     * contributes nothing.
+     *
+     * A closure fixture would not catch that: it receives its registrar as an
+     * argument and never touches the facade, so it would keep passing while the
+     * seam that makes real routes files work was broken. Both shapes are still
+     * supported, so both are still covered — this is the one that matters.
+     */
+    public function test_a_facade_style_routes_file_loads_through_the_loader(): void
+    {
+        $loader = $this->loaderWithRoutes([
+            'routes/web.php' => $this->facadeRoutes(<<<'PHP'
+                Route::get('facade-web', [\stdClass::class, 'index']);
+                Route::post('facade-save', [\stdClass::class, 'store'])->name('facade.save');
+                PHP),
+            'routes/api.php' => $this->facadeRoutes("Route::get('facade-api', [\stdClass::class, 'index']);"),
+        ]);
+
+        $output = $this->render($loader);
+
+        $this->assertStringContainsString('stdClass@index', $output);
+        $this->assertStringContainsString('stdClass@store', $output);
+        $this->assertStringContainsString('3 route(s): 2 web, 1 api.', $output);
+        $this->assertStringNotContainsString('Failed to load', $output);
     }
 
     /**
@@ -342,13 +376,10 @@ final class RouteListCommandTest extends TestCase
     public function test_a_broken_routes_file_is_warned_about_not_fatal(): void
     {
         $loader = $this->loaderWithRoutes([
-            'routes/web.php' => <<<'PHP'
-                <?php
-                return function (\Framework\Routing\RouteRegistrar $router): void {
-                    $router->get('good', \stdClass::class, 'index');
-                    throw new \RuntimeException('routes file exploded');
-                };
-                PHP,
+            'routes/web.php' => $this->facadeRoutes(<<<'PHP'
+                Route::get('good', [\stdClass::class, 'index']);
+                throw new \RuntimeException('routes file exploded');
+                PHP),
         ]);
 
         $output = $this->render($loader);
@@ -358,14 +389,32 @@ final class RouteListCommandTest extends TestCase
     }
 
     /**
-     * A routes file that returns something that is not a callable is reported too,
-     * rather than silently contributing nothing.
+     * A routes file that is not valid PHP is reported, and the other domain still
+     * lists — one broken file must not take the whole command down with it.
+     *
+     * ## What this test used to be, and why it changed
+     *
+     * It asserted that a file *returning a string* produced "must return a
+     * callable". That check is gone by design, not by accident: a facade-style
+     * routes file's last statement is a `Route::get(...)` call, so the file
+     * returns a `Route` object — not callable — while being perfectly correct.
+     * Keeping the old assertion would mean keeping a rule that rejects the
+     * framework's own happy path.
+     *
+     * A parse error is the thing that genuinely cannot be loaded, so it is what
+     * the warning is now pinned to.
      */
-    public function test_a_routes_file_returning_a_non_callable_is_reported(): void
+    public function test_a_routes_file_that_cannot_be_parsed_is_reported(): void
     {
-        $loader = $this->loaderWithRoutes(['routes/web.php' => '<?php return "not a callable";']);
+        $loader = $this->loaderWithRoutes([
+            'routes/web.php' => '<?php this is not valid php',
+            'routes/api.php' => $this->facadeRoutes("Route::get('still-listed', [\stdClass::class, 'index']);"),
+        ]);
 
-        $this->assertStringContainsString('must return a callable', $this->render($loader));
+        $output = $this->render($loader);
+
+        $this->assertStringContainsString('Failed to load', $output);
+        $this->assertStringContainsString('still-listed', $output);
     }
 
     // ------------------------------------------------------------------ wiring
@@ -398,6 +447,24 @@ final class RouteListCommandTest extends TestCase
     private function loader(): RouteLoader
     {
         return $this->loader;
+    }
+
+    /**
+     * A facade-style routes file wrapping the given body.
+     *
+     * The `use` line is what a real file has, and it is load-bearing here rather
+     * than cosmetic: it is the exact statement that pulls in the facade whose
+     * target only exists while the loader is running the file.
+     *
+     * Written to a temp file with no namespace of its own, so `Route::` resolves
+     * through that import — the same as `routes/web.php`, and deliberately not
+     * `\Route::`, which would name a global class that does not exist and defeat
+     * the import the fixture exists to exercise. The body therefore references
+     * `Route` unqualified; `\stdClass` inside it may stay qualified.
+     */
+    private function facadeRoutes(string $body): string
+    {
+        return "<?php\nuse Framework\\Support\\Facades\\Route;\n\n" . $body . "\n";
     }
 
     /**

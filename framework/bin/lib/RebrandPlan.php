@@ -63,8 +63,11 @@ final class RebrandPlan
      * @param string $name            Human-readable plugin name.
      * @param string $slug            Plugin folder / entry-file stem.
      * @param string $vendor          Composer vendor.
-     * @param string $namespace       App namespace root, without a trailing backslash.
-     * @param string $coreNamespace   Core namespace root, without a trailing backslash.
+     * @param string $namespace       Namespace root, without a trailing backslash. The
+     *                                logical layers are kept *under* it: `App\` becomes
+     *                                `<root>\App\` and `Core\` becomes `<root>\Core\`.
+     * @param string $appNamespace    The application layer namespace, `<root>\App`.
+     * @param string $coreNamespace   The domain layer namespace, `<root>\Core`.
      * @param string $constantPrefix  PHP constant prefix, with trailing underscore.
      * @param string $optionPrefix    Option/transient/nonce prefix, with trailing underscore.
      * @param string $cliPrefix       WP-CLI command namespace.
@@ -76,6 +79,7 @@ final class RebrandPlan
         public readonly string $slug,
         public readonly string $vendor,
         public readonly string $namespace,
+        public readonly string $appNamespace,
         public readonly string $coreNamespace,
         public readonly string $constantPrefix,
         public readonly string $optionPrefix,
@@ -87,6 +91,17 @@ final class RebrandPlan
 
     /**
      * Build a plan from parsed command-line options, deriving what was omitted.
+     *
+     * ## Why the layers are prefixed rather than replaced
+     *
+     * `App` and `Core` name *layers* — delivery and domain — and those names are
+     * part of the architecture the starter teaches, not part of its identity. A
+     * rebrand therefore moves the root and keeps the layers: `App\Database`
+     * becomes `Acme\App\Database`, not `Acme\Database`. Flattening them would make
+     * every rebranded project's namespace scheme disagree with every hexagonal
+     * reference the README points at, and it would erase the `core/` ↔ `app/`
+     * distinction from the namespace itself — the one place a reader of a `use`
+     * statement can see which zone a class belongs to.
      *
      * @param array<string, string|bool> $options
      */
@@ -100,6 +115,7 @@ final class RebrandPlan
             slug: $slug,
             vendor: trim((string) $options['vendor']),
             namespace: $namespace,
+            appNamespace: $namespace . '\\App',
             coreNamespace: self::trimNamespace(
                 (string) ($options['core-namespace'] !== ''
                     ? $options['core-namespace']
@@ -221,6 +237,44 @@ final class RebrandPlan
                 $this->coreNamespace,
                 $this->namespace,
                 $this->namespace
+            );
+        }
+
+        // The root must not already name a layer. The rules *append* the layer
+        // to the root, so `--namespace=LeadBridge\App` yields
+        // `LeadBridge\App\App\...` — namespaces no file declares, which
+        // Composer therefore cannot resolve, and which fail exactly as quietly
+        // as a wrong PSR-4 map. The flag means "root"; the usage text says so,
+        // and this makes the mistake impossible to make anyway.
+        $separator = strrpos($this->namespace, '\\');
+        $lastSegment = $separator === false
+            ? $this->namespace
+            : substr($this->namespace, $separator + 1);
+
+        if (in_array(strtolower($lastSegment), ['app', 'core'], true)) {
+            $root = $separator === false ? '' : substr($this->namespace, 0, $separator);
+
+            $problems[] = sprintf(
+                '--namespace "%s" already ends with a layer name. It is the *root* the layers are '
+                . 'prefixed with, so `App\` becomes "<root>\App\" — passing "%s" produces "%s\App\". '
+                . 'Pass "%s" instead.',
+                $this->namespace,
+                $lastSegment,
+                $this->namespace,
+                $root !== '' ? $root : '<Root>'
+            );
+        }
+
+        // The two layers must stay distinct. They are separate PSR-4 roots
+        // pointing at `app/` and `core/`; giving them the same prefix makes
+        // Composer keep one key and silently drop the other, so every class in
+        // the lost directory stops resolving.
+        if (strcasecmp($this->coreNamespace, $this->appNamespace) === 0) {
+            $problems[] = sprintf(
+                '--core-namespace "%s" must differ from the application layer namespace "%s". '
+                . 'They are separate PSR-4 roots for separate directories.',
+                $this->coreNamespace,
+                $this->appNamespace
             );
         }
 

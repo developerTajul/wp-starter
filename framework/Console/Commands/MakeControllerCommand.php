@@ -30,7 +30,10 @@ class MakeControllerCommand extends GeneratorCommand
 
     protected function getStubPath(): string
     {
-        return base_path('stubs/controller.stub');
+        // A bare name, not a path: StubLocator checks the project's own
+        // stubs/controller.stub first and falls back to the framework's, which is
+        // what keeps this working when the framework is installed under vendor/.
+        return 'controller.stub';
     }
 
     protected function getTargetPath(string $className): string

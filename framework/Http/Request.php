@@ -78,6 +78,11 @@ class Request
      * @param string|null               $rawBody The undecoded request body, or null to
      *                                          read it lazily from php://input.
      * @param array<string, string>     $headers Lowercased header names, `-` separated.
+     * @param bool                      $decoded Internal. True to skip decoding the raw
+     *                                          body into the JSON bucket — used only by
+     *                                          {@see withInput()}, which supplies
+     *                                          parameters that are already resolved. A
+     *                                          caller outside this class never passes it.
      */
     public function __construct(
         private readonly array $query = [],
@@ -86,7 +91,8 @@ class Request
         private readonly array $files = [],
         private readonly array $cookies = [],
         ?string $rawBody = null,
-        private readonly array $headers = []
+        private readonly array $headers = [],
+        bool $decoded = false
     ) {
         $this->rawBody = $rawBody;
 
@@ -96,7 +102,13 @@ class Request
         // request is built, not three frames later inside a controller. A broken
         // body does not throw here (see decodeJson()); isJson() simply reports
         // false, and input() falls back to the other sources.
-        if ($this->isJson()) {
+        //
+        // `$decoded` is the escape hatch for the one caller that has already
+        // resolved its parameters — see withInput(). Without it a transformed copy
+        // of a JSON request would re-decode the unchanged raw body and reinstate
+        // the untransformed values on top of the transformed ones, which is a
+        // silent no-op on exactly the requests a headless client sends.
+        if (!$decoded && $this->isJson()) {
             $this->json = $this->decodeJson();
         }
     }
@@ -294,6 +306,112 @@ class Request
     public function all(): array
     {
         return array_replace($this->query, array_replace($this->body, $this->json ?? []));
+    }
+
+    /**
+     * A copy of this request with its merged parameters transformed.
+     *
+     * ## Why a copy, and why this method has to exist
+     *
+     * Middleware such as `TrimStrings`, `ConvertEmptyStringsToNull` and
+     * `SanitizeInput` exist to hand a *cleaner* request to the rest of the stack,
+     * and this class is immutable and exposes no raw source buckets — so without
+     * this method there is no way to write them at all except by reaching into
+     * the constructor from outside, which would mean re-reading the superglobals
+     * (losing the URL parameters a routed request carries) or duplicating every
+     * constructor argument at the call site.
+     *
+     * It returns a new instance rather than mutating, because the request a
+     * middleware received may still be held by the caller that sent it — the
+     * adapter's `Request` binding, a log entry, an outer middleware that wants the
+     * original on the way back out.
+     *
+     * ## What is transformed, and what is not
+     *
+     * **Only the merged parameters.** `$transform` is applied to `all()` and the
+     * result replaces the body bucket; the query bucket and the JSON bucket are
+     * emptied, because leaving the originals in place would mean `input()` still
+     * reported untrimmed values — the merged view takes the last source, so a
+     * stale `query` entry would reappear the moment nothing overwrote it. The
+     * method, headers, cookies, files, server values and raw body are carried
+     * over untouched: those are transport facts, not user input, and a middleware
+     * that wants to change one is doing something this method is not for.
+     *
+     * The consequence for `post()` is worth naming: after this call `post()` and
+     * `input()` agree, both reading the transformed values, whereas before they
+     * differed for a JSON request. That is the intended reading — the transform
+     * describes what the application should see as input, and `post()` is not a
+     * back door around it.
+     *
+     * ### The JSON bucket is carried, not re-decoded
+     *
+     * A `Request` whose body is `Content-Type: application/json` decodes its raw
+     * body into a JSON bucket in the constructor, and that bucket wins the merge
+     * in {@see all()}. Building the copy through the ordinary constructor would
+     * therefore re-decode the **unchanged** raw body and quietly reinstate the
+     * untransformed values on top of the transformed ones — the transform would
+     * appear to do nothing on exactly the requests a headless client sends.
+     *
+     * So the copy is built through {@see fromTransformedInput()}, which is the
+     * constructor with the decode step suppressed. The raw body is still carried
+     * unchanged, so `rawBody()` and `isJson()` keep reporting the wire format the
+     * client actually sent; what changes is only which values `input()` resolves.
+     *
+     * @param callable(array<int|string, mixed>): array<int|string, mixed> $transform
+     */
+    public function withInput(callable $transform): self
+    {
+        return self::fromTransformedInput(
+            $transform($this->all()),
+            $this->server,
+            $this->files,
+            $this->cookies,
+            $this->rawBody(),
+            $this->headers
+        );
+    }
+
+    /**
+     * Build a copy whose parameters are already resolved, with no decode pass.
+     *
+     * Private and static because it exists for exactly one caller —
+     * {@see withInput()} — and is the only construction path in this class that
+     * skips the constructor's JSON decoding. Everything a caller reaches for
+     * normally goes through the public constructor; keeping this narrow is what
+     * stops "no decode" from becoming a second, differently-behaved entry point.
+     *
+     * The transformed parameters go in the **body** bucket with the query and
+     * JSON buckets left empty, so `all()` — which merges query, then body, then
+     * JSON — reports them and nothing else. The headers, server values, cookies,
+     * files and raw body are carried across unchanged, so the copy still
+     * describes the same wire request.
+     *
+     * @param array<int|string, mixed> $input
+     * @param array<string, mixed>     $server
+     * @param array<string, mixed>     $files
+     * @param array<string, string>    $cookies
+     * @param array<string, string>    $headers
+     */
+    private static function fromTransformedInput(
+        array $input,
+        array $server,
+        array $files,
+        array $cookies,
+        string $rawBody,
+        array $headers
+    ): self {
+        return new self(
+            query: [],
+            body: $input,
+            server: $server,
+            files: $files,
+            cookies: $cookies,
+            rawBody: $rawBody,
+            headers: $headers,
+            // The parameters are already resolved; re-decoding the raw body would
+            // overwrite them with the client's untransformed originals.
+            decoded: true
+        );
     }
 
     /**

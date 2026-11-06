@@ -6,6 +6,7 @@ namespace Framework\Http;
 use DevLinkStudios\WPServiceContainer\Container;
 use DevLinkStudios\WPServiceContainer\Contracts\ContainerInterface;
 use DevLinkStudios\WPServiceContainer\ServiceProvider;
+use Framework\Http\Middleware\MiddlewareAliases;
 use Framework\Http\Middleware\Pipeline;
 use Framework\Support\ViewRenderer;
 
@@ -47,6 +48,13 @@ class HttpServiceProvider extends ServiceProvider
         // is built here rather than inside a closure.
         $this->container->instance(Request::class, Request::capture());
 
+        // Shared, because an alias is *configuration*: a project adds one during
+        // its own boot, and a non-shared registry would hand that project a fresh
+        // empty set the next time anything resolved one — so the alias would work
+        // for whichever route happened to resolve first and silently fail for
+        // every route after it.
+        $this->container->singleton(MiddlewareAliases::class);
+
         // Not shared: a pipeline is per-use. Two requests — or two stacks in one
         // request — that shared a pipeline would share its middleware list and
         // its request, so configuring the second would silently reconfigure the
@@ -58,7 +66,11 @@ class HttpServiceProvider extends ServiceProvider
                 // part of it — the concrete Container is what the closure needs.
                 // Nothing else is bound under the interface in this framework, so
                 // the cast is a statement of that fact rather than a guess.
-                $container instanceof Container ? $container : app()
+                $container instanceof Container ? $container : app(),
+                // Resolved here rather than in the Pipeline's own default, so the
+                // *shared* registry a project configured is the one the routes
+                // are resolved against.
+                $container->resolve(MiddlewareAliases::class)
             )
         );
 

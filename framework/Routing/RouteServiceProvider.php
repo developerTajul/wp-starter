@@ -9,11 +9,27 @@ use Throwable;
 /**
  * Wires the router into the REST API lifecycle.
  *
- * Follows the register/boot split the container depends on: register() declares
- * bindings only, boot() touches WordPress hooks. Registering routes themselves
- * is deferred to the `rest_api_init` action rather than done in boot(), because
- * `rest_api_init` fires per REST request and a route registered while merely
- * loading a page would be collected for a request that never dispatches.
+ * ## The routes file is read through RouteLoader, not `require`d
+ *
+ * {@see RouteLoader} aims the `Route` facade at this provider's router for the
+ * duration of the load, which is what lets `routes/api.php` call
+ * `Route::get(...)` — and the same file shape as `routes/web.php`, despite the
+ * two writing into entirely different tables.
+ *
+ * This used to `require` the file directly and demand a callable back. That
+ * worked only while every routes file returned a closure; the moment one was
+ * written against the facade, the direct `require` threw "the facade was called
+ * outside a routes file" and the whole REST table registered **nothing** — a
+ * silent empty API rather than a visible failure, which is why the load now goes
+ * through the same door `route:list` uses.
+ *
+ * ## It follows the register/boot split the container depends on
+ *
+ * register() declares bindings only, boot() touches WordPress hooks. Registering
+ * routes themselves is deferred to the `rest_api_init` action rather than done in
+ * boot(), because `rest_api_init` fires per REST request and a route registered
+ * while merely loading a page would be collected for a request that never
+ * dispatches.
  */
 class RouteServiceProvider extends ServiceProvider
 {
@@ -41,10 +57,28 @@ class RouteServiceProvider extends ServiceProvider
         // instance — every routes file and every controller registers into the
         // same collection, so a per-resolve router would silently drop routes.
         $this->container->singleton(RouteResolver::class);
+
+        // One registry for every router in the process, so `route()` can find a
+        // name whichever domain declared it. Bound before the router below, which
+        // resolves it.
+        $this->container->singleton(NamedRoutes::class);
+
         $this->container->singleton(Router::class, fn ($container) => new Router(
             $container,
-            $container->resolve(RouteResolver::class)
+            $container->resolve(RouteResolver::class),
+            $container->resolve(NamedRoutes::class)
         ));
+
+        // The loader reads routes files and owns which router the `Route` facade
+        // writes into while one is running. Bound here as well as in the app's
+        // provider because this class is the one that loads a file, and it must not
+        // depend on a subclass having bound the loader first. `singleton()`
+        // replaces, so if the app provider also binds it there is still exactly one
+        // instance — and one loaded-file record, which is the point.
+        $this->container->singleton(
+            RouteLoader::class,
+            static fn (): RouteLoader => new RouteLoader(base_path())
+        );
     }
 
     public function boot(): void
@@ -76,12 +110,18 @@ class RouteServiceProvider extends ServiceProvider
     /**
      * Load the routes file, if one is configured and present.
      *
-     * A routes file is an ordinary PHP file that receives the fluent registrar:
+     * Through {@see RouteLoader} rather than a bare `require`, which is what makes
+     * a file written as `Route::get(...)` work: the facade has no router of its own
+     * and resolves its target from loader state, so `require`-ing the file here
+     * would throw "the facade was called outside a routes file" and register
+     * nothing at all. The loader is also the single entry point `route:list` uses,
+     * so the two cannot disagree about what loading a routes file means.
      *
-     *     <?php
-     *     return function (RouteRegistrar $router): void {
-     *         $router->get('posts', PostController::class, 'index');
-     *     };
+     * Both file shapes are accepted, and the loader is what accepts them:
+     *
+     *     Route::get('ping', fn () => ['pong' => true]);   // facade
+     *
+     *     return function (RouteRegistrar $router): void { ... };   // legacy
      *
      * A missing file is normal — a plugin with no REST surface still boots the
      * provider — but a file that throws is not: it means the route table is
@@ -93,36 +133,15 @@ class RouteServiceProvider extends ServiceProvider
             return;
         }
 
-        $path = base_path($this->routesFile);
+        $result = $this->container->resolve(RouteLoader::class)->load($router, $this->routesFile);
 
-        if (!is_file($path)) {
-            return;
-        }
-
-        try {
-            /** @var callable(RouteRegistrar): void|null $routes */
-            $routes = require $path;
-        } catch (Throwable $e) {
+        if ($result->failed()) {
             // Reported through the WordPress error log rather than rethrown:
             // `rest_api_init` runs inside WordPress's REST dispatch, so letting
             // this escape would turn a broken routes file into an opaque 500 on
             // every endpoint instead of one actionable log line.
-            $this->logRouteFailure($e);
-
-            return;
+            $this->logRouteFailure($result->error ?? new \RuntimeException($result->describe()));
         }
-
-        if (!is_callable($routes)) {
-            $this->logRouteFailure(new \RuntimeException(sprintf(
-                'Routes file [%s] must return a callable. Got [%s].',
-                $path,
-                get_debug_type($routes)
-            )));
-
-            return;
-        }
-
-        $routes($router->registrar());
     }
 
     private function logRouteFailure(Throwable $e): void

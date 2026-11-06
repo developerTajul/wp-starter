@@ -54,7 +54,17 @@ class Router implements RouterInterface
 
     public function __construct(
         private readonly Container $container,
-        private readonly RouteResolver $resolver
+        private readonly RouteResolver $resolver,
+        /**
+         * Where named routes are recorded for URL generation.
+         *
+         * Optional, so the existing constructions — the framework provider, tests,
+         * probes — keep working. When omitted a private registry is used and this
+         * router's names are unreachable from `route()`, which is correct for a
+         * caller that never generates a URL; the providers always pass the shared
+         * one.
+         */
+        private readonly NamedRoutes $namedRoutes = new NamedRoutes()
     ) {
     }
 
@@ -131,33 +141,41 @@ class Router implements RouterInterface
      * preferred surface inside a routes file, because it carries the group
      * prefix and middleware.
      *
+     * @param string|array{0: string, 1: string}|callable|null $controller
+     *
      * @throws RouteRegistrationException
      */
-    public function get(string $path, ?string $controller = null, ?string $action = null): Route
+    public function get(string $path, string|array|callable|null $controller = null, ?string $action = null): Route
     {
         return $this->registrar()->get($path, $controller, $action);
     }
 
     /**
+     * @param string|array{0: string, 1: string}|callable|null $controller
+     *
      * @throws RouteRegistrationException
      */
-    public function post(string $path, ?string $controller = null, ?string $action = null): Route
+    public function post(string $path, string|array|callable|null $controller = null, ?string $action = null): Route
     {
         return $this->registrar()->post($path, $controller, $action);
     }
 
     /**
+     * @param string|array{0: string, 1: string}|callable|null $controller
+     *
      * @throws RouteRegistrationException
      */
-    public function put(string $path, ?string $controller = null, ?string $action = null): Route
+    public function put(string $path, string|array|callable|null $controller = null, ?string $action = null): Route
     {
         return $this->registrar()->put($path, $controller, $action);
     }
 
     /**
+     * @param string|array{0: string, 1: string}|callable|null $controller
+     *
      * @throws RouteRegistrationException
      */
-    public function delete(string $path, ?string $controller = null, ?string $action = null): Route
+    public function delete(string $path, string|array|callable|null $controller = null, ?string $action = null): Route
     {
         return $this->registrar()->delete($path, $controller, $action);
     }
@@ -245,6 +263,15 @@ class Router implements RouterInterface
         // Flagged only once every route is registered, so a throw above leaves the
         // namespace unregistered and a retry can still succeed.
         $this->registeredNamespaces[$namespace] = true;
+
+        // Recorded for URL generation, after registration rather than before,
+        // because that is the moment the routes are actually reachable — a
+        // `route()` call that resolves a name this router has not published yet
+        // would produce a URL to an endpoint WordPress does not answer.
+        //
+        // `add()` is idempotent per domain, so the second namespace a project
+        // publishes under does not re-register the same table.
+        $this->namedRoutes->add($this);
     }
 
     /**

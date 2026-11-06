@@ -1,0 +1,813 @@
+#!/usr/bin/env php
+<?php
+declare(strict_types=1);
+
+/**
+ * `mini` — the project's WP-CLI entry point.
+ *
+ *     php mini route:list
+ *     php mini make:controller LeadController
+ *     php mini migrate
+ *
+ * ## What this is, and what it deliberately is not
+ *
+ * It is a *forwarder*, not a console application. There is no command registry
+ * here, no argument parser and no dispatcher: the commands live in
+ * `app/Console/Kernel.php`, WordPress owns the bootstrap that makes them
+ * loadable, and WP-CLI owns the dispatch. This script exists to remove the two
+ * things a developer would otherwise have to know before they can run a single
+ * command — *where* the WP-CLI binary is, and *what the CLI prefix is* — and
+ * then to hand the command line over intact.
+ *
+ * Reimplementing any of that here would be a second command registry, and a
+ * second registry is a second answer to "which commands exist" that drifts from
+ * the first the moment somebody adds a command. So this file never needs to know
+ * what `route:list` is.
+ *
+ * ## Why the prefix is read from `.env` and not from config
+ *
+ * `config('app.cli_prefix')` is the authoritative value, and this script cannot
+ * use it. Reading it means booting WordPress (the config is loaded by the plugin
+ * entry file at `plugins_loaded`), and booting WordPress is what WP-CLI is for —
+ * doing it here would make `php mini` slower than `wp` and would make the script
+ * unusable on a site whose WordPress is broken, which is exactly when somebody
+ * wants to run a command.
+ *
+ * So the value is read the way it is *written*: `CLI_PREFIX` in `.env`. That is
+ * one line of `.env` parsing rather than a second configuration system, and it
+ * is correct because `.env` is where the value comes from in the first place —
+ * `config/app.php` maps `env('CLI_PREFIX')` and nothing else in the framework
+ * sets it. The fallback below is the same `wp_mini` that `config/app.php` and
+ * {@see \Framework\Config\Config::DEFAULT_CLI_PREFIX} fall back to, so a project
+ * with no `.env` gets the same answer this script would have got from config.
+ *
+ * ## Why the real WP-CLI is preferred over the bundled one
+ *
+ * A site that already has `wp` on its PATH has a WP-CLI with its own version,
+ * its own `--require` flags and its own config file, and silently using a
+ * different build would be the kind of difference that is invisible until
+ * something behaves oddly. The download is a fallback for the machine that has
+ * none — which is most machines running this plugin for the first time.
+ *
+ * @package WP Mini Laravel
+ */
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** The CLI prefix used when `.env` does not supply one. Mirrors config/app.php. */
+const MINI_DEFAULT_PREFIX = 'wp_mini';
+
+/** Where a downloaded WP-CLI is cached, relative to the plugin root. */
+const MINI_CACHE_DIRECTORY = '.cli-cache';
+
+/** The cached binary's file name. */
+const MINI_PHAR_NAME = 'wp-cli.phar';
+
+/** Where the fallback WP-CLI is fetched from. */
+const MINI_PHAR_URL = 'https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar';
+
+// ---------------------------------------------------------------------------
+// Bootstrap
+// ---------------------------------------------------------------------------
+
+if (PHP_SAPI !== 'cli') {
+    fwrite(STDERR, "mini must be run from the command line.\n");
+    exit(1);
+}
+
+$root = __DIR__;
+
+$arguments = array_slice($argv, 1);
+
+// `--help` with no command is the one thing this script answers itself, because
+// forwarding it would print WP-CLI's own help — a wall of global flags for a
+// tool the user did not ask about. Everything else, including `--version`, is
+// WP-CLI's to answer.
+if ($arguments === [] || $arguments[0] === '--help' || $arguments[0] === '-h') {
+    miniUsage($root);
+
+    exit(0);
+}
+
+$prefix = miniValidatePrefix(miniCliPrefix($root));
+$wpBinary = miniResolveWpCli($root);
+
+// The prefix this script read and the prefix WordPress registers come from the
+// same `.env` key by two different routes: this script parses the file, and the
+// framework reads it through `config/app.php`'s `env()` call. If those routes
+// ever disagree, nothing reports it — the command simply runs under a name no
+// plugin registered, and the only symptom is WP-CLI saying the command does not
+// exist, which points at the plugin rather than at the entry point.
+//
+// There is no way to check the *resolved* values from here, because the
+// framework's is not known until WordPress boots, and booting WordPress is what
+// is being invoked. So the script reports the one it used, and `--verbose` is
+// where that goes: it is what somebody debugging "why is my command not found"
+// needs, and noise on every other invocation.
+if (in_array('--verbose', $arguments, true)) {
+    miniDescribe($root, $prefix, $wpBinary);
+}
+
+// Transparent hand-off: this process is *replaced*, not wrapped.
+//
+// A wrapper that shelled out and copied the exit code would break interactive
+// commands — `wp` reads stdin for a confirmation prompt, and an inherited pipe
+// is not the same thing as the terminal — and it would put a second process
+// between the user's Ctrl-C and the command that should receive it. On Unix
+// `pcntl_exec` replaces the image outright.
+//
+// It is skipped for a batch file, which is the one binary `pcntl_exec` could not
+// run even if it existed on Windows; see {@see miniRunAndExit()}.
+if (function_exists('pcntl_exec') && !miniIsBatchFile($wpBinary)) {
+    // phpcs:ignore WordPress.PHP.NoSilencedErrors -- exec() either replaces this
+    // process or returns false; a warning here would be followed by the fallback
+    // below in any case, and the fallback reports the real problem.
+    @pcntl_exec($wpBinary, [$prefix, ...$arguments]);
+
+    // Reached only when the exec failed — a missing binary, or a platform that
+    // refuses. Falling through to the portable path rather than dying here means
+    // a failure this branch cannot explain still gets one clear error message.
+}
+
+// Windows has no `pcntl_exec`, and this is where the two platforms genuinely
+// differ: `proc_open` with inherited descriptors is the closest equivalent — the
+// child gets the real STDIN/STDOUT/STDERR handles, so prompts and Ctrl-C work —
+// and the exit code is then propagated by hand.
+miniRunAndExit($wpBinary, $prefix, $arguments);
+
+// ---------------------------------------------------------------------------
+// Running WP-CLI
+// ---------------------------------------------------------------------------
+
+/**
+ * Run WP-CLI with inherited stdio, and exit with its status.
+ *
+ * @param non-empty-string $binary  The resolved WP-CLI.
+ * @param string           $prefix  The CLI namespace to forward under.
+ * @param list<string>     $arguments Everything the user typed after the command.
+ *
+ * @return never
+ */
+function miniRunAndExit(string $binary, string $prefix, array $arguments): void
+{
+    $descriptors = [
+        0 => STDIN,
+        1 => STDOUT,
+        2 => STDERR,
+    ];
+
+    // A `.bat` or `.cmd` cannot be executed by PHP at all — `proc_open` with an
+    // array hands the file to PHP itself when it is an *argument*, and CreateProcess
+    // has no idea what a batch file is when it is the *executable*. cmd.exe is the
+    // only thing that can run one, so that path goes through a shell string with
+    // every part escaped. This branch is a last resort: {@see miniPathCandidates()}
+    // prefers a real `wp` or a `.phar` precisely so it is rarely reached.
+    if (PHP_OS_FAMILY === 'Windows' && miniIsBatchFile($binary)) {
+        $line = escapeshellarg($binary);
+
+        foreach ([$prefix, ...$arguments] as $argument) {
+            $line .= ' ' . escapeshellarg($argument);
+        }
+
+        $process = @proc_open($line, $descriptors, $pipes);
+    } else {
+        // `PHP_BINARY` rather than the string `php`: on Windows a `.phar` has no
+        // executable bit and no shebang handling, so PHP has to be named
+        // explicitly, and naming the binary that is already running this script
+        // avoids resolving `php` through PATH to a different version.
+        $command = PHP_OS_FAMILY === 'Windows'
+            ? [PHP_BINARY, $binary, $prefix, ...$arguments]
+            : [$binary, $prefix, ...$arguments];
+
+        $process = @proc_open($command, $descriptors, $pipes);
+    }
+
+    if (!is_resource($process)) {
+        fwrite(STDERR, sprintf("mini: could not start WP-CLI (%s).\n", $binary));
+
+        exit(1);
+    }
+
+    exit(proc_close($process));
+}
+
+/**
+ * Whether a path names a Windows batch file.
+ *
+ * Matched on the extension rather than by trusting the resolution order, because
+ * a project may keep its own `wp.bat` next to the plugin — and the failure it
+ * guards against is silent, so it must not depend on how the path was found.
+ */
+function miniIsBatchFile(string $path): bool
+{
+    $extension = strtolower((string) pathinfo($path, PATHINFO_EXTENSION));
+
+    return $extension === 'bat' || $extension === 'cmd';
+}
+
+// ---------------------------------------------------------------------------
+// Finding WP-CLI
+// ---------------------------------------------------------------------------
+
+/**
+ * The WP-CLI to run: the one installed on this machine, otherwise a local copy.
+ *
+ * @return non-empty-string
+ */
+function miniResolveWpCli(string $root): string
+{
+    $found = miniFindInstalled();
+
+    if ($found !== null) {
+        return $found;
+    }
+
+    return miniDownloadedWpCli($root);
+}
+
+/**
+ * A runnable WP-CLI on this machine, or null.
+ *
+ * ## Why the result is a phar and never a `.bat`
+ *
+ * On Windows, WP-CLI is usually installed as `wp.bat` — a three-line Composer
+ * bin proxy that ends in `php "%~dp0wp-cli.phar" %*`. Handing that to
+ * `proc_open(['php', 'wp.bat', …])` does not run it: PHP does not execute a
+ * `.bat` file as a script, it *reads* it as PHP source, finds no `<?php`, and
+ * prints the batch file's text to stdout before exiting zero. The caller sees a
+ * successful command that produced nothing but its own launcher, which is
+ * exactly the failure this class of wrapper is prone to and exactly why the real
+ * phar beside the proxy is preferred here.
+ *
+ * ## Why PATH is walked by hand
+ *
+ * `exec('which wp')` is a shell round-trip, is unavailable under
+ * `disable_functions`, and returns something that has to be re-parsed anyway.
+ * Walking PATH is a dozen lines and has no such dependencies.
+ *
+ * @return non-empty-string|null
+ */
+function miniFindInstalled(): ?string
+{
+    $path = (string) (getenv('PATH') ?: (getenv('Path') ?: ''));
+
+    if ($path === '') {
+        return null;
+    }
+
+    // `;` on Windows, `:` elsewhere. Deciding by platform rather than by
+    // sniffing the string: a Unix PATH can legitimately contain a Windows-style
+    // drive path under WSL, and splitting on the wrong separator silently
+    // searches one directory that does not exist.
+    $separator = PHP_OS_FAMILY === 'Windows' ? ';' : ':';
+    $directories = [];
+
+    foreach (explode($separator, $path) as $directory) {
+        $directory = trim($directory, " \t\"'");
+
+        if ($directory !== '' && !in_array($directory, $directories, true)) {
+            $directories[] = $directory;
+        }
+    }
+
+    foreach (miniPathCandidates() as $name) {
+        foreach ($directories as $directory) {
+            $candidate = rtrim($directory, '/\\') . DIRECTORY_SEPARATOR . $name;
+
+            if (is_file($candidate) && is_readable($candidate)) {
+                return $candidate;
+            }
+        }
+    }
+
+    return null;
+}
+
+/**
+ * What to look for, in preference order.
+ *
+ * Longest-lived preference first: a bare `wp` is a real executable on Unix and a
+ * shell script on a hand-rolled Windows install, and either is what the user
+ * actually means by "WP-CLI". A `.phar` is next because it is directly runnable
+ * by PHP everywhere. The Windows proxies come last and are only reached on an
+ * install that ships no phar at all — see {@see miniRunAndExit()}, which runs a
+ * `.bat`/`.cmd` through the shell precisely because PHP cannot execute one.
+ *
+ * @return list<string>
+ */
+function miniPathCandidates(): array
+{
+    return PHP_OS_FAMILY === 'Windows'
+        ? ['wp', 'wp-cli.phar', 'wp.phar', 'wp.exe', 'wp.bat', 'wp.cmd']
+        : ['wp', 'wp-cli.phar'];
+}
+
+/**
+ * The cached WP-CLI, downloading it on first use.
+ *
+ * ## Why the phar is cached and not re-fetched
+ *
+ * Because `php mini` is a command a developer runs dozens of times an hour, and
+ * a network round-trip on each one would make the whole entry point slower than
+ * typing `wp` — at which point nobody uses it. The download happens once, and
+ * never at all on a machine that already has WP-CLI.
+ *
+ * ## Why the file is written to a temporary name and renamed
+ *
+ * A download interrupted halfway — a dropped connection, a Ctrl-C — would leave
+ * a truncated file at the final path, and the *next* run would find it, skip the
+ * download and fail with a PHP parse error from inside a phar. The rename is
+ * atomic on every filesystem this runs on, so the cached path either does not
+ * exist or holds a complete verified file.
+ *
+ * @return non-empty-string
+ */
+function miniDownloadedWpCli(string $root): string
+{
+    $directory = $root . DIRECTORY_SEPARATOR . MINI_CACHE_DIRECTORY;
+    $binary = $directory . DIRECTORY_SEPARATOR . MINI_PHAR_NAME;
+
+    if (is_file($binary) && filesize($binary) > 0) {
+        return $binary;
+    }
+
+    miniAnnounceDownload();
+
+    if (!is_dir($directory) && !@mkdir($directory, 0777, true) && !is_dir($directory)) {
+        miniFail(sprintf('could not create the cache directory %s.', $directory));
+    }
+
+    $temporary = $binary . '.part';
+
+    if (!miniFetch(MINI_PHAR_URL, $temporary)) {
+        @unlink($temporary);
+
+        // The transport's own message goes in the report. "Could not download"
+        // on its own sends people to check their network, when the answer is
+        // usually a TLS trust store the two transports disagree about — and the
+        // only way to tell those apart is to print what actually failed.
+        miniFail(sprintf(
+            "could not download WP-CLI from\n    %s\n\n"
+            . "  Reason: %s\n\n"
+            . "  You can skip the download entirely by installing WP-CLI yourself\n"
+            . "  (https://wp-cli.org/#installing), or by placing a copy at\n    %s",
+            MINI_PHAR_URL,
+            miniLastFetchError(),
+            $directory . DIRECTORY_SEPARATOR . MINI_PHAR_NAME
+        ));
+    }
+
+    // A phar is a PHP script; one that does not parse is a truncated download or
+    // an HTML error page, and caching it would turn a one-time failure into a
+    // permanent one. `php -l` is the cheapest check that the bytes are a PHP
+    // file at all, and it is the failure that would otherwise surface later as a
+    // parse error the user cannot connect to this download.
+    if (!miniIsPhp($temporary)) {
+        @unlink($temporary);
+
+        miniFail(
+            "the downloaded file is not a working PHP script — the download may have been\n"
+            . "  intercepted or truncated. Nothing was cached."
+        );
+    }
+
+    if (!@rename($temporary, $binary)) {
+        @unlink($temporary);
+
+        miniFail(sprintf('could not move the download into place at %s.', $binary));
+    }
+
+    fwrite(STDOUT, sprintf("  cached at %s\n\n", miniRelative($root, $binary)));
+
+    return $binary;
+}
+
+/**
+ * Download a URL to a path, trying each available transport in turn.
+ *
+ * ## Why there is more than one transport, and why cURL is not simply preferred
+ *
+ * cURL and PHP's stream wrapper are not interchangeable here, and the difference
+ * is not one of speed. They read their TLS trust anchors from *different* ini
+ * settings — cURL from `curl.cainfo`, streams from `openssl.cafile` (falling back
+ * to the system store) — so a machine can have a working HTTPS stack in one and
+ * a `unable to get local issuer certificate` failure in the other. That is not a
+ * hypothetical: it is the configuration this script was developed on, where cURL
+ * could not reach the WP-CLI URL at all and `file_get_contents()` fetched it
+ * without complaint.
+ *
+ * So a cURL failure is not treated as "the download failed" — it is treated as
+ * "this transport cannot do it", and the stream wrapper is given the same job.
+ * Only when both fail is the failure real, and {@see miniLastFetchError()} then
+ * carries whichever message the last attempt produced, because "could not
+ * download" without the reason is the message that sends people to the wrong
+ * place.
+ *
+ * @return bool Whether $destination now holds a complete download.
+ */
+function miniFetch(string $url, string $destination): bool
+{
+    if (function_exists('curl_init') && miniFetchWithCurl($url, $destination)) {
+        return true;
+    }
+
+    if (ini_get('allow_url_fopen')) {
+        return miniFetchWithStreams($url, $destination);
+    }
+
+    // Neither transport is usable. Distinguished from "both failed" because the
+    // remedy is different: nothing about this machine's network is in question,
+    // the PHP it is running simply has no way to make an HTTPS request.
+    miniLastFetchError(
+        'this PHP has neither the cURL extension nor allow_url_fopen, so it cannot '
+        . 'make an HTTPS request at all.'
+    );
+
+    return false;
+}
+
+/**
+ * The most recent transport failure, for the message the caller prints.
+ *
+ * A global rather than a return value because the two transports fail
+ * identically (`false`) and the caller's only use for the detail is the error
+ * text. Cleared on entry so a stale message from a previous run cannot be
+ * attributed to this one.
+ */
+function miniLastFetchError(?string $message = null): string
+{
+    static $error = '';
+
+    if ($message !== null) {
+        $error = $message;
+    }
+
+    return $error;
+}
+
+function miniFetchWithCurl(string $url, string $destination): bool
+{
+    $handle = curl_init($url);
+    $file = @fopen($destination, 'wb');
+
+    if ($handle === false || $file === false) {
+        if ($handle !== false) {
+            curl_close($handle);
+        }
+
+        if ($file !== false) {
+            fclose($file);
+        }
+
+        miniLastFetchError('could not open the cache file for writing.');
+
+        return false;
+    }
+
+    curl_setopt($handle, CURLOPT_FILE, $file);
+    curl_setopt($handle, CURLOPT_FOLLOWLOCATION, true);
+    // The GitHub raw endpoint redirects to a CDN; without a redirect limit a
+    // misconfigured DNS entry could loop this forever.
+    curl_setopt($handle, CURLOPT_MAXREDIRS, 5);
+    curl_setopt($handle, CURLOPT_FAILONERROR, true);
+    curl_setopt($handle, CURLOPT_TIMEOUT, 120);
+
+    $ok = curl_exec($handle) === true;
+    $status = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+    $error = curl_error($handle);
+
+    curl_close($handle);
+    fclose($file);
+
+    if ($ok && $status === 200) {
+        return true;
+    }
+
+    @unlink($destination);
+
+    miniLastFetchError($error !== '' ? $error : "the server answered with HTTP {$status}.");
+
+    return false;
+}
+
+function miniFetchWithStreams(string $url, string $destination): bool
+{
+    $source = @fopen($url, 'rb');
+
+    if ($source === false) {
+        $last = error_get_last();
+        @unlink($destination);
+
+        miniLastFetchError($last['message'] ?? 'the connection could not be opened.');
+
+        return false;
+    }
+
+    $target = @fopen($destination, 'wb');
+
+    if ($target === false) {
+        fclose($source);
+        @unlink($destination);
+
+        miniLastFetchError('could not open the cache file for writing.');
+
+        return false;
+    }
+
+    $copied = stream_copy_to_stream($source, $target);
+
+    // The HTTP status is only reachable once the stream has been read, so it is
+    // checked here rather than before the copy: `fopen` on a 404 succeeds and
+    // hands back the error page as body content.
+    $status = 0;
+
+    foreach ($http_response_header ?? [] as $header) {
+        if (preg_match('#^HTTP/\S+\s+(\d{3})#', $header, $m) === 1) {
+            $status = (int) $m[1];
+        }
+    }
+
+    fclose($source);
+    fclose($target);
+
+    if ($copied !== false && $copied > 0 && ($status === 0 || $status === 200)) {
+        return true;
+    }
+
+    @unlink($destination);
+
+    miniLastFetchError($status !== 0 ? "the server answered with HTTP {$status}." : 'the transfer was empty.');
+
+    return false;
+}
+
+/**
+ * Whether a file is a PHP script that parses.
+ *
+ * `php -l` in a subprocess rather than `token_get_all()`, because a phar's
+ * contents are not the plain text on disk — the stub and the manifest are, but
+ * the point is to validate the file the way PHP will actually load it.
+ */
+function miniIsPhp(string $path): bool
+{
+    $command = escapeshellarg(PHP_BINARY) . ' -l ' . escapeshellarg($path);
+
+    $output = [];
+    $status = 0;
+
+    exec($command . ' 2>&1', $output, $status);
+
+    return $status === 0;
+}
+
+// ---------------------------------------------------------------------------
+// The CLI prefix
+// ---------------------------------------------------------------------------
+
+/**
+ * The `CLI_PREFIX` from `.env`, or the framework's default.
+ *
+ * ## Why this is a line-by-line read and not a dotenv library
+ *
+ * `vlucas/phpdotenv` *is* available — it is how the plugin loads `.env` — but
+ * requiring `vendor/autoload.php` here would make this script unusable before
+ * `composer install`, which is precisely when a developer first types `php mini`
+ * and finds out they need to. Every problem this script has to survive is a
+ * problem with the project's setup, so it depends on nothing but PHP.
+ *
+ * ## What it does not handle
+ *
+ * Variable interpolation (`CLI_PREFIX="${SOMETHING}"`) and multi-line values.
+ * Neither appears in a prefix, and a half-implemented dotenv parser is worse
+ * than a documented subset: the subset is `KEY=value`, which is what
+ * `.env.example` ships and what the rebrander writes.
+ */
+function miniCliPrefix(string $root): string
+{
+    $path = $root . DIRECTORY_SEPARATOR . '.env';
+
+    // No `.env` is not a failure. A production install supplies configuration
+    // through the server environment, and this script has a correct default for
+    // exactly that case.
+    if (!is_file($path)) {
+        return MINI_DEFAULT_PREFIX;
+    }
+
+    $lines = file($path, FILE_IGNORE_NEW_LINES);
+
+    if ($lines === false) {
+        return MINI_DEFAULT_PREFIX;
+    }
+
+    foreach ($lines as $line) {
+        $line = trim($line);
+
+        // Comments and blank lines. `#` only at the start of the line — a `#`
+        // inside a value is part of the value, which is the behaviour phpdotenv
+        // has and the reason a naive `explode('#')` is wrong.
+        if ($line === '' || $line[0] === '#') {
+            continue;
+        }
+
+        // `export KEY=value` is a spelling phpdotenv accepts, and a hand-edited
+        // `.env` sometimes carries it. Stripping it here means the one person
+        // who wrote it does not silently get the default prefix.
+        if (str_starts_with($line, 'export ')) {
+            $line = ltrim(substr($line, 7));
+        }
+
+        if (!preg_match('/^CLI_PREFIX\s*=\s*(.*)$/i', $line, $matches)) {
+            continue;
+        }
+
+        $value = miniUnquote(trim($matches[1]));
+
+        // Empty is treated as absent, not as a prefix. `CLI_PREFIX=` is what the
+        // shipped `.env.example` carries before it is filled in, and registering
+        // commands under the empty namespace would collide with every other
+        // WP-CLI command on the site.
+        return $value === '' ? MINI_DEFAULT_PREFIX : $value;
+    }
+
+    return MINI_DEFAULT_PREFIX;
+}
+
+/**
+ * Reject a prefix that cannot be a WP-CLI command namespace.
+ *
+ * ## Why this is checked here rather than left to WP-CLI
+ *
+ * WP-CLI would accept most bad prefixes and then fail in a way that points at
+ * the wrong thing. A prefix with a space becomes two argv entries, so the
+ * command name is silently truncated and the second word is read as an argument
+ * — `CLI_PREFIX="my plugin"` makes `php mini route:list` run `wp my route:list`.
+ * A prefix containing `/` is worse: WP-CLI reads it as a subcommand separator,
+ * so the command registers under a name no shell invocation can reach.
+ *
+ * ## Why the pattern is a whitelist rather than a mirror of the rebrander's
+ *
+ * The rebrander's own rule (`/^[a-z][a-z0-9]*$/`) is narrower than WP-CLI's, and
+ * copying it here would be wrong in both directions. It exists to reject a
+ * *default being rebranded to itself* — `--cli-prefix=wp_mini` is refused
+ * because it changes nothing — not to describe what WP-CLI can register. So it
+ * rejects the framework's own shipped default, and a validator built on it would
+ * refuse the plugin's out-of-the-box configuration. It also has no opinion on
+ * underscores, which WP-CLI accepts happily.
+ *
+ * What WP-CLI actually requires is a single argv word that does not read as a
+ * path: it splits on `/` for subcommands and cannot be reached at all if the
+ * name contains a space, because the shell turns one argument into two and the
+ * remainder is parsed as the subcommand. So the whitelist is the set of
+ * characters that survive that trip, plus the requirement that the name starts
+ * with a letter so it can never collide with a WP-CLI global flag.
+ *
+ * The framework itself never validates this value — `config/app.php` takes
+ * `env('CLI_PREFIX')` as written — so a bad one is accepted at boot and only
+ * shows up as commands that cannot be called. Failing here, with the offending
+ * value quoted, is the only place both halves are visible at once.
+ *
+ * @return non-empty-string
+ */
+function miniValidatePrefix(string $prefix): string
+{
+    if (preg_match('/^[a-z][a-z0-9_-]*$/', $prefix) === 1) {
+        return $prefix;
+    }
+
+    // A project that has never set CLI_PREFIX never reaches here: the fallback
+    // is a bare lowercase word, which this accepts. Reaching this point means
+    // `.env` holds something typed by hand — exactly the case worth naming.
+    miniFail(sprintf(
+        "CLI_PREFIX is \"%s\", which cannot be a WP-CLI command namespace.\n\n"
+        . "  Use lowercase letters, digits, underscores and hyphens, starting with a\n"
+        . "  letter — e.g. \"leadbridge\" or \"lead_bridge\". Spaces and slashes cannot\n"
+        . "  work: WP-CLI splits on \"/\" and a space makes the shell pass two arguments,\n"
+        . "  so the command registers under a name nothing can reach.\n\n"
+        . "  Commands are registered under this name by the plugin, so the value here\n"
+        . "  and the value WordPress reads must be the same. Nothing else checks it.",
+        $prefix
+    ));
+}
+
+/**
+ * Strip one layer of matching quotes, and unescape the double-quoted form.
+ *
+ * phpdotenv reads `"a\nb"` with escape sequences and `'a\nb'` literally. The
+ * distinction only ever matters for `APP_NAMESPACE` in this project — which is
+ * single-quoted by the rebrander for exactly that reason — but a prefix read
+ * from a hand-edited file should still resolve to what phpdotenv would resolve
+ * it to, or the command name would differ between `wp` and `mini`.
+ */
+function miniUnquote(string $value): string
+{
+    if (strlen($value) < 2) {
+        return $value;
+    }
+
+    $first = $value[0];
+    $last = $value[strlen($value) - 1];
+
+    if ($first !== $last || ($first !== '"' && $first !== "'")) {
+        return $value;
+    }
+
+    $inner = substr($value, 1, -1);
+
+    return $first === '"' ? stripcslashes($inner) : $inner;
+}
+
+// ---------------------------------------------------------------------------
+// Output
+// ---------------------------------------------------------------------------
+
+function miniUsage(string $root): void
+{
+    $prefix = miniCliPrefix($root);
+    $cache = MINI_CACHE_DIRECTORY;
+    $default = MINI_DEFAULT_PREFIX;
+
+    fwrite(STDOUT, <<<TXT
+
+    mini — run this plugin's WP-CLI commands.
+
+    USAGE
+      php mini <command> [arguments...]
+
+    The command is forwarded to WP-CLI as `wp {$prefix} <command>`, so anything
+    WP-CLI accepts after the command name is passed through untouched.
+
+    EXAMPLES
+      php mini route:list                    every registered route
+      php mini make:controller LeadController
+      php mini make:migration create_leads_table
+      php mini migrate
+      php mini migrate:status
+
+    CONFIGURATION
+      The command namespace comes from CLI_PREFIX in .env — currently "{$prefix}".
+      Without that file the framework's default, "{$default}", is used.
+
+      WP-CLI is taken from PATH when it is installed there. Otherwise a copy is
+      downloaded once into ./{$cache}/ and reused.
+
+    Run `php mini help` for WP-CLI's own help, or `php mini help <command>` for
+    one command's arguments.
+
+    TXT);
+    fwrite(STDOUT, "\n");
+}
+
+/**
+ * Print what this run resolved, for `--verbose`.
+ *
+ * The three values a "command not found" report turns on: which prefix was read,
+ * from where, and which WP-CLI is answering. Printed *before* the hand-off, so
+ * it appears above WP-CLI's own error rather than being the thing that never got
+ * a chance to run.
+ */
+function miniDescribe(string $root, string $prefix, string $wpBinary): void
+{
+    $envFile = $root . DIRECTORY_SEPARATOR . '.env';
+
+    fwrite(STDOUT, sprintf(
+        "\n  mini\n    prefix     %s\n    read from  %s\n    wp-cli     %s\n\n",
+        $prefix,
+        is_file($envFile) ? 'CLI_PREFIX in .env' : 'the default (.env not found)',
+        $wpBinary
+    ));
+}
+
+function miniAnnounceDownload(): void
+{
+    fwrite(STDOUT, "\n  WP-CLI was not found on PATH — downloading it once.\n");
+}
+
+/**
+ * @return never
+ */
+function miniFail(string $message): void
+{
+    fwrite(STDERR, "\n  mini: {$message}\n\n");
+
+    exit(1);
+}
+
+/**
+ * A path relative to the plugin root, for messages.
+ *
+ * The reader knows where their project is; the one thing a message should add is
+ * where the file sits *inside* it, and an absolute path buries that under a
+ * user-specific prefix.
+ */
+function miniRelative(string $root, string $path): string
+{
+    $root = rtrim($root, '/\\') . DIRECTORY_SEPARATOR;
+
+    if (str_starts_with($path, $root)) {
+        return str_replace('\\', '/', substr($path, strlen($root)));
+    }
+
+    return $path;
+}

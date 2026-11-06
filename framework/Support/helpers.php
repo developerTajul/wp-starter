@@ -320,3 +320,36 @@ if (! function_exists('old')) {
         return e($renderer->oldValue($field, $default));
     }
 }
+
+if (! function_exists('route')) {
+    /**
+     * The URL for a named route.
+     *
+     * Laravel's helper, spelled the same way on purpose:
+     *
+     *     route('leads.index');                  // admin.php?page=leads
+     *     route('leads.store');                  // admin-post.php?action=leads_store
+     *     route('leads.show', ['id' => 42]);     // /wp-json/wp-mini-laravel/v1/leads/42
+     *
+     * Which of WordPress's four mechanisms the URL comes out of is decided by the
+     * route's own surface, not by the caller — see
+     * {@see \Framework\Routing\UrlGenerator}. A template therefore links to a route
+     * the same way whether it is a screen, a form handler or an endpoint.
+     *
+     * Resolved from the container rather than through a static, so a project can
+     * swap the binding — a test asserting a URL, or an install that rewrites the
+     * REST prefix.
+     *
+     * @param array<string, scalar> $parameters Placeholder values, keyed by name.
+     *
+     * @throws \InvalidArgumentException When no route carries the name.
+     * @throws \RuntimeException         When a path placeholder has no value.
+     */
+    function route(string $name, array $parameters = []): string
+    {
+        /** @var \Framework\Routing\UrlGenerator $generator */
+        $generator = app('url');
+
+        return $generator->route($name, $parameters);
+    }
+}

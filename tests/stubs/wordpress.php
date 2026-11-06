@@ -113,6 +113,73 @@ if (!function_exists('esc_html')) {
     }
 }
 
+if (!function_exists('wp_unslash')) {
+    /**
+     * Strip the slashes WordPress adds to superglobal input.
+     *
+     * WordPress runs `wp_magic_quotes()` at bootstrap, so `$_POST['name']` for a
+     * typed `O'Brien` really holds `O\'Brien`. The real `wp_unslash()` is
+     * `stripslashes_deep()` — recursion included — and this mirrors that, because
+     * the recursion is not incidental: a nested `lead[name]` field is slashed in
+     * the same pass, and a stub that only handled the flat case would let a
+     * middleware pass its test while corrupting every nested value.
+     *
+     * Typed `mixed` and returns its argument unchanged for a non-string or
+     * non-array, exactly as core does.
+     *
+     * @param mixed $value
+     * @return mixed
+     */
+    function wp_unslash($value)
+    {
+        if (is_array($value)) {
+            return array_map('wp_unslash', $value);
+        }
+
+        return is_string($value) ? stripslashes($value) : $value;
+    }
+}
+
+if (!function_exists('sanitize_text_field')) {
+    /**
+     * WordPress's single-line text sanitizer, near enough for a test to mean
+     * something.
+     *
+     * The real function strips tags, removes line breaks, collapses runs of
+     * whitespace, trims, and drops invalid UTF-8. Reproducing every branch is not
+     * the point — this stub exists so `SanitizeInput` is *exercised* rather than
+     * silently skipped by its `function_exists()` guard, which would make the
+     * middleware look correct while testing nothing at all.
+     *
+     * The three behaviours kept are the three a test can meaningfully assert and
+     * the three a caller is most likely to depend on: tags removed, newlines
+     * flattened to spaces, and whitespace collapsed and trimmed. That last one is
+     * the one worth knowing about, because it is what changes a multi-line
+     * textarea into a single line — see {@see SanitizeInput}'s docblock.
+     */
+    function sanitize_text_field(string $text): string
+    {
+        // `strip_tags()` before the whitespace pass, matching core's order: a tag
+        // boundary is where the newlines inside a `<script>` block stop mattering.
+        $filtered = strip_tags($text);
+
+        // `<` and `>` survive `strip_tags()` when they are not part of a tag;
+        // core removes them outright, so a payload like `a < b` cannot become a
+        // tag once it is concatenated with something else downstream.
+        $filtered = str_replace(['<', '>'], '', $filtered);
+
+        // Line breaks become spaces rather than being deleted, so `a\nb` reads as
+        // `a b` and not `ab` — collapsing them to nothing would silently join two
+        // words that were separate lines.
+        $filtered = preg_replace('/[\r\n\t]+/', ' ', $filtered) ?? $filtered;
+
+        // Runs of spaces collapse, then the ends are trimmed.
+        $filtered = preg_replace('/ {2,}/', ' ', $filtered) ?? $filtered;
+
+        return trim($filtered);
+    }
+}
+
 if (!function_exists('wp_normalize_path')) {
     function wp_normalize_path(string $path): string
     {

@@ -61,7 +61,9 @@ class MakeMigrationCommand extends GeneratorCommand
 
     protected function getStubPath(): string
     {
-        return base_path('stubs/migration.stub');
+        // Bare name: StubLocator prefers the project's stubs/migration.stub and
+        // falls back to the framework's copy, so this works from vendor/ too.
+        return 'migration.stub';
     }
 
     /**

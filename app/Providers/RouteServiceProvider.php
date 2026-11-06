@@ -7,10 +7,13 @@ use Framework\Routing\Adapters\RestApiRouterAdapter;
 use Framework\Routing\Adapters\WordPressRouterAdapter;
 use Framework\Routing\CaptureWebRequestFactory;
 use Framework\Routing\Contracts\RouterInterface;
+use Framework\Routing\NamedRoutes;
 use Framework\Routing\RouteLoader;
 use Framework\Routing\RouteResolver;
 use Framework\Routing\RouteServiceProvider as BaseRouteServiceProvider;
+use Framework\Routing\UrlGenerator;
 use Framework\Routing\WebRequestFactory;
+use Framework\Support\Facades\Route as RouteFacade;
 use Throwable;
 
 /**
@@ -28,13 +31,15 @@ use Throwable;
  *
  * ## Both adapters are singletons, and that is load-bearing
  *
- * A routes file is `require`d and handed a registrar; the registrar writes into
- * whichever adapter it was built from. If the adapter were re-resolved later —
- * at flush time, say — it would be a *different* object holding an empty table,
- * and every route would vanish with no error anywhere. `singleton()` is what
- * makes "the adapter the routes file wrote into" and "the adapter that publishes"
- * the same instance. The same reasoning applies to {@see RouteLoader}, whose
- * loaded-file record has to survive from the first hook to the last.
+ * A routes file is `require`d; every call in it lands on whichever router
+ * {@see \Framework\Routing\RouteLoader} aimed the `Route` facade at — normally
+ * resolved through this provider, and therefore this instance. If the adapter
+ * were re-resolved later — at flush time, say — it would be a *different* object
+ * holding an empty table, and every route would vanish with no error anywhere.
+ * `singleton()` is what makes "the adapter the routes file wrote into" and "the
+ * adapter that publishes" the same instance. The same reasoning applies to
+ * {@see RouteLoader}, whose loaded-file record has to survive from the first hook
+ * to the last.
  *
  * ## The REST path is untouched
  *
@@ -93,7 +98,8 @@ class RouteServiceProvider extends BaseRouteServiceProvider
 
         $this->container->singleton(RestApiRouterAdapter::class, fn ($container) => new RestApiRouterAdapter(
             $container,
-            $container->resolve(RouteResolver::class)
+            $container->resolve(RouteResolver::class),
+            $container->resolve(NamedRoutes::class)
         ));
 
         $this->container->singleton(WordPressRouterAdapter::class, fn ($container) => new WordPressRouterAdapter(
@@ -105,8 +111,37 @@ class RouteServiceProvider extends BaseRouteServiceProvider
             // constructor and reuse it across every dispatch — exactly the
             // shared-state problem the non-shared binding exists to prevent. Left
             // null, the adapter resolves a fresh pipeline per dispatch.
-            null
+            null,
+            null,
+            $container->resolve(NamedRoutes::class)
         ));
+
+        // One registry, so both adapters' named routes are reachable by `route()`.
+        // Resolved by both bindings above rather than captured there, and a
+        // singleton because the two adapters must agree on it — two registries
+        // would mean `route('leads.show')` could only ever find one domain's
+        // routes, silently.
+        $this->container->singleton(NamedRoutes::class);
+
+        // The generator the `route()` helper resolves. It holds the registry
+        // rather than a copy of the routes, so a route registered after this was
+        // built is still found — see {@see NamedRoutes} for why that matters.
+        $this->container->singleton(
+            'url',
+            fn ($container): UrlGenerator => new UrlGenerator(
+                $container->resolve(NamedRoutes::class),
+                (string) config('app.rest_namespace', 'wp-mini-laravel/v1')
+            )
+        );
+
+        // The facade's accessor. Bound to null rather than omitted, because
+        // `Facade::resolveFacadeInstance()` distinguishes "unbound" from "bound to
+        // nothing" — a project that swaps this key out and back gets the second
+        // message, naming the provider, rather than being told the provider never
+        // registered. Nothing resolves this key directly: the facade's target is
+        // set per routes file by RouteLoader, and a caller that wants a router asks
+        // for `router.web` or `router.api` below.
+        $this->container->instance(RouteFacade::ACCESSOR, null);
 
         // String keys, because two adapters share `RouterInterface` and a
         // type-hint on it would have no single correct answer — a silent choice

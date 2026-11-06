@@ -5,7 +5,9 @@ namespace Tests\Unit\Http;
 
 use DevLinkStudios\WPServiceContainer\Container;
 use DevLinkStudios\WPServiceContainer\Contracts\ContainerInterface;
+use Closure;
 use Framework\Http\Exceptions\HttpException;
+use Framework\Http\Middleware\MiddlewareAliases;
 use Framework\Http\Middleware\Pipeline;
 use Framework\Http\Request;
 use Framework\Http\Responses\JsonResponse;
@@ -15,6 +17,7 @@ use Tests\Unit\Http\Fixtures\AddingMiddleware;
 use Tests\Unit\Http\Fixtures\BehindMiddleware;
 use Tests\Unit\Http\Fixtures\InnerMiddleware;
 use Tests\Unit\Http\Fixtures\OuterMiddleware;
+use Tests\Unit\Http\Fixtures\ParameterizedMiddleware;
 use Tests\Unit\Http\Fixtures\RecordingMiddleware;
 use Tests\Unit\Http\Fixtures\RewritingMiddleware;
 use Tests\Unit\Http\Fixtures\ShortCircuitingMiddleware;
@@ -251,6 +254,180 @@ final class PipelineTest extends TestCase
         (new Pipeline($this->container))->then($this->terminal());
     }
 
+    // ------------------------------------------------------ middleware parameters
+
+    public function test_a_parameter_is_passed_to_the_middleware(): void
+    {
+        ParameterizedMiddleware::reset();
+
+        $this->pipeline([ParameterizedMiddleware::class . ':manage_options'])->then($this->terminal());
+
+        $this->assertSame([['manage_options']], ParameterizedMiddleware::$received);
+    }
+
+    public function test_parameters_are_passed_to_the_middleware(): void
+    {
+        ParameterizedMiddleware::reset();
+
+        $this->pipeline([ParameterizedMiddleware::class . ':leads_store,my_field'])
+            ->then($this->terminal());
+
+        $this->assertSame([['leads_store', 'my_field']], ParameterizedMiddleware::$received);
+    }
+
+    /**
+     * A bare class name is the ordinary case and must keep working: the
+     * middleware receives an empty variadic rather than being skipped.
+     */
+    public function test_a_class_with_no_parameter_receives_none(): void
+    {
+        ParameterizedMiddleware::reset();
+
+        $this->pipeline([ParameterizedMiddleware::class])->then($this->terminal());
+
+        $this->assertSame([[]], ParameterizedMiddleware::$received);
+    }
+
+    /**
+     * Split at the *first* colon only. A parameter that is itself a URL — or any
+     * other colon-bearing string — must survive intact, because splitting on
+     * every colon would shred it into pieces the middleware never asked for.
+     */
+    public function test_only_the_first_colon_separates_class_from_parameters(): void
+    {
+        ParameterizedMiddleware::reset();
+
+        $this->pipeline([ParameterizedMiddleware::class . ':https://example.test/a'])
+            ->then($this->terminal());
+
+        $this->assertSame([['https://example.test/a']], ParameterizedMiddleware::$received);
+    }
+
+    /**
+     * The parameters on one layer must not leak to another. A pipeline whose
+     * `count()` grew with the stack would otherwise walk off the end.
+     */
+    public function test_each_layer_receives_only_its_own_parameters(): void
+    {
+        ParameterizedMiddleware::reset();
+
+        $this->pipeline([
+            ParameterizedMiddleware::class . ':outer',
+            ParameterizedMiddleware::class . ':inner',
+        ])->then($this->terminal());
+
+        $this->assertSame([['outer'], ['inner']], ParameterizedMiddleware::$received);
+    }
+
+    /**
+     * The failure this whole check exists for: the container drops an override a
+     * method has no parameter for, **silently**. A silently dropped
+     * `capability:manage_options` is an authorization check that never runs, so
+     * the pipeline refuses it instead of dispatching a request the routes file
+     * claims is protected.
+     */
+    public function test_parameters_given_to_a_middleware_that_takes_none_are_refused(): void
+    {
+        $this->expectException(HttpException::class);
+        $this->expectExceptionMessage('declares no variadic argument');
+
+        $this->pipeline([RecordingMiddleware::class . ':unexpected'])->then($this->terminal());
+    }
+
+    /**
+     * The message has to name both the middleware and what it was given —
+     * a report that says only "invalid middleware parameters" leaves the reader
+     * to find the one of forty entries that is wrong.
+     */
+    public function test_the_refusal_names_the_middleware_and_its_parameters(): void
+    {
+        try {
+            $this->pipeline([RecordingMiddleware::class . ':manage_options'])->then($this->terminal());
+        } catch (HttpException $e) {
+            $this->assertStringContainsString(RecordingMiddleware::class, $e->getMessage());
+            $this->assertStringContainsString('manage_options', $e->getMessage());
+
+            return;
+        }
+
+        $this->fail('Expected the pipeline to refuse parameters a middleware cannot receive.');
+    }
+
+    /**
+     * An anonymous class name contains a colon — `class@anonymous ...php:12$0` —
+     * so a pipeline that split on the first colon before checking whether the
+     * whole entry was a class would truncate it and fail to resolve a middleware
+     * that is perfectly valid. A fixture built with `new class extends ...` is
+     * the ordinary way to hit this.
+     */
+    public function test_an_anonymous_class_name_is_not_split_at_its_colon(): void
+    {
+        $middleware = new class implements \Framework\Http\Contracts\Middleware {
+            public bool $reached = false;
+
+            public function handle(Request $request, Closure $next): \Framework\Http\Contracts\ResponseInterface
+            {
+                $this->reached = true;
+
+                return $next($request);
+            }
+        };
+
+        $this->container->instance($middleware::class, $middleware);
+
+        $this->pipeline([$middleware::class])->then($this->terminal());
+
+        $this->assertTrue($middleware->reached, 'The anonymous middleware was never dispatched.');
+    }
+
+    // ------------------------------------------------------------------- aliases
+
+    public function test_an_alias_resolves_to_its_class(): void
+    {
+        ParameterizedMiddleware::reset();
+
+        $aliases = new MiddlewareAliases();
+        $aliases->alias('parameterized', ParameterizedMiddleware::class);
+
+        $this->pipelineWithAliases($aliases, ['parameterized:manage_options'])
+            ->then($this->terminal());
+
+        $this->assertSame([['manage_options']], ParameterizedMiddleware::$received);
+    }
+
+    /**
+     * A loadable class name wins over an alias of the same name. For a framework
+     * that ships to other projects this is not hypothetical: a project may define
+     * its own `CheckCapability`, and a registry that rewrote the name would
+     * quietly substitute the framework's for the project's.
+     */
+    public function test_a_real_class_name_is_not_rewritten_by_an_alias_of_the_same_name(): void
+    {
+        ParameterizedMiddleware::reset();
+
+        $aliases = new MiddlewareAliases();
+        // An alias whose name is a real, loadable class — the adversarial case.
+        $aliases->alias(ParameterizedMiddleware::class, RecordingMiddleware::class);
+
+        $this->pipelineWithAliases($aliases, [ParameterizedMiddleware::class])
+            ->then($this->terminal());
+
+        $this->assertSame([[]], ParameterizedMiddleware::$received);
+    }
+
+    /**
+     * Without a registry, every entry is a class name. Existing constructions of
+     * `new Pipeline($container)` must keep working untouched.
+     */
+    public function test_an_unknown_alias_falls_through_to_the_container(): void
+    {
+        $aliases = new MiddlewareAliases();
+
+        $this->expectException(\Throwable::class);
+
+        $this->pipelineWithAliases($aliases, ['no-such-middleware'])->then($this->terminal());
+    }
+
     // ------------------------------------------------------------------ helpers
 
     /**
@@ -259,6 +436,18 @@ final class PipelineTest extends TestCase
     private function pipeline(array $middleware): Pipeline
     {
         return (new Pipeline($this->container))
+            ->send(new Request())
+            ->through($middleware);
+    }
+
+    /**
+     * A pipeline carrying an alias registry.
+     *
+     * @param array<int, string> $middleware
+     */
+    private function pipelineWithAliases(MiddlewareAliases $aliases, array $middleware): Pipeline
+    {
+        return (new Pipeline($this->container, $aliases))
             ->send(new Request())
             ->through($middleware);
     }

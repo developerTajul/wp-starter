@@ -34,16 +34,13 @@ final class MakeMigrationCommandTest extends TestCase
         $this->workspace = sys_get_temp_dir() . '/wpml-make-' . bin2hex(random_bytes(6));
         mkdir($this->workspace . '/database/migrations', 0755, true);
 
-        // The generator resolves BOTH its stub and its target through
-        // base_path(), so the workspace has to carry a copy of the shipped stub
-        // for the write to be possible. Copying rather than reading the real one
-        // in place is what keeps the plugin's own tree untouched.
-        mkdir($this->workspace . '/stubs', 0755, true);
-        copy(
-            dirname(__DIR__, 3) . '/stubs/migration.stub',
-            $this->workspace . '/stubs/migration.stub'
-        );
-
+        // The workspace deliberately carries no stubs/ directory. The generator
+        // resolves its target through base_path() but its *stub* through
+        // StubLocator, which falls back to the framework's own copy when the
+        // project has none — so this test now also pins that fallback: if the
+        // resolution regressed to base_path('stubs/migration.stub'), every case
+        // below would fail with "Stub file not found".
+        //
         // Point base_path() at the workspace rather than writing into the
         // plugin's own tree.
         $this->originalBase = app()->bound('path.base') ? (string) app('path.base') : null;
@@ -288,12 +285,62 @@ final class MakeMigrationCommandTest extends TestCase
         $this->assertSame("{$prefix} make:migration", (new TestableMakeMigrationCommand())->getName());
     }
 
+    /**
+     * Run `php -l` over a generated file, or skip when this host cannot.
+     *
+     * ## Why this is guarded at all
+     *
+     * The assertion this backs is "the generated migration is syntactically valid
+     * PHP", and the only honest way to answer that is to hand the file to a real
+     * PHP parser. A tokenizer-based check in-process would re-implement a
+     * fraction of the grammar and pass files `php -l` rejects.
+     *
+     * But it is the one test in the suite that shells out, so it is the one that
+     * can fail for reasons that have nothing to do with the code: `PHP_BINARY` is
+     * documented as possibly empty when PHP is embedded or its path is
+     * unresolvable, `exec()` is in `disable_functions` on a locked-down host, and
+     * `escapeshellarg` does not quote for `cmd.exe` — so a Windows path with
+     * spaces produces a command the shell splits in the wrong place.
+     *
+     * ## Why a skip rather than a graceful degradation
+     *
+     * Failing here would be a red suite on a machine where the generator is
+     * perfectly correct, which teaches people to ignore the suite. Passing
+     * silently would claim a check that did not run. PHPUnit's `markTestSkipped`
+     * is the third option and the right one: the run stays green, and the
+     * transcript says which check was not performed.
+     *
+     * The in-process assertions in the calling test — that the file declares the
+     * class, extends `Migration`, and carries both methods — run regardless, so
+     * this is one check skipped rather than the whole test.
+     */
     private function lint(string $path): int
     {
+        // PHP_BINARY is a constant that can be the empty string; `function_exists`
+        // covers the host that compiled exec() out entirely.
+        if (!function_exists('exec') || PHP_BINARY === '') {
+            $this->markTestSkipped(
+                'php -l is unavailable on this host (no exec(), or PHP_BINARY is empty), '
+                . 'so the syntax check is skipped.'
+            );
+        }
+
         $output = [];
         $status = 0;
 
-        exec(sprintf('%s -l %s 2>&1', escapeshellarg(PHP_BINARY), escapeshellarg($path)), $output, $status);
+        // 2>&1 is a POSIX redirection. cmd.exe parses it as a file handle and
+        // errors on it, so on Windows stderr is captured by output buffering
+        // instead — the parse error still reaches $output, which is all the
+        // failure path needs.
+        $command = sprintf('%s -l %s', escapeshellarg(PHP_BINARY), escapeshellarg($path));
+
+        if (DIRECTORY_SEPARATOR === '\\') {
+            exec($command, $output, $status);
+
+            return $status;
+        }
+
+        exec($command . ' 2>&1', $output, $status);
 
         return $status;
     }

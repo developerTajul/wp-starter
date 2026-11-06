@@ -34,9 +34,12 @@ declare(strict_types=1);
  * ## Why it is a PHP script and not a shell one
  *
  * Because the replacements are identity-dependent, not textual. `App\` must
- * become `LeadBridge\` in a namespace declaration and in a `use` statement and
- * in a PSR-4 key, but `App` must **not** be replaced inside the word
- * `Application`, and a slug like `notes-app` must not have its `app` touched.
+ * become `LeadBridge\App\` in a namespace declaration and in a `use` statement
+ * and in a PSR-4 key, but `App` must **not** be replaced inside the word
+ * `Application`, must not be prefixed twice in a tree that has already been
+ * rebranded, and must not be touched where it is a *path segment* rather than a
+ * namespace — `tests/Integration/App/Repositories/` declares
+ * `Tests\Integration\App\Repositories`.
  * Doing that correctly needs word boundaries and a file-type-aware pass, which is
  * painful in `sed` and unpleasant in PowerShell — and this repository is
  * deliberately cross-platform, so a `.sh` script would exclude half its users.
@@ -231,7 +234,9 @@ function printUsage(): void
       --name="Lead Bridge"     Plugin name. Appears in the plugin header and admin notices.
       --slug=lead-bridge       Plugin folder and entry-file name. Lowercase, hyphens only.
       --vendor=acme            Composer vendor. Replaces `devlinkstudios` in both composer.json files.
-      --namespace=LeadBridge   App namespace. Replaces `App\` in your code.
+      --namespace=LeadBridge   Namespace root. The architecture's layers are kept *under* it:
+                               `App\` becomes `LeadBridge\App\`, `Core\` becomes
+                               `LeadBridge\Core\`. Nothing is flattened to a bare root.
 
     OPTIONAL (derived from the values above when omitted)
       --constant-prefix=LEAD_BRIDGE_    PHP constant prefix. Default: SNAKE(namespace)_
@@ -239,7 +244,7 @@ function printUsage(): void
       --cli-prefix=leadbridge           WP-CLI namespace. Default: LOWER(namespace)
       --rest-namespace=lead-bridge/v1   REST namespace. Default: slug/v1
       --text-domain=lead-bridge         i18n text domain. Default: slug
-      --core-namespace=LeadBridge\Core  Core namespace. Default: namespace\Core
+      --core-namespace=LeadBridge\Core  Core layer namespace. Default: namespace\Core
 
     BEHAVIOUR
       --dry-run    Print every change without writing anything.

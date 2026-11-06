@@ -6,6 +6,7 @@ namespace Tests\Unit\Http;
 use App\Http\Controllers\Api\LeadController;
 use App\Http\Resources\LeadResource;
 use DevLinkStudios\WPServiceContainer\Container;
+use Framework\Routing\RouteLoader;
 use Framework\Routing\RouteResolver;
 use Framework\Http\Responses\JsonResponse;
 use Framework\Routing\Router;
@@ -54,6 +55,13 @@ final class ApiResourceDispatchTest extends TestCase
 
         $this->container = new Container();
         $this->router = new Router($this->container, new RouteResolver($this->container));
+
+        // `base_path()` reads the *global* container, not the one built above, so
+        // the path has to be bound there for the loader below to find the plugin's
+        // routes file. In production the entry file binds it before any of this
+        // runs; a test that constructs its own container is the one place that
+        // does not happen automatically.
+        app()->instance('path.base', dirname(__DIR__, 3));
     }
 
     // ----------------------------------------------------------- the route file
@@ -363,13 +371,30 @@ final class ApiResourceDispatchTest extends TestCase
      * Separate from {@see registerLeadRoutes()}, which registers bare routes for
      * the dispatch tests. The permission tests must see the real file, because
      * what they assert is a property of that file.
+     *
+     * ## Through the loader, because the file has no router of its own
+     *
+     * `routes/api.php` calls `Route::get(...)` — a static facade that resolves its
+     * target from loader state, not from a parameter. `require`-ing it here would
+     * throw "the facade was called outside a routes file", and the throw would be
+     * the framework working: the file genuinely has no way to know which router
+     * should receive its routes until something aims the facade at one.
+     *
+     * So this goes through {@see RouteLoader}, the same entry point the service
+     * provider and `route:list` use. Loading the file any other way would also
+     * mean these tests were exercising a path production does not take.
      */
     private function loadPluginRoutes(): void
     {
-        $registrar = $this->router->registrar();
+        $loader = new RouteLoader(base_path());
 
-        $loader = require dirname(__DIR__, 3) . '/routes/api.php';
-        $loader($registrar);
+        $result = $loader->load($this->router, 'routes/api.php');
+
+        $this->assertFalse(
+            $result->failed(),
+            'The plugin\'s own routes file did not load: ' . $result->describe()
+        );
+        $this->assertGreaterThan(0, $result->routeCount);
 
         $this->router->registerRoutes(self::NAMESPACE);
     }

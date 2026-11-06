@@ -168,6 +168,157 @@ final class RouteRegistrarTest extends TestCase
         $this->assertSame('outside', $this->router->getRoutes()[0]->getPath());
     }
 
+    /**
+     * **A group's `as` contributes a name prefix.**
+     *
+     * The spelling `Route::group(['as' => 'leads.'], ...)` is Laravel's, and what it
+     * buys is that the name inside the group is *relative*: `->name('index')`
+     * produces `leads.index`. So the prefix has to be applied when the author names
+     * the route, not before — the route is unnamed at the moment `route()` returns
+     * it, and `Route::name()` replaces rather than appends.
+     */
+    public function test_a_group_name_prefix_is_applied_to_its_routes(): void
+    {
+        $this->registrar->group(['as' => 'leads.'], function (RouteRegistrar $router): void {
+            $router->get('leads')->name('index');
+        });
+
+        $this->assertSame('leads.index', $this->router->getRoutes()[0]->getName());
+    }
+
+    /**
+     * The path prefix and the name prefix are independent.
+     *
+     * `['prefix' => 'leads', 'as' => 'leads.']` is the ordinary pairing, but
+     * deriving one from the other would break the two cases where they differ: a
+     * project grouping names without grouping paths, or grouping paths without
+     * grouping names. Asserted with both set to different values, so a rule that
+     * wired one to the other produces the wrong string rather than a coincidentally
+     * right one.
+     */
+    public function test_the_name_prefix_is_independent_of_the_path_prefix(): void
+    {
+        $this->registrar->group(['prefix' => 'admin/leads', 'as' => 'lead.'], function (RouteRegistrar $router): void {
+            $router->get('index')->name('index');
+        });
+
+        $route = $this->router->getRoutes()[0];
+
+        $this->assertSame('admin/leads/index', $route->getPath());
+        $this->assertSame('lead.index', $route->getName());
+    }
+
+    /**
+     * Nested `as` prefixes concatenate, outer first.
+     *
+     * The same rule as nested path prefixes, and the reason the inner group
+     * *prepends* to the outer rather than replacing it: `admin.` around `leads.`
+     * reads as `admin.leads.`, which is what a file nesting an admin group around
+     * a resource group means.
+     */
+    public function test_nested_group_name_prefixes_accumulate(): void
+    {
+        $this->registrar->group(['as' => 'admin.'], function (RouteRegistrar $router): void {
+            $router->group(['as' => 'leads.'], function (RouteRegistrar $router): void {
+                $router->get('leads')->name('index');
+            });
+        });
+
+        $this->assertSame('admin.leads.index', $this->router->getRoutes()[0]->getName());
+    }
+
+    /**
+     * A group's name prefix must not leak into routes declared after it closes.
+     *
+     * The failure is quiet and symmetric with the path-prefix case: an unnamed
+     * route is harmless, but a route named `outside` after `['as' => 'leads.']`
+     * closing would be reachable as `leads.outside` — a name no `route()` call in
+     * the project would ever look up.
+     */
+    public function test_a_group_name_prefix_does_not_leak_past_the_group(): void
+    {
+        $this->registrar->group(['as' => 'leads.'], function (RouteRegistrar $router): void {
+            $router->get('inside')->name('inside');
+        });
+        $this->registrar->get('outside')->name('outside');
+
+        $names = array_map(
+            static fn (Route $route): ?string => $route->getName(),
+            $this->router->getRoutes()
+        );
+
+        $this->assertSame(['leads.inside', 'outside'], $names);
+    }
+
+    /**
+     * Closing the *inner* group restores the outer prefix, not the empty one.
+     *
+     * The case a single saved/restored value gets wrong: if entering a nested group
+     * overwrote the previous prefix instead of the running concatenation being
+     * saved, the route after the inner group would lose `admin.` and only the
+     * innermost prefix would ever be restored.
+     */
+    public function test_closing_a_nested_group_restores_the_outer_name_prefix(): void
+    {
+        $this->registrar->group(['as' => 'admin.'], function (RouteRegistrar $router): void {
+            $router->group(['as' => 'leads.'], function (RouteRegistrar $router): void {
+                $router->get('a')->name('inner');
+            });
+
+            $router->get('b')->name('outer');
+        });
+
+        $names = array_map(
+            static fn (Route $route): ?string => $route->getName(),
+            $this->router->getRoutes()
+        );
+
+        $this->assertSame(['admin.leads.inner', 'admin.outer'], $names);
+    }
+
+    /**
+     * The restore happens in a `finally`, for the name prefix too.
+     *
+     * Mirrors the path-prefix case: a callback that throws must not leave the
+     * registrar aimed at a group, or one bad group renames every route after it.
+     */
+    public function test_a_group_name_prefix_is_restored_even_when_the_callback_throws(): void
+    {
+        try {
+            $this->registrar->group(['as' => 'leads.'], static function (): void {
+                throw new \RuntimeException('routes file blew up');
+            });
+        } catch (\RuntimeException) {
+            // Expected; the assertion is about the state left behind.
+        }
+
+        $this->registrar->get('outside')->name('outside');
+
+        $this->assertSame('outside', $this->router->getRoutes()[0]->getName());
+    }
+
+    /**
+     * A route inside a group may be left unnamed without being given a bare prefix.
+     *
+     * `->name()` is optional, and the failure a naive implementation produces is a
+     * route whose name is the prefix alone — `"leads."` — which then collides with
+     * every other unnamed route in the same group and reports a spurious duplicate.
+     */
+    public function test_an_unnamed_route_in_a_group_stays_unnamed(): void
+    {
+        $this->registrar->group(['as' => 'leads.'], function (RouteRegistrar $router): void {
+            $router->get('leads');
+            $router->get('leads-create');
+        });
+
+        $names = array_map(
+            static fn (Route $route): ?string => $route->getName(),
+            $this->router->getRoutes()
+        );
+
+        $this->assertSame([null, null], $names);
+    }
+
     public function test_group_middleware_is_applied_to_its_routes(): void
     {
         $this->registrar->group(

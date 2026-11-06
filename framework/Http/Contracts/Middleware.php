@@ -51,6 +51,36 @@ use Framework\Http\Request;
  * runtime with an unresolvable-dependency error rather than being wired up some
  * other way. PHP cannot express this constraint, which is why it is documented
  * here and pinned by a test.
+ *
+ * ## `$arguments` carries the route's middleware parameters
+ *
+ * A route may configure its middleware inline, Laravel-style:
+ *
+ *     ->middleware(['capability:manage_options', 'nonce:leads_store'])
+ *
+ * The pipeline splits each entry at the first `:` and passes everything after it
+ * to the middleware as extra arguments. A middleware that takes them opts in by
+ * declaring a variadic — PHP permits an implementation to *add* optional
+ * parameters the interface does not declare, so this is compatible with the
+ * signature below:
+ *
+ *     public function handle(Request $request, Closure $next, string ...$arguments)
+ *
+ * **The variadic is not part of this interface, and that is deliberate.** Adding
+ * it here would be a fatal error at class-load for every existing implementation
+ * that declares the two-parameter form — PHP requires an implementation to accept
+ * every parameter the interface declares, and a variadic in the interface is one
+ * an implementation may not omit. Since most middleware takes no parameters
+ * ({@see Authenticate}, {@see Authorize}), the contract stays two parameters and
+ * parameterized middleware widens it.
+ *
+ * The consequence is that a route passing arguments to a middleware that declares
+ * none is not a type error; the pipeline detects it and reports it by name, which
+ * is the same diagnosis a routes-file typo deserves.
+ *
+ * The name `$arguments` is yours to choose: these arrive through the variadic
+ * spread, which the container matches positionally, unlike `$request` and `$next`
+ * which are passed by name and are therefore pinned by this contract.
  */
 interface Middleware
 {

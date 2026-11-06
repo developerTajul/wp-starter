@@ -12,11 +12,14 @@ use Framework\Http\Responses\JsonResponse;
 use Framework\Routing\AdminPage;
 use Framework\Routing\Contracts\Middleware as RoutingMiddleware;
 use Framework\Routing\Exceptions\RouteRegistrationException;
+use Framework\Routing\NamedRoutes;
 use Framework\Routing\Route;
 use Framework\Routing\RouteCompiler;
 use Framework\Routing\RouteDomain;
+use Framework\Routing\RouteRegistrar;
 use Framework\Routing\RouteResolver;
 use Framework\Routing\WebRequestFactory;
+use Framework\Routing\WebRouteRegistrar;
 use Throwable;
 
 /**
@@ -37,16 +40,26 @@ use Throwable;
  *
  * A path alone cannot say which of the three an author meant — `leads` could
  * reasonably be an admin screen or a front-end page — so the surface is
- * **explicit** wherever it is ambiguous:
+ * **explicit** on every route that reaches this adapter, and one of two things
+ * states it:
  *
- *     $router->adminPage('leads', LeadAdmin::class, 'index');     // admin_menu
- *     $router->adminAction('leads/store', LeadAdmin::class);      // admin_post_*
- *     $router->page('thank-you', Thanks::class, 'index');         // template_redirect
+ *     $router->get('leads', [LeadAdmin::class, 'index']);         // admin_menu
+ *     $router->post('leads/store', [LeadAdmin::class, 'store']);  // admin_post_*
+ *     $router->page('thank-you', [Thanks::class, 'index']);       // template_redirect
  *
- * `get()`/`post()`/... still work and infer from the verb — a non-GET verb is a
- * form handler, a bare GET is a front-end page — so `routes/web.php` reads like
- * `routes/api.php` for the common cases. The helpers set the surface option
- * explicitly, which is what a GET route that is *not* a front-end page needs.
+ * **A routes file gets its surface from {@see WebRouteRegistrar}**, which maps the
+ * verb onto a mechanism and stamps it on the route. A bare GET is therefore an
+ * admin screen, and a front-end page has to say `page()` — the full table is in
+ * that class's docblock.
+ *
+ * The three WordPress-shaped helpers on this adapter (`adminPage()`,
+ * `adminAction()`, `page()`) are the same decision under a name that says which
+ * mechanism it means, and they delegate to the registrar so the two spellings
+ * cannot drift apart.
+ *
+ * `surfaceOf()` still infers a surface for a route that carries no option at all,
+ * which is what a `Route` built by hand and handed to `addRoute()` looks like. No
+ * routes file produces one.
  *
  * ## Middleware here is the HTTP contract, not the routing one
  *
@@ -94,9 +107,10 @@ final class WordPressRouterAdapter extends AbstractRouterAdapter
         RouteResolver $resolver,
         private readonly WebRequestFactory $requests,
         private readonly ?Pipeline $pipeline = null,
-        ?callable $terminator = null
+        ?callable $terminator = null,
+        ?NamedRoutes $namedRoutes = null
     ) {
-        parent::__construct($container, $resolver);
+        parent::__construct($container, $resolver, $namedRoutes ?? new NamedRoutes());
 
         $this->terminator = $terminator ?? static function (): void {
             exit;
@@ -109,6 +123,20 @@ final class WordPressRouterAdapter extends AbstractRouterAdapter
     }
 
     // ------------------------------------------------------------- fluent sugar
+
+    /**
+     * The registrar a web routes file receives.
+     *
+     * Overridden so the registrar carries this adapter's surface helpers, not just
+     * the verb methods every router has. `routes/web.php` is typed against
+     * {@see WebRouteRegistrar} for exactly that reason, and the covariant return
+     * type is what lets the interface keep promising a `RouteRegistrar` to every
+     * caller that only needs `group()` and the verbs.
+     */
+    public function registrar(): RouteRegistrar
+    {
+        return new WebRouteRegistrar($this);
+    }
 
     /**
      * Register an admin screen, published on `admin_menu`.
@@ -125,15 +153,24 @@ final class WordPressRouterAdapter extends AbstractRouterAdapter
      *         'parent_slug' => 'tools.php',   // submenu instead of top-level
      *     ])
      *
+     * ## Delegated to the registrar
+     *
+     * This and the two helpers below are the WordPress-shaped *spelling*; the
+     * decision they encode — which verb, which surface, how a controller is named —
+     * lives in {@see WebRouteRegistrar}. Delegating rather than building the route
+     * here is what keeps `$router->adminPage(...)` and `$router->get(...)` from
+     * being two implementations of one idea that can drift apart.
+     *
+     * A fresh registrar is used per call, so these carry no group state — a group
+     * is a routes-file construct, and there is no routes file here.
+     *
+     * @param string|array{0: string, 1: string}|callable|null $controller
+     *
      * @throws RouteRegistrationException
      */
-    public function adminPage(string $path, string $controller, string $action = 'index'): Route
+    public function adminPage(string $path, string|array|callable|null $controller = null, string $action = 'index'): Route
     {
-        return $this->addRoute(
-            Route::make(['GET'], $path)
-                ->uses($controller, $action)
-                ->option(self::OPTION_SURFACE, self::SURFACE_ADMIN_PAGE)
-        );
+        return $this->webRegistrar()->adminPage($path, $controller, $action);
     }
 
     /**
@@ -146,15 +183,17 @@ final class WordPressRouterAdapter extends AbstractRouterAdapter
      *     <input type="hidden" name="_method" value="DELETE">
      *     <input type="hidden" name="action" value="leads_destroy">
      *
+     * @param string|array{0: string, 1: string}|callable|null $controller
+     *
      * @throws RouteRegistrationException
      */
-    public function adminAction(string $path, string $controller, string $action = 'store', string $method = 'POST'): Route
-    {
-        return $this->addRoute(
-            Route::make([strtoupper($method)], $path)
-                ->uses($controller, $action)
-                ->option(self::OPTION_SURFACE, self::SURFACE_ADMIN_ACTION)
-        );
+    public function adminAction(
+        string $path,
+        string|array|callable|null $controller = null,
+        string $action = 'store',
+        string $method = 'POST'
+    ): Route {
+        return $this->webRegistrar()->adminAction($path, $controller, $action, $method);
     }
 
     /**
@@ -163,15 +202,25 @@ final class WordPressRouterAdapter extends AbstractRouterAdapter
      * The path is a URL on the site — `thank-you` matches `/thank-you` — and may
      * carry placeholders with the same grammar the REST router uses.
      *
+     * @param string|array{0: string, 1: string}|callable|null $controller
+     *
      * @throws RouteRegistrationException
      */
-    public function page(string $path, string $controller, string $action = 'index'): Route
+    public function page(string $path, string|array|callable|null $controller = null, string $action = 'index'): Route
     {
-        return $this->addRoute(
-            Route::make(['GET'], $path)
-                ->uses($controller, $action)
-                ->option(self::OPTION_SURFACE, self::SURFACE_PAGE)
-        );
+        return $this->webRegistrar()->page($path, $controller, $action);
+    }
+
+    /**
+     * The web registrar, for the helpers above.
+     *
+     * A local narrowing of {@see registrar()}'s declared `RouteRegistrar` return
+     * type, so the surface helpers are reachable without an instanceof check at
+     * each of the three call sites.
+     */
+    private function webRegistrar(): WebRouteRegistrar
+    {
+        return new WebRouteRegistrar($this);
     }
 
     // -------------------------------------------------------------- publication
@@ -667,10 +716,28 @@ final class WordPressRouterAdapter extends AbstractRouterAdapter
      * Checked by interface rather than by class list, so a project's own
      * middleware is covered. A class that cannot be loaded at all is left alone
      * and fails where it is resolved, which gives the container's own message.
+     *
+     * ## Entries may carry parameters
+     *
+     * A stack entry is `'capability:manage_options'` as often as it is a bare
+     * class name, and the parameter has to come off before the class is checked —
+     * `class_exists('capability:manage_options')` is false for a middleware that
+     * exists, so the contract check would silently skip exactly the entries a
+     * route configures most deliberately. Split at the first colon, matching
+     * {@see \Framework\Http\Middleware\Pipeline::parseEntry()}.
+     *
+     * A loadable class name is checked **before** splitting, for the same reason
+     * it is there: an anonymous class name contains a colon, and an entry naming
+     * one must not be truncated. An alias that names no class is left alone and
+     * fails where the pipeline resolves it, which reports it against the route.
      */
     private function assertHttpMiddleware(Route $route): void
     {
-        foreach ($route->getMiddleware() as $middlewareClass) {
+        foreach ($route->getMiddleware() as $entry) {
+            $middlewareClass = str_contains($entry, ':') && !class_exists($entry)
+                ? explode(':', $entry, 2)[0]
+                : $entry;
+
             if (!class_exists($middlewareClass)) {
                 continue;
             }
@@ -827,13 +894,38 @@ final class WordPressRouterAdapter extends AbstractRouterAdapter
     /**
      * The surface a route publishes onto.
      *
-     * Explicit when the author used `adminPage()`/`adminAction()`/`page()` or set
-     * the option directly. Otherwise inferred from the verb: a non-GET verb is a
-     * form handler, and a bare GET is a front-end page. The inference is a
-     * convenience for the common case, not a claim about an ambiguous one — a GET
-     * route that is really an admin screen says so.
+     * Almost always read straight off the route, because every spelling that
+     * registers one states its surface: {@see WebRouteRegistrar} stamps it from
+     * the verb, and these helpers' own `adminPage()`/`adminAction()`/`page()` name
+     * it. It is explicit rather than inferred because a GET route is an admin
+     * screen in one plugin and a front-end page in the next, and guessing wrong
+     * produces a route that registers cleanly and is reachable from nowhere.
+     *
+     * The fallback covers the one remaining case: a `Route` assembled by hand and
+     * passed to `addRoute()`, which {@see inferSurface()} decides.
      */
     private function surfaceOf(Route $route): string
+    {
+        return self::inferSurface($route);
+    }
+
+    /**
+     * The surface a route publishes onto, decided from the route alone.
+     *
+     * Static and public because the rule is not this adapter's private business:
+     * {@see UrlGenerator} has to answer the same question when it is handed a
+     * route that never passed through a registrar, and a URL built from a second,
+     * independently-written copy of this rule would drift from the one that
+     * decides where the route is actually published — producing a link to a
+     * surface nothing registered.
+     *
+     * The order is what matters: an explicit `surface` option always wins, because
+     * a route that states its surface is never overruled by an inference from its
+     * verb. Only a route that says nothing falls through to the verb, where a
+     * non-GET is a form handler and a bare GET a front-end page — the conservative
+     * pair, since it never claims an admin menu nobody asked for.
+     */
+    public static function inferSurface(Route $route): string
     {
         $surface = $route->getOption(self::OPTION_SURFACE);
 

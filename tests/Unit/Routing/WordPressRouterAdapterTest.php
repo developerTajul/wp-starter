@@ -282,14 +282,26 @@ final class WordPressRouterAdapterTest extends TestCase
     }
 
     /**
-     * ...and a bare GET is inferred to be a front-end page.
+     * ...and a bare GET is inferred to be an admin screen.
+     *
+     * This is the inference that flipped when the web router adopted Laravel's
+     * verb syntax. A bare `get()` used to mean a front-end page; it now means an
+     * admin screen, because that is what a `get()` in a web routes file almost
+     * always is — and `page()` is what a front-end route asks for explicitly.
+     *
+     * The assertion moved rather than disappeared: the point of the test is which
+     * surface the verb infers, so pinning it to the *new* surface is what keeps
+     * the test honest. Relaxing it to "registered something" would let either
+     * answer pass.
      */
-    public function test_a_get_verb_infers_the_page_surface(): void
+    public function test_a_get_verb_infers_the_admin_screen_surface(): void
     {
-        $this->router->get('thank-you', Fixtures\StringController::class, 'index');
+        $this->router->get('leads', Fixtures\StringController::class, 'index');
         $this->router->flush();
+        WpStub::doAction('admin_menu');
 
-        $this->assertArrayHasKey('template_redirect', WpStub::$actions);
+        $this->assertCount(1, WpStub::$menuPages);
+        $this->assertSame([], WpStub::$actions['template_redirect'] ?? []);
     }
 
     /**

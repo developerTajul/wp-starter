@@ -45,5 +45,19 @@ class MigrationServiceProvider extends ServiceProvider
                 $container->resolve(Migrator::class)
             )
         );
+
+        $this->container->bind(
+            Commands\MigrateFreshCommand::class,
+            static fn ($container): Commands\MigrateFreshCommand => new Commands\MigrateFreshCommand(
+                $container->resolve(Migrator::class)
+            )
+        );
+
+        $this->container->bind(
+            Commands\MigrateRefreshCommand::class,
+            static fn ($container): Commands\MigrateRefreshCommand => new Commands\MigrateRefreshCommand(
+                $container->resolve(Migrator::class)
+            )
+        );
     }
 }

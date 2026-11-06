@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Framework\Routing;
 
 use Framework\Routing\Contracts\RouterInterface;
+use Framework\Support\Facades\Route as RouteFacade;
 use Throwable;
 
 /**
@@ -23,14 +24,27 @@ use Throwable;
  * entry point: both the provider and the command go through it, which is also
  * what keeps the two from disagreeing about what loading a routes file means.
  *
+ * ## It owns which router a file writes into
+ *
+ * A routes file calls `Route::get(...)` — a static facade with no idea which of
+ * the two routers is loading it, because the same call appears in `web.php` and
+ * `api.php` and must land in different tables. Resolving that is this class's job:
+ * each load aims {@see RouteFacade} at the router it was handed, restores the
+ * previous target afterwards, and so lets a file be domain-blind without a
+ * parameter to carry the domain.
+ *
+ * Before the facade existed that context travelled as the closure's argument
+ * (`$router`), and the file had to declare its type. Now it travels as loader
+ * state, which is why this class is the only place allowed to set it.
+ *
  * ## Loading twice is the failure to avoid
  *
  * The routers are singletons holding their route tables, so loading the same
  * file twice adds every route a second time. For REST that trips the duplicate
  * guard and throws; for the web table it would produce a doubled listing. The
- * `$loaded` map below is therefore keyed by **file path**, not by router, and
- * lives on the loader — which is itself bound as a singleton, so the record
- * survives from the CLI entry point through to whatever else asks.
+ * `$loaded` map below is therefore keyed by **file path and router**, and lives on
+ * the loader — which is itself bound as a singleton, so the record survives from
+ * the CLI entry point through to whatever else asks.
  *
  * ## Failures are reported, never thrown
  *
@@ -45,10 +59,11 @@ final class RouteLoader
     /**
      * Files already loaded, so a second load is a no-op.
      *
-     * Keyed by absolute path rather than by router, because the same file must
-     * not load into a router twice *and* one file must not load into two routers
-     * at all — the second would put web routes in the API table. Path keying
-     * expresses both.
+     * Keyed by absolute path plus the router class it was loaded into, because the
+     * same file must not load into a router twice *and* one file must not load
+     * into two routers at all — the second would put web routes in the API table.
+     * Path keying expresses the first; the router class is what lets two domains
+     * each read their own file through this one loader.
      *
      * @var array<string, bool>
      */
@@ -79,7 +94,16 @@ final class RouteLoader
             return RouteLoadResult::skipped(sprintf('No routes file at [%s].', $path));
         }
 
-        if (isset($this->loaded[$path])) {
+        // Keyed by path *and* router class. One file must not load twice into one
+        // router — that is the duplicate-registration failure this map exists for —
+        // but two routers asking for the same file is a different situation and not
+        // an error: `route:list` reads both domains through this one loader, and
+        // each domain's table has to be filled for the command to have anything to
+        // print. Keying on the path alone would leave whichever table was listed
+        // second empty, and an empty table reads as "no routes", not as a bug.
+        $key = $path . '|' . $router::class;
+
+        if (isset($this->loaded[$key])) {
             return RouteLoadResult::alreadyLoaded($path);
         }
 
@@ -89,31 +113,48 @@ final class RouteLoader
         // before failing, that means a duplicate-guard throw from inside an action
         // the next time round, which is a far more confusing symptom than the
         // original mistake.
-        $this->loaded[$path] = true;
+        $this->loaded[$key] = true;
 
         try {
-            /** @var mixed $routes */
-            $routes = require $path;
+            /**
+             * The facade is aimed at *this* router for the duration of the
+             * `require`, which is what lets a routes file call `Route::get(...)`
+             * without knowing — or being able to know — which router is loading
+             * it. See {@see \Framework\Support\Facades\Route}.
+             *
+             * @var mixed $routes
+             */
+            $routes = RouteFacade::withRegistrar($router->registrar(), static fn () => require $path);
         } catch (Throwable $e) {
             return RouteLoadResult::failure($path, $e);
         }
 
-        if (!is_callable($routes)) {
-            return RouteLoadResult::failure($path, new \RuntimeException(sprintf(
-                'A routes file must return a callable that receives the route registrar. '
-                . '[%s] returned [%s].',
-                $path,
-                get_debug_type($routes)
-            )));
-        }
-
-        try {
-            $routes($router->registrar());
-        } catch (Throwable $e) {
-            // Registration errors arrive here: an unsupported verb, a duplicate
-            // path, or a handler-less route the file declared but never finished.
-            // Reported with the file named, because the mistake is in the file.
-            return RouteLoadResult::failure($path, $e);
+        // Two shapes are accepted, and the reason is that the second one arrived
+        // first: a routes file used to *return* a closure that received the
+        // registrar, and every routes file written before the facade existed
+        // still does.
+        //
+        //   // current
+        //   Route::get('leads', [LeadController::class, 'index']);
+        //   return Route::get('leads', [...]);        // the Route, not callable
+        //
+        //   // still supported
+        //   return function (RouteRegistrar $router): void { ... };
+        //
+        // A file that ends in a facade call returns a `Route` object, which is not
+        // callable, so it falls through as already-registered. Dispatching on
+        // `is_callable` rather than on the return being null is what keeps both
+        // working: `null` from a file whose last statement is a `group()` call and
+        // `null` from an empty file are indistinguishable, and neither is an error.
+        if (is_callable($routes)) {
+            try {
+                $routes($router->registrar());
+            } catch (Throwable $e) {
+                // Registration errors arrive here: an unsupported verb, a duplicate
+                // path, or a handler-less route the file declared but never finished.
+                // Reported with the file named, because the mistake is in the file.
+                return RouteLoadResult::failure($path, $e);
+            }
         }
 
         return RouteLoadResult::loaded($path, count($router->getRoutes()));
@@ -121,10 +162,22 @@ final class RouteLoader
 
     /**
      * Whether a file has already been loaded.
+     *
+     * Answers about *any* router, which is what this predicate always meant to
+     * callers asking "has this file run yet" — the second half of the load key is
+     * about de-duplication, not about identity.
      */
     public function hasLoaded(string $file): bool
     {
-        return isset($this->loaded[$this->absolute($file)]);
+        $path = $this->absolute($file);
+
+        foreach ($this->loaded as $key => $_) {
+            if (str_starts_with($key, $path . '|')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

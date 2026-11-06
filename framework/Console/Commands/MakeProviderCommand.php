@@ -34,9 +34,11 @@ class MakeProviderCommand extends GeneratorCommand
 
     protected function getStubPath(): string
     {
-        // Paths come from the container-bound base path, never a hardcoded
-        // WordPress constant, so the framework works outside wp-content.
-        return base_path('stubs/provider.stub');
+        // A bare name rather than a path: resolution goes through StubLocator,
+        // which prefers a project copy and falls back to the framework's own
+        // directory — never a hardcoded WordPress constant, and never a path
+        // that assumes the framework sits inside the project.
+        return 'provider.stub';
     }
 
     protected function getTargetPath(string $className): string

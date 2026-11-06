@@ -158,7 +158,7 @@ final class PluginBootTest extends TestCase
         $namespace = (string) config('app.rest_namespace');
         $this->assertArrayHasKey($namespace, WpStub::$registeredRoutes);
 
-        $paths = array_column(WpStub::$registeredRoutes[$namespace], 'route');
+        $paths = array_column(WpStub::$registeredRoutes[$namespace] ?? [], 'route');
         $this->assertContains('ping', $paths);
     }
 
@@ -183,11 +183,15 @@ final class PluginBootTest extends TestCase
 
         $namespace = (string) config('app.rest_namespace');
 
+        // Guarded rather than read straight out of the array, because the failure
+        // this test exists to catch — no routes registered at all — otherwise
+        // surfaces as an "undefined array key" warning out of the test itself,
+        // which reads as a broken test rather than as the routing bug it is.
         WpStub::doAction('rest_api_init');
-        $afterFirst = WpStub::$registeredRoutes[$namespace];
+        $afterFirst = WpStub::$registeredRoutes[$namespace] ?? [];
 
         WpStub::doAction('rest_api_init');
-        $afterSecond = WpStub::$registeredRoutes[$namespace];
+        $afterSecond = WpStub::$registeredRoutes[$namespace] ?? [];
 
         $this->assertNotSame([], $afterFirst, 'The first firing should register the routes.');
         $this->assertCount(
@@ -214,8 +218,18 @@ final class PluginBootTest extends TestCase
         WpStub::doAction('rest_api_init');
 
         $namespace = (string) config('app.rest_namespace');
+        $registrations = WpStub::$registeredRoutes[$namespace] ?? [];
 
-        foreach (WpStub::$registeredRoutes[$namespace] as $registration) {
+        // Asserted non-empty first: an empty array makes the loop below vacuous,
+        // and a test that passes because it iterated over nothing is worse than
+        // no test at all.
+        $this->assertNotSame(
+            [],
+            $registrations,
+            'No REST routes were registered under [' . $namespace . '], so there are no permission callbacks to check.'
+        );
+
+        foreach ($registrations as $registration) {
             $this->assertArrayHasKey('permission_callback', $registration);
             $this->assertIsCallable($registration['permission_callback']);
         }

@@ -79,6 +79,32 @@ final class Rebrander
     ];
 
     /**
+     * Extension-less files that are still source and must be rewritten.
+     *
+     * ## Why an extension check is not enough on its own
+     *
+     * `TEXT_EXTENSIONS` is a list of *extensions*, and a file with no extension
+     * has none to match — so a CLI entry point named `mini` is skipped by the
+     * walk entirely, silently, with no entry in the report. That is not a
+     * cosmetic omission: `mini` carries `MINI_DEFAULT_PREFIX = 'wp_mini'`, and
+     * this script rewrites every other home of that value — `config/app.php`'s
+     * `env('CLI_PREFIX', …)` fallback and the `CLI_PREFIX` line in `.env`. Left
+     * alone, the rebranded project ships an entry point that forwards the *old*
+     * namespace to WP-CLI, and every command fails with "not a registered wp
+     * command" naming a prefix the project no longer uses anywhere else.
+     *
+     * Matched on the file *name* rather than on emptiness, because an allow-list
+     * of names is reviewable and "any file without an extension" would start
+     * rewriting binaries that happen to be named without one — the exact failure
+     * `TEXT_EXTENSIONS` was written as an allow-list to prevent.
+     *
+     * @var list<string>
+     */
+    private const TEXT_FILENAMES = [
+        'mini',
+    ];
+
+    /**
      * Files never rewritten, even when their extension is eligible.
      *
      * `composer.lock` is the important one: it records the resolved dependency
@@ -96,6 +122,32 @@ final class Rebrander
         'composer.lock',
         'package-lock.json',
         'yarn.lock',
+    ];
+
+    /**
+     * Files never rewritten, by root-relative path.
+     *
+     * `tests/Integration/RebranderTest.php` is this script's own test, and its
+     * fixtures *are* the starter's identity: it writes `App\` and `Core\` into a
+     * scratch tree, runs the rebrand over it, and asserts what moved. Rewriting
+     * the file makes the fixture and the assertion move independently, and the
+     * result is not a failing assertion but a *contradiction*: the fixture's
+     * `App\` becomes `<root>\App\`, while the assertion that `App\` is gone also
+     * becomes an assertion that `<root>\App\` is gone — which the line above it
+     * has just proved false. The rebranded project would ship a red suite, and
+     * the failure would name this test rather than its fixtures.
+     *
+     * The alternative — spelling the fixtures in a way the rules cannot see, via
+     * concatenation — works and is unreadable, and leaves the next person to add
+     * a fixture free to reintroduce the same trap. A path that is never visited
+     * cannot regress. Nothing in the file needs rebranding in any case: it
+     * declares `Tests\Integration` and uses PHPUnit's namespace, neither of which
+     * the rebrand moves.
+     *
+     * @var list<string>
+     */
+    private const SKIP_PATHS = [
+        'tests/Integration/RebranderTest.php',
     ];
 
     /**
@@ -696,15 +748,17 @@ final class Rebrander
                 $prefix = (string) $prefix;
 
                 $newPrefix = match (true) {
-                    // `App\` -> `LeadBridge\`
-                    $prefix === 'App\\' => $this->plan->namespace . '\\',
+                    // `App\` -> `LeadBridge\App\` — the layer name is kept and
+                    // the root is prepended, per RebrandPlan::fromOptions().
+                    $prefix === 'App\\' => $this->plan->appNamespace . '\\',
 
                     // `Core\` -> `LeadBridge\Core\`
                     $prefix === 'Core\\' => $this->plan->coreNamespace . '\\',
 
-                    // Anything already carrying the target namespace is left as
-                    // it is, which is what makes a second run a no-op rather than
-                    // a double-prefix.
+                    // Anything already carrying the new root is left as it is,
+                    // which is what makes a second run a no-op rather than a
+                    // double-prefix. Both rewritten keys start with the root, so
+                    // this arm is what makes the run idempotent.
                     str_starts_with($prefix, $this->plan->namespace . '\\'),
                     $prefix === $this->plan->namespace . '\\' => $prefix,
 
@@ -904,90 +958,47 @@ final class Rebrander
             // rewriting each textually keeps a file's own escaping intact without
             // either needing to know about the other.
 
-            // "App\\" -> "LeadBridge\\", one-separator and two-separator forms.
-            $rules[] = [
-                '/\bApp[' . self::regexClass() . ']{2}/',
-                self::namespaceFor($this->plan->namespace, 2),
-            ];
-            $rules[] = [
-                '/\bApp[' . self::regexClass() . ']/',
-                self::namespaceFor($this->plan->namespace, 1),
-            ];
-
-            // "Core\\" -> "LeadBridge\\Core\\", the same two forms.
+            // --- The guards, computed once and shared by every layer ----------
             //
-            // ## Why the target namespace is excluded from the match
+            // ## Why both `App` and `Core` need the emitted-namespace guard
             //
-            // These two rules are ordered widest-first, and the narrow one runs
-            // *after* the wide one has already rewritten the text. That is a
-            // problem the `App` rules do not have and the `Core` rules do, because
-            // `<coreNamespace>` ends in the very word being matched: after the
-            // two-separator rule turns `Core\\Note` into `LeadBridge\\Core\\Note`,
-            // the one-separator rule still sees a `\bCore\\` — the one the previous
-            // rule just inserted — and replaces it a second time.
+            // The rebrand *prefixes* the layers: `App\` becomes `<root>\App\` and
+            // `Core\` becomes `<root>\Core\`. Both targets therefore end in the
+            // very word each rule matches, so both rules can re-fire on their own
+            // output. After the wide rule turns `Core\\Note` into
+            // `LeadBridge\\Core\\Note`, the narrow rule still sees a `\bCore\\` —
+            // the one the previous rule just inserted — and replaces it again,
+            // producing `LeadBridge\\LeadBridge\\Core\\Note`. `App` has exactly the
+            // same problem now: `LeadBridge\\App\\Http` contains `\bApp\\`.
             //
-            // The result is `LeadBridge\\LeadBridge\\Core\\Note`, which is not a
-            // class the project has. It reads as a namespace typo in hand-written
-            // test code rather than as a rebrand defect, and it only appears where
-            // `Core` is followed by exactly one separator in the *source*, which
-            // in PHP is the two-separator-on-disk form: a single-quoted
-            // `'Core\\GeneratedFixtures'`.
+            // The result is a namespace the project does not have, which reads as
+            // a typo in hand-written test code rather than as a rebrand defect.
             //
-            // So each rule refuses a match that is already preceded by the target
-            // namespace. `(?<!...)` is a lookbehind, and `preg_quote` is used
-            // because the namespace contains backslashes — the one place in this
-            // file where escaping a pattern is the correct thing to do, since the
-            // alternative is counting them by hand.
-            // ## Why `Core` needs a guard and `App` does not
-            //
-            // The target namespace ends in the word being matched. `App` becomes
-            // `LeadBridge`, which contains no `\bApp\` — so that pair is a fixed
-            // point and running it twice changes nothing.
-            //
-            // `Core` becomes `LeadBridge\Core`, which *does* contain `\bCore\`.
-            // Without a guard the rule re-fires on its own output, and because the
-            // guard is a lookbehind it has to be fixed-length: PCRE rejects
-            // `(?<!LeadBridge(?:\\\\)+)` outright with "lookbehind assertion is not
-            // fixed length". Enumerating widths as an alternation works but grows
-            // combinatorially and still has to guess a ceiling.
+            // So each rule refuses a match already preceded by the new root.
+            // `(?<!...)` is a lookbehind and must be fixed-length: PCRE rejects
+            // `(?<!LeadBridge(?:\\\\)+)` with "lookbehind assertion is not fixed
+            // length". There are exactly two separator widths this script emits,
+            // so the guard enumerates those two as an alternation — each branch is
+            // individually fixed-length, which is what makes it legal.
             //
             // ## The separator count, measured rather than reasoned about
             //
-            // Two counts are in play and they are not the obvious ones.
-            //
             // `namespaceFor($ns, $w)` returns `$ns` with every internal separator
-            // repeated `$w` times, plus a trailing run. But `preg_replace`'s
+            // repeated `$w` times, plus a trailing run. `preg_replace`'s
             // *replacement* parser then collapses each `\\` in that string to a
             // single `\` — the same collapsing described in the class docblock —
-            // so the text actually written carries exactly `$w` separators, not
-            // `2 * $w`:
+            // so the text actually written carries exactly `$w` separators:
             //
             //     namespaceFor('LeadBridge\Core', 1)  ->  "LeadBridge\\Core\\"
             //     preg_replace output                 ->  "LeadBridge\Core\"
             //
-            // The earlier version of this guard asserted the un-collapsed width,
-            // so it demanded two separators of text that had one, never matched,
-            // and let the rule re-fire on its own output — turning the prose
-            // `autoloaded as Core\` into `LeadBridge\LeadBridge\Core\`, one copy
-            // longer on every run of the script.
-            //
-            // Both rules emit a namespace that the other one can then re-match, so
-            // the guard is the same for both and covers both emitted widths — the
-            // one rule 8 writes (1 separator) and the one rule 7 writes (2).
-            // Measured, not reasoned: `namespaceFor(..., 1)` produces two
-            // backslashes that `preg_replace` collapses to one, and
-            // `namespaceFor(..., 2)` produces four that collapse to two.
-            //
-            // A single-alternative guard cannot work here. Guarding at width 1
-            // lets rule 7's two-separator output through, and guarding at width 2
-            // lets rule 8's one-separator output through. PCRE requires lookbehind
-            // alternatives to be individually fixed-length, which both are, so the
-            // alternation is legal and needs no ceiling on the run length — there
-            // are exactly two widths this script can emit.
+            // An earlier version asserted the un-collapsed width, so it demanded
+            // two separators of text that had one, never matched, and let the rule
+            // re-fire on its own output — one copy longer on every run.
             $ns = preg_quote($this->plan->namespace, '/');
             $emitted = $ns . self::backslashRun(1) . '|' . $ns . self::backslashRun(2);
 
-            // ## The container guard, and why the rule cannot be type-blind here
+            // ## The container guard, and why these rules cannot be type-blind
             //
             // `Tests\Unit\Core\Note\` contains the token `Core\`, and it means
             // something completely different from the `Core\` in
@@ -998,32 +1009,36 @@ final class Rebrander
             //
             // A rule that matches `\bCore\` cannot tell them apart, and rewriting
             // the first is not a cosmetic error: `tests/Unit/Core/Note/` declares
-            // `Tests\Unit\Core\Note`, and PSR-4 resolves that from the *path*. Rename
-            // the namespace and leave the directory, and the class is no longer
-            // findable — the suite dies with "Class ... not found" across every file
-            // under `tests/Unit/Core/`, naming a namespace that looks like a typo in
+            // `Tests\Unit\Core\Note`, and PSR-4 resolves that from the *path*.
+            // Rename the namespace and leave the directory, and the class is no
+            // longer findable — the suite dies with "Class ... not found" across
+            // every file under it, naming a namespace that looks like a typo in
             // the test rather than a rebrand defect.
             //
-            // `Tests\` is the container, and it is the *only* one in this tree: the
-            // project's own namespaces (`App\`, `Core\`) are mapped to `app/` and
-            // `core/` by their own PSR-4 roots and sit at the top of a namespace, so
-            // there is no enclosing token above them to key on. That asymmetry is
-            // what makes the guard exact rather than a heuristic — a `Core` under
-            // `Tests\` is always a path, and a `Core` not under it is always the
-            // namespace.
+            // `Tests\` is the only container in this tree: the project's own
+            // namespaces (`App\`, `Core\`) are each top-level under their own
+            // PSR-4 root, so there is no enclosing token above them to key on.
+            // That asymmetry is what makes the guard exact rather than a
+            // heuristic — a layer token under `Tests\` is always a path, and one
+            // not under it is always the namespace.
             //
-            // The guard must be *fixed-length literals*, and that constraint is
-            // stronger than "no unbounded quantifier". Measured on this build:
-            // any quantifier at all inside `(?<!...)` — `*`, `+`, `{0,8}`, even a
-            // bounded one — compiles to "Internal error". So there is no way to
-            // say "any depth of segments" here, and the guard enumerates the exact
-            // container shapes that occur in this tree instead.
+            // ## Why both suites are enumerated
             //
-            // The shape that matters is one segment between the PSR-4 root and the
-            // `Core`: `Tests\Unit\Core\...`, which is where the suite's own
-            // namespaces put a `Core` that must NOT be rewritten. Adding the
-            // two-segment form covers a suite organised as `Tests\Feature\Unit\Core`
-            // without reaching for a quantifier.
+            // `Unit` and `Integration` are both PSR-4 containers under `Tests\`,
+            // and both hold a layer-named directory: `tests/Unit/Core/` and
+            // `tests/Integration/App/`. The second is the one that bites here —
+            // `tests/Integration/App/Repositories/WpNoteRepositoryTest.php`
+            // declares `Tests\Integration\App\Repositories` *and*, four lines
+            // later, `use App\Repositories\WpNoteRepository;`. Both contain
+            // `App\`; only the second is the namespace.
+            //
+            // ## Why the guard cannot be a quantifier
+            //
+            // Measured on this build: any quantifier inside `(?<!...)` — `*`,
+            // `+`, `{0,8}`, even a bounded one — compiles to "Internal error".
+            // So there is no way to say "any depth of segments" here, and the
+            // guard enumerates the exact container shapes that occur instead: one
+            // suite segment, with an optional `Feature` level, in both spellings.
             //
             // An earlier attempt used `\bTests[\\]{1,2}.{0,64}` to allow any
             // depth. That is a compile error, `preg_replace` returned null, and
@@ -1034,17 +1049,43 @@ final class Rebrander
             // destroyed project; see {@see rewriteContents()}.
             $sep = self::regexClass();
             $tests = preg_quote('Tests', '/');
+            $containers = [];
 
-            $container = implode('|', [
-                // Tests\Unit\Core\...
-                $tests . $sep . 'Unit' . $sep,
-                // Tests\\Unit\\Core\\... (the two-separator-on-disk form)
-                $tests . $sep . $sep . 'Unit' . $sep . $sep,
-                // Tests\Unit\Feature\Core\... and its doubled form
-                $tests . $sep . 'Unit' . $sep . 'Feature' . $sep,
-                $tests . $sep . $sep . 'Unit' . $sep . $sep . 'Feature' . $sep . $sep,
-            ]);
+            foreach (['Unit', 'Integration'] as $suite) {
+                // Tests\Unit\..., Tests\\Unit\\... (the doubled on-disk form)
+                $containers[] = $tests . $sep . $suite . $sep;
+                $containers[] = $tests . $sep . $sep . $suite . $sep . $sep;
 
+                // Tests\Unit\Feature\... and its doubled form
+                $containers[] = $tests . $sep . $suite . $sep . 'Feature' . $sep;
+                $containers[] = $tests . $sep . $sep . $suite . $sep . $sep . 'Feature' . $sep . $sep;
+            }
+
+            $container = implode('|', $containers);
+
+            // --- `App\` -> `<root>\App\` ---------------------------------------
+            //
+            // The layer name survives; the root is prepended. Two rules, one per
+            // separator width, because `app/Database/` spells it `App\` and
+            // `composer.json` spells it `"App\\"`.
+            $rules[] = [
+                '/'
+                    . '(?<!' . $container . ')'
+                    . '(?<!' . $emitted . ')'
+                    . '\bApp[' . self::regexClass() . ']{2}/',
+                self::namespaceFor($this->plan->appNamespace, 2),
+            ];
+            $rules[] = [
+                '/'
+                    . '(?<!' . $container . ')'
+                    . '(?<!' . $emitted . ')'
+                    . '\bApp[' . self::regexClass() . ']/',
+                self::namespaceFor($this->plan->appNamespace, 1),
+            ];
+
+            // --- `Core\` -> `<root>\Core\` -------------------------------------
+            //
+            // Same two widths, same two guards.
             $rules[] = [
                 '/'
                     . '(?<!' . $container . ')'
@@ -1060,18 +1101,31 @@ final class Rebrander
                 self::namespaceFor($this->plan->coreNamespace, 1),
             ];
 
-            // --- The bare forms, for `App::class` and a leading `\App` --------
+            // --- The bare forms, for `App::class` and a quoted `'App'` ---------
             //
             // The negative lookahead is what keeps these from matching the `App`
             // in `Application` or the English word "Core" in prose: it refuses any
             // position where a backslash, letter, digit or underscore follows.
+            //
+            // These need the guards too. Their targets now contain the token
+            // being matched (`LeadBridge\App` ends in `App`), so without the
+            // emitted guard a second run would produce `LeadBridge\LeadBridge\App`.
+            // `namespaceLiteral()` doubles the separators for `preg_replace`'s
+            // replacement parser; `namespaceFor()` cannot be used because these
+            // forms must not gain a trailing separator.
             $rules[] = [
-                '/\bApp(?![\\\\A-Za-z0-9_])/',
-                $this->plan->namespace,
+                '/'
+                    . '(?<!' . $container . ')'
+                    . '(?<!' . $emitted . ')'
+                    . '\bApp(?![\\\\A-Za-z0-9_])/',
+                self::namespaceLiteral($this->plan->appNamespace),
             ];
             $rules[] = [
-                '/\bCore(?![\\\\A-Za-z0-9_])/',
-                $this->plan->coreNamespace,
+                '/'
+                    . '(?<!' . $container . ')'
+                    . '(?<!' . $emitted . ')'
+                    . '\bCore(?![\\\\A-Za-z0-9_])/',
+                self::namespaceLiteral($this->plan->coreNamespace),
             ];
 
             // The REST namespace, as a complete string. Runs after the slug rule,
@@ -1093,7 +1147,7 @@ final class Rebrander
             ];
             $rules[] = [
                 "/'namespace' => 'App'/",
-                "'namespace' => '" . $this->plan->namespace . "'",
+                "'namespace' => '" . self::namespaceLiteral($this->plan->appNamespace) . "'",
             ];
         }
 
@@ -1281,7 +1335,7 @@ TXT);
             "'prefix' => env('APP_PREFIX', 'wp_mini_laravel_')"
                 => "'prefix' => env('APP_PREFIX', '" . $this->plan->optionPrefix . "')",
             "'namespace' => env('APP_NAMESPACE', 'App')"
-                => "'namespace' => env('APP_NAMESPACE', '" . $this->plan->namespace . "')",
+                => "'namespace' => env('APP_NAMESPACE', '" . $this->plan->appNamespace . "')",
             "'cli_prefix' => env('CLI_PREFIX', 'wp_mini')"
                 => "'cli_prefix' => env('CLI_PREFIX', '" . $this->plan->cliPrefix . "')",
             "'rest_namespace' => env('REST_NAMESPACE', 'wp-mini-laravel/v1')"
@@ -1321,6 +1375,35 @@ TXT);
     // --------------------------------------------------------- pass 1c: dotenv sync
 
     /**
+     * Quote a dotenv value in the form phpdotenv can actually parse.
+     *
+     * ## Why a backslash forces single quotes
+     *
+     * phpdotenv reads a backslash inside a **double-quoted** value as the start
+     * of an escape sequence and rejects any it does not recognise. Since the
+     * layers are kept under the root, `APP_NAMESPACE` is now `<root>\App` — and
+     * `"LeadBridge\App"` fails with:
+     *
+     *     InvalidFileException: Encountered an unexpected escape sequence
+     *
+     * That is a *parse* error, not a missing file, so `safeLoad()` does not
+     * swallow it: the plugin would fatal on every request of the rebranded
+     * project. A single-quoted value is read literally, so the namespace is
+     * emitted that way.
+     *
+     * Single quotes are safe for this value because a namespace cannot contain
+     * one — `RebrandPlan::validateNamespace()` restricts every segment to
+     * `[A-Z][A-Za-z0-9]*`. Every other identity value keeps the double quotes
+     * the template already uses, including a name with spaces.
+     */
+    private static function quoteEnvValue(string $value): string
+    {
+        return str_contains($value, '\\')
+            ? "'" . $value . "'"
+            : '"' . $value . '"';
+    }
+
+    /**
      * Synchronise the dotenv files with the new identity.
      *
      * `.env.example` is updated unconditionally (it is the template and always
@@ -1358,10 +1441,15 @@ TXT);
         // Ordered longest-first so APP_NAME is handled before APP_* variants are
         // ever considered as a prefix — although the regex below is anchored to
         // the key itself, so the order is defensive rather than load-bearing.
+        //
+        // `APP_NAMESPACE` is the only value here that can contain a backslash:
+        // the layers are kept under the root, so it is `<root>\App`. That is why
+        // every value goes through {@see quoteEnvValue()} rather than being
+        // wrapped in double quotes here.
         $mapping = [
             'APP_NAME'      => $this->plan->name,
             'APP_PREFIX'    => $this->plan->optionPrefix,
-            'APP_NAMESPACE' => $this->plan->namespace,
+            'APP_NAMESPACE' => $this->plan->appNamespace,
             'CLI_PREFIX'    => $this->plan->cliPrefix,
             'REST_NAMESPACE' => $this->plan->restNamespace,
         ];
@@ -1371,7 +1459,7 @@ TXT);
 
             foreach ($mapping as $key => $value) {
                 if (preg_match('/^(' . preg_quote($key, '/') . ')\\s*=/i', $line, $m)) {
-                    $result[] = sprintf('%s="%s"', $key, $value);
+                    $result[] = sprintf('%s=%s', $key, self::quoteEnvValue($value));
                     $updated = true;
                     $rebuild = true;
                     break;
@@ -1395,7 +1483,7 @@ TXT);
 
         foreach ($mapping as $key => $value) {
             if (!isset($emittedKeys[$key])) {
-                $result[] = sprintf('%s="%s"', $key, $value);
+                $result[] = sprintf('%s=%s', $key, self::quoteEnvValue($value));
                 $rebuild = true;
             }
         }
@@ -1425,7 +1513,8 @@ TXT);
         fwrite(STDOUT, sprintf("    name             %s\n", $this->plan->name));
         fwrite(STDOUT, sprintf("    slug             %s\n", $this->plan->slug));
         fwrite(STDOUT, sprintf("    vendor           %s\n", $this->plan->vendor));
-        fwrite(STDOUT, sprintf("    namespace        %s\n", $this->plan->namespace));
+        fwrite(STDOUT, sprintf("    namespace root   %s\n", $this->plan->namespace));
+        fwrite(STDOUT, sprintf("    app namespace    %s\n", $this->plan->appNamespace));
         fwrite(STDOUT, sprintf("    core namespace   %s\n", $this->plan->coreNamespace));
         fwrite(STDOUT, sprintf("    constant prefix  %s\n", $this->plan->constantPrefix));
         fwrite(STDOUT, sprintf("    option prefix    %s\n", $this->plan->optionPrefix));
@@ -1479,9 +1568,20 @@ TXT);
                 continue;
             }
 
+            // The path-based list exists for files whose *contents* describe the
+            // pre-rebrand identity — see SKIP_PATHS.
+            if (in_array($this->relative($path), self::SKIP_PATHS, true)) {
+                continue;
+            }
+
             $extension = strtolower($file->getExtension());
 
-            if (!in_array($extension, self::TEXT_EXTENSIONS, true)) {
+            // A file qualifies by extension or by name — see TEXT_FILENAMES for
+            // why an extension-less source file cannot be found any other way.
+            if (
+                !in_array($extension, self::TEXT_EXTENSIONS, true)
+                && !in_array($file->getFilename(), self::TEXT_FILENAMES, true)
+            ) {
                 continue;
             }
 
@@ -1615,6 +1715,27 @@ TXT);
         }
 
         return $out . $separator;
+    }
+
+    /**
+     * A namespace, written so `preg_replace` emits it literally, with **no**
+     * trailing separator.
+     *
+     * {@see namespaceFor()} always appends a separator because the rules that use
+     * it replace a namespace *followed by* another segment. The bare rules
+     * replace a whole token — `App::class`, the string `'App'` in an assertion —
+     * where a trailing separator would corrupt the output.
+     *
+     * The escaping is the same idea: every separator is doubled so the
+     * replacement parser collapses it back to one. Doing it here rather than
+     * returning the namespace directly means the result does not depend on the
+     * first letter of a segment happening not to be a replacement escape — `\A`
+     * and `\C` survive today, but nothing in the type system promises the next
+     * layer will not start with `n` or `t`.
+     */
+    private static function namespaceLiteral(string $namespace): string
+    {
+        return str_replace('\\', '\\\\', $namespace);
     }
 
     /**

@@ -46,6 +46,26 @@ final class RouteRegistrationException extends RuntimeException
     }
 
     /**
+     * The action argument was not one of the accepted shapes.
+     *
+     * Reachable only for an array that is not a `[Controller::class, 'method']`
+     * pair — everything else is caught by the parameter type. A three-element
+     * array and a string-keyed array are the shapes this exists for, and both
+     * would otherwise be accepted at registration and fail at dispatch, against a
+     * request that names no route.
+     *
+     * @param string $type The `get_debug_type()` of what was passed.
+     */
+    public static function invalidAction(string $type): self
+    {
+        return new self(sprintf(
+            'A route action must be a controller class name, a [Controller::class, \'method\'] pair, '
+            . 'or a callable. Got [%s].',
+            $type
+        ));
+    }
+
+    /**
      * Two form handlers derived the same `admin_post_{action}` name.
      *
      * Raised rather than resolved because there is no safe way to pick: both

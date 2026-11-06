@@ -35,7 +35,9 @@ class MakeRouteCommand extends GeneratorCommand
 
     protected function getStubPath(): string
     {
-        return base_path('stubs/routes.stub');
+        // Bare name: see StubLocator. The target path below is still the
+        // project's — only the *template* is overridable.
+        return 'routes.stub';
     }
 
     protected function getTargetPath(string $className): string

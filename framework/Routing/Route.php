@@ -59,6 +59,25 @@ final class Route
     private ?string $name = null;
 
     /**
+     * A prefix the group this route was declared in contributes to its name.
+     *
+     * ## Why this lives on the route and not in the registrar
+     *
+     * `->name()` is called by the *author*, on the object {@see RouteRegistrar}
+     * handed back — which is after the group callback has moved on, in the fluent
+     * chain. So the registrar cannot wrap the call: by the time `name()` runs, the
+     * only thing that knows which group the route was declared in is the route
+     * itself.
+     *
+     * The alternative — having the registrar re-walk its routes and rename them
+     * after the callback returns — is wrong for a subtler reason: a route's `name()`
+     * call is its author's final word, and a prefix applied afterwards would
+     * overwrite a name the author deliberately set outside the convention. This is
+     * applied *inside* `name()`, so the two compose in the order they were written.
+     */
+    private string $namePrefix = '';
+
+    /**
      * WordPress-specific arguments for this route.
      *
      * This is the escape hatch the fluent API needs to stay honest: a web route
@@ -126,11 +145,52 @@ final class Route
     /**
      * Attach middleware, run in the order given.
      *
-     * @param class-string<Contracts\Middleware> ...$middleware
+     * Both spellings are accepted, and both are common enough that refusing one
+     * would be a papercut on every route:
+     *
+     *     ->middleware(Authenticate::class, VerifyNonce::class)
+     *     ->middleware([Authenticate::class, VerifyNonce::class])
+     *
+     * A list given as one array is flattened, so the two forms cannot produce
+     * routes that differ only in whether a guard was registered as one entry or
+     * two — the pipeline would run them the same way, but `getMiddleware()` is
+     * what the audit tests and the route listing read.
+     *
+     * ## Entries may carry parameters
+     *
+     * An entry may be `'class:param'`, Laravel-style:
+     *
+     *     ->middleware(['capability:manage_options', 'nonce:leads_store'])
+     *
+     * The pipeline splits each entry at the first colon and hands the rest to the
+     * middleware, which receives it through a variadic `handle(...$arguments)`.
+     * This class deliberately does not parse or validate that — it stores strings
+     * and does not know which contract, let alone which signature, they will be
+     * run under. The one rule enforced here is that an entry is a non-empty
+     * string; a parameter naming a middleware that takes none is reported by
+     * {@see \Framework\Http\Middleware\Pipeline} at dispatch, where the class can
+     * actually be inspected.
+     *
+     * @param string|array<int, string> ...$middleware
+     *
+     * @throws InvalidArgumentException When an entry is not a class name, which
+     *                                  the pipeline would otherwise report much
+     *                                  later as an unbuildable service.
      */
-    public function middleware(string ...$middleware): self
+    public function middleware(string|array ...$middleware): self
     {
-        $this->middleware = array_merge($this->middleware, array_values($middleware));
+        foreach ($middleware as $entry) {
+            foreach ((array) $entry as $class) {
+                if (!is_string($class) || $class === '') {
+                    throw new InvalidArgumentException(sprintf(
+                        'Route middleware must be class names. Got [%s].',
+                        get_debug_type($class)
+                    ));
+                }
+
+                $this->middleware[] = $class;
+            }
+        }
 
         return $this;
     }
@@ -160,10 +220,38 @@ final class Route
      * and whether two routes may share one is a project's decision, not the
      * router's. The listing reports a collision rather than the router refusing
      * to boot over it.
+     *
+     * ## A group's `as` prefix is applied here, not before
+     *
+     * `Route::group(['as' => 'leads.'], ...)` contributes a prefix, and this is the
+     * one place it can be applied — see {@see $namePrefix}. The name the author
+     * passes is therefore *relative to the group*, which is the whole point:
+     * `->name('index')` inside `['as' => 'leads.']` produces `leads.index`, and two
+     * groups may each declare an `index` without colliding.
      */
     public function name(string $name): self
     {
-        $this->name = $name;
+        $this->name = $this->namePrefix . $name;
+
+        return $this;
+    }
+
+    /**
+     * Record the group name prefix this route was declared under.
+     *
+     * Called by {@see RouteRegistrar::route()} immediately after the route is
+     * built, while its group is still in scope. Public because the registrar is a
+     * different class and the value has to cross that boundary; not intended to be
+     * called from a routes file, where `Route::group(['as' => ...])` is the
+     * spelling.
+     *
+     * Has no effect on a route that is never named, and no effect on one named
+     * before this call — a `Route` built by hand and named outside any group is
+     * unchanged either way.
+     */
+    public function namePrefix(string $prefix): self
+    {
+        $this->namePrefix = $prefix;
 
         return $this;
     }

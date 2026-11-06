@@ -25,6 +25,25 @@ final class GeneratedCodeTest extends TestCase
 
     private string $targetDirectory;
 
+    /**
+     * Where the shipped stubs live.
+     *
+     * Resolved through {@see StubLocator} rather than by spelling
+     * `<plugin root>/stubs/…`, which is the path this test used to hardcode and
+     * which stopped existing the moment the stubs moved into the framework
+     * package — the arrangement that lets them ship with the package instead of
+     * only with the project that happens to be the template.
+     *
+     * The workspace below has no `stubs/` directory of its own, so this resolves
+     * to the framework's copy and the test additionally pins that fallback: a
+     * regression to project-only resolution would fail here rather than silently
+     * testing a stale duplicate.
+     */
+    private function stubPath(string $name): string
+    {
+        return (new \Framework\Console\StubLocator($this->targetDirectory))->resolve($name);
+    }
+
     protected function setUp(): void
     {
         WpStub::reset();
@@ -109,7 +128,7 @@ final class GeneratedCodeTest extends TestCase
      */
     public function test_the_routes_stub_returns_a_usable_registrar_callback(): void
     {
-        $stubPath = dirname(__DIR__, 3) . '/stubs/routes.stub';
+        $stubPath = $this->stubPath('routes.stub');
 
         /** @var callable $callback */
         $callback = require $stubPath;
@@ -132,7 +151,7 @@ final class GeneratedCodeTest extends TestCase
      */
     public function test_the_provider_stub_is_a_valid_service_provider(): void
     {
-        $stub = (string) file_get_contents(dirname(__DIR__, 3) . '/stubs/provider.stub');
+        $stub = (string) file_get_contents($this->stubPath('provider.stub'));
 
         $contents = str_replace(
             ['{{ namespace }}', '{{ class }}'],
@@ -161,7 +180,7 @@ final class GeneratedCodeTest extends TestCase
 
     private function generateController(string $class): string
     {
-        $stub = (string) file_get_contents(dirname(__DIR__, 3) . '/stubs/controller.stub');
+        $stub = (string) file_get_contents($this->stubPath('controller.stub'));
 
         $contents = str_replace(
             ['{{ namespace }}', '{{ class }}'],

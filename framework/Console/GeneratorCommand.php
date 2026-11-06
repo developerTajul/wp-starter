@@ -21,7 +21,18 @@ use RuntimeException;
 abstract class GeneratorCommand extends Command
 {
     /**
-     * Absolute path to the stub to render.
+     * The stub to render — a filename, or an absolute path.
+     *
+     * A bare filename (`controller.stub`) is resolved through {@see StubLocator},
+     * which looks in the project first and falls back to the framework's own
+     * directory. That is the form every built-in generator uses, and the only one
+     * that survives the framework being installed under `vendor/`.
+     *
+     * An absolute path is used verbatim, with no fallback. That escape hatch
+     * exists for a generator whose stub genuinely lives somewhere the two
+     * directories do not cover — and for tests, which point a subclass at a
+     * throwaway file. See {@see locateStub()} for why the two are distinguished
+     * by the string rather than by a second abstract method.
      */
     abstract protected function getStubPath(): string;
 
@@ -155,7 +166,7 @@ abstract class GeneratorCommand extends Command
      */
     protected function render(string $className): string
     {
-        $stubPath = $this->getStubPath();
+        $stubPath = $this->locateStub();
 
         if (!is_file($stubPath)) {
             throw new RuntimeException(sprintf('Stub file not found at: %s', $this->normalizePath($stubPath)));
@@ -176,6 +187,77 @@ abstract class GeneratorCommand extends Command
         );
 
         return str_replace(array_keys($replacements), array_values($replacements), $contents);
+    }
+
+    /**
+     * Turn {@see getStubPath()} into a real path on disk.
+     *
+     * ## Why the absolute case is detected rather than declared
+     *
+     * The base class needs to tell "a stub name to look up" from "a path I was
+     * given". The obvious design is a second abstract method — `isAbsolute()` or
+     * a separate `getStubName()` — and it is worse: it is a second thing every
+     * subclass must remember to implement, and a subclass that gets it wrong
+     * fails at run time with a lookup for a file literally named `H:\...\x.stub`.
+     * The string already carries the answer, so it is read rather than asked for.
+     *
+     * The rule mirrors {@see \Framework\Routing\RouteLoader}: a leading slash or
+     * a drive letter means the caller gave a full path. Everything else is a
+     * name, and a name is always a filename — never a relative path — because a
+     * relative path would resolve against the process's working directory, which
+     * under WP-CLI is wherever the operator happened to be standing.
+     *
+     * @throws StubNotFoundException When a name resolves nowhere.
+     */
+    protected function locateStub(): string
+    {
+        $stub = $this->getStubPath();
+
+        if (str_starts_with($stub, '/') || preg_match('#^[A-Za-z]:[\\\\/]#', $stub) === 1) {
+            return $stub;
+        }
+
+        return $this->stubLocator()->resolve($stub);
+    }
+
+    /**
+     * The locator, aimed at this project's root.
+     *
+     * Built here rather than injected, because {@see GeneratorCommand} is
+     * constructed by the container from each generator's own constructor — and
+     * several generators declare none — so an injected dependency would have to
+     * be threaded through every one of them to say something none of them needs
+     * to vary. A locator is two strings and a `file_exists`; there is nothing to
+     * substitute.
+     *
+     * `base_path()` is still the source of the project directory, so a project
+     * that rebinds `path.base` moves its overridable stubs with it. It is only
+     * called when a name needs looking up, so a generator given an absolute stub
+     * path never touches the container binding at all.
+     */
+    protected function stubLocator(): StubLocator
+    {
+        return new StubLocator($this->projectPath());
+    }
+
+    /**
+     * The directory project stubs are looked for under.
+     *
+     * Split out so a test can aim the locator at a workspace without rebinding
+     * `path.base` for the whole process — the generators' own tests already do
+     * the latter, and a second mechanism that agreed with it by accident would
+     * make the override untestable.
+     */
+    protected function projectPath(): string
+    {
+        if (!function_exists('base_path')) {
+            throw new RuntimeException(
+                'base_path() is unavailable, so a stub name cannot be resolved against the project. '
+                . 'Pass an absolute stub path instead.'
+            );
+        }
+
+        return base_path();
     }
 
     /**

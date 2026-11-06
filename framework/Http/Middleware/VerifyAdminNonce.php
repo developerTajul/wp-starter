@@ -48,6 +48,12 @@ use Framework\Http\Responses\JsonResponse;
  *         }
  *     }
  *
+ * **{@see VerifyNonce} is the same check configured per route** —
+ * `->middleware('nonce:save_lead')` — and is what this class's own docblock above
+ * would otherwise be teaching by subclass. Reach for this one when the action is
+ * a property of the class's meaning (a guard that is always the same guard, named
+ * once); reach for `VerifyNonce` when it is a property of the route.
+ *
  * Passing `'-1'` explicitly means the same as the default. Passing `null`
  * changes nothing either, and is accepted only so the constructor reads clearly:
  * WordPress's `$action` parameter defaults to the integer `-1`, and since
