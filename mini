@@ -208,6 +208,49 @@ function miniIsBatchFile(string $path): bool
     return $extension === 'bat' || $extension === 'cmd';
 }
 
+/**
+ * Whether a candidate is a script PHP cannot start directly.
+ *
+ * ## The failure this exists to prevent
+ *
+ * A bare `wp` is two completely different things depending on how the machine
+ * installed WP-CLI. On a Unix or a phar-based install it is the PHP phar itself,
+ * which is what the user means by "WP-CLI". On a hand-rolled Windows install it
+ * is often a *shell script* — a polyglot `#!/usr/bin/env sh` wrapper, or a `wp`
+ * with no extension at all — and neither `CreateProcess` nor `pcntl_exec` can run
+ * one. PHP would treat the file as something to hand to the OS, the OS would
+ * refuse, and `mini` would report "could not start WP-CLI" while a perfectly
+ * usable `C:\wp-cli\wp-cli.phar` sat on the same PATH a few entries along.
+ *
+ * ## Why this reads the file rather than trusting the extension
+ *
+ * Because the whole problem is a file whose extension says nothing. A `.phar`,
+ * a `.exe` and a Unix binary all reach here and all have to be *kept*; only a
+ * file that begins with a shebang is refused. An extension check cannot tell the
+ * three apart from a wrapper script — they frequently share none.
+ *
+ * A read failure returns false, so an unreadable file stays a candidate and the
+ * eventual error names the binary rather than silently skipping past it.
+ *
+ * Only the first bytes are read, and only to look at the first two: every shell
+ * script that matters begins `#!`, and a phar begins `<?php`, so no real WP-CLI
+ * is ever misjudged by the wider window.
+ */
+function miniIsShellScript(string $path): bool
+{
+    // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen
+    $handle = @fopen($path, 'rb');
+
+    if ($handle === false) {
+        return false;
+    }
+
+    $head = (string) fread($handle, 2);
+    fclose($handle);
+
+    return $head === '#!';
+}
+
 // ---------------------------------------------------------------------------
 // Finding WP-CLI
 // ---------------------------------------------------------------------------
@@ -277,9 +320,19 @@ function miniFindInstalled(): ?string
         foreach ($directories as $directory) {
             $candidate = rtrim($directory, '/\\') . DIRECTORY_SEPARATOR . $name;
 
-            if (is_file($candidate) && is_readable($candidate)) {
-                return $candidate;
+            if (!is_file($candidate) || !is_readable($candidate)) {
+                continue;
             }
+
+            // A shebang script on Windows cannot be started by PHP, so taking it
+            // here would turn a working install into "could not start WP-CLI".
+            // Skipped rather than returned, so the search carries on to the
+            // runnable candidate further down the same PATH.
+            if (PHP_OS_FAMILY === 'Windows' && miniIsShellScript($candidate)) {
+                continue;
+            }
+
+            return $candidate;
         }
     }
 
@@ -289,20 +342,35 @@ function miniFindInstalled(): ?string
 /**
  * What to look for, in preference order.
  *
- * Longest-lived preference first: a bare `wp` is a real executable on Unix and a
- * shell script on a hand-rolled Windows install, and either is what the user
- * actually means by "WP-CLI". A `.phar` is next because it is directly runnable
- * by PHP everywhere. The Windows proxies come last and are only reached on an
- * install that ships no phar at all — see {@see miniRunAndExit()}, which runs a
- * `.bat`/`.cmd` through the shell precisely because PHP cannot execute one.
+ * ## Why the directly-runnable forms come first
+ *
+ * Because "first match on PATH" is only a sensible rule when every candidate can
+ * actually be started. A bare `wp` is the most *visible* name for WP-CLI and the
+ * one a user means, which is why it led this list — but a `.bat`/`.cmd` wrapper
+ * cannot be executed by PHP at all, and a shebang script cannot be executed by
+ * PHP on Windows. Leading with `wp` therefore resolves, on the installs where it
+ * is a wrapper, to a binary that then fails to start, while the `.phar` sitting
+ * beside it would have worked. Preferring what is *runnable* over what is
+ * *expected* turns that into a non-event.
+ *
+ * A `.phar` leads on Windows because it is the form that runs under
+ * {@see PHP_BINARY} with no shell and no wrapper, so prompting, Ctrl-C and the
+ * exit code all behave. The `.exe` follows, then the proxies, and a bare `wp`
+ * comes last: by that point it is the only thing left, and `miniRunAndExit()`
+ * still has a chance if it turns out to be a real binary.
+ *
+ * The Unix list is deliberately unchanged. There, `wp` genuinely is the phar and
+ * PHP runs it natively; reordering it would be a change with no failure to fix.
  *
  * @return list<string>
  */
 function miniPathCandidates(): array
 {
-    return PHP_OS_FAMILY === 'Windows'
-        ? ['wp', 'wp-cli.phar', 'wp.phar', 'wp.exe', 'wp.bat', 'wp.cmd']
-        : ['wp', 'wp-cli.phar'];
+    if (PHP_OS_FAMILY !== 'Windows') {
+        return ['wp', 'wp-cli.phar'];
+    }
+
+    return ['wp-cli.phar', 'wp.phar', 'wp.exe', 'wp.bat', 'wp.cmd', 'wp'];
 }
 
 /**
