@@ -51,10 +51,28 @@ final class SchemaException extends RuntimeException
      */
     public static function invalidTableName(string $table): self
     {
+        return self::invalidIdentifier($table, 'table');
+    }
+
+    /**
+     * A column or index name that cannot be used as an identifier.
+     *
+     * The same rule and the same reason as {@see invalidTableName()}; separate
+     * only so the message can name what was actually wrong. A caller reading
+     * "not a usable table name" while dropping a *column* has been told about a
+     * different object than the one they wrote, which is the kind of message that
+     * sends someone looking in the wrong place.
+     *
+     * @param string $kind "column" or "index".
+     */
+    public static function invalidIdentifier(string $name, string $kind): self
+    {
         return new self(sprintf(
-            '[%s] is not a usable table name. A table name may only contain letters, digits, '
+            '[%s] is not a usable %s name. A %s name may only contain letters, digits, '
             . 'underscores and dollar signs, and may not be empty.',
-            $table
+            $name,
+            $kind,
+            $kind
         ));
     }
 

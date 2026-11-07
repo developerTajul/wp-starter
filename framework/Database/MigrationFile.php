@@ -141,12 +141,22 @@ final class MigrationFile
      * first and roll back newest first, so the ordering has to come from the
      * filename rather than from `scandir()`.
      *
-     * Compared as a string: both accepted timestamp spellings sort correctly
-     * lexicographically, and mixing the two would only misorder files whose
-     * dates differ — which sorts the same either way.
+     * ## Why the underscores come out
+     *
+     * The two accepted spellings do **not** compare as strings. `_` is 0x5F and
+     * digits are 0x30–0x39, so `2026_11_05_100000` sorts after `20261231000000`
+     * — every underscored timestamp beats every compact one, whatever the dates
+     * say. Sorting a mixed directory by the raw filename therefore runs
+     * migrations in spelling order rather than date order, and a migration that
+     * alters a table can run before the one that creates it.
+     *
+     * Stripping the separators yields the same 14 digits either way, which does
+     * compare correctly. Padding is unnecessary: both spellings carry all four
+     * year digits and zero-padded month, day, hour, minute and second, so the
+     * normalised strings are always the same length.
      */
     public function timestamp(): string
     {
-        return $this->timestamp;
+        return str_replace('_', '', $this->timestamp);
     }
 }

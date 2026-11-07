@@ -25,9 +25,62 @@ if (!function_exists('add_action')) {
      */
     function add_action(string $tag, $callback, int $priority = 10, int $acceptedArgs = 1): bool
     {
-        WpStub::$actions[$tag][] = $callback;
+        // `acceptedArgs` is stored with the callback rather than dropped, because
+        // WordPress's default of 1 is load-bearing: a listener declared
+        // `function ($identifier)` on a hook fired with three arguments must be
+        // called with one. Discarding it here would let a stub call every
+        // listener with every argument, and a test could then not tell a
+        // correctly-declared listener from one that would fatal in production.
+        WpStub::$actions[$tag][] = [
+            'callback' => $callback,
+            'acceptedArgs' => $acceptedArgs,
+        ];
 
         return true;
+    }
+}
+
+if (!function_exists('do_action')) {
+    /**
+     * Fire a hook, calling every callback registered under it.
+     *
+     * Mirrors WordPress's own semantics that matter here: callbacks run in
+     * registration order, each receives the arguments passed, and a callback
+     * registered with a smaller `acceptedArgs` than were supplied is called with
+     * only that many. The last two are the ones a stub could plausibly get wrong
+     * and thereby make a real bug invisible, so they are modelled rather than
+     * reduced to "call everything with everything".
+     *
+     * `$acceptedArgs` is stored alongside the callback by {@see add_action()}
+     * because WordPress's default of 1 is load-bearing: a listener declared
+     * `function ($identifier)` on a hook fired with three arguments is called
+     * with one, not three.
+     *
+     * @param mixed ...$args
+     */
+    function do_action(string $tag, ...$args): void
+    {
+        WpStub::$fired[] = $tag;
+
+        foreach (WpStub::$actions[$tag] ?? [] as $entry) {
+            $callback = $entry['callback'] ?? $entry;
+            $accepted = $entry['acceptedArgs'] ?? null;
+
+            if ($accepted === null || count($args) <= $accepted) {
+                $callback(...$args);
+
+                continue;
+            }
+
+            $callback(...array_slice($args, 0, $accepted));
+        }
+    }
+}
+
+if (!function_exists('did_action')) {
+    function did_action(string $tag): int
+    {
+        return count(array_filter(WpStub::$fired, static fn (string $fired): bool => $fired === $tag));
     }
 }
 
@@ -543,5 +596,83 @@ if (!function_exists('trailingslashit')) {
     function trailingslashit(string $value): string
     {
         return rtrim($value, '/\\') . '/';
+    }
+}
+
+if (!function_exists('dbDelta')) {
+    /**
+     * Record a schema statement, and hand it to the fake so a table exists.
+     *
+     * The real dbDelta() lives in wp-admin/includes/upgrade.php and its job is to
+     * *diff* — it parses a CREATE TABLE, compares it against the live table and
+     * issues the ALTERs needed to converge. That parsing is deliberately not
+     * reproduced here: a second implementation of it would be tested by the very
+     * tests it is meant to support, so a passing suite would prove only that the
+     * re-implementation agrees with itself.
+     *
+     * What it *does* do is execute, because the real one does and migrations now
+     * depend on that. A migration built on `Schema::create()` does not issue its
+     * own CREATE — it hands the statement to dbDelta, which runs it — so a stub
+     * that only recorded would leave the table nonexistent and every migration
+     * test asserting on a schema that was never built.
+     *
+     * The execution is a plain `$wpdb->query()`: no diffing, no `ALTER`
+     * synthesis. That is the deliberate limit. It is enough for a migration to
+     * produce a table a repository can be tested against, and it cannot fake
+     * agreement about a schema the adapter got wrong, which is the property the
+     * real parser would have hidden.
+     *
+     * The statement is also recorded, because every rule the WordPress adapter
+     * satisfies for dbDelta's benefit is a rule about the statement *text* — the
+     * table name unquoted, `PRIMARY KEY` followed by two spaces, each key on its
+     * own line — and assertions on that text are assertions on the contract.
+     * Those live in {@see \Tests\Unit\Database\WpDatabaseAdapterTest}.
+     *
+     * ## Which connection it writes to
+     *
+     * The real dbDelta() reaches for the `$wpdb` global, and so did this stub —
+     * which made it a no-op in every test, because the adapter is constructed
+     * with an explicit handle and never publishes it to the global. A migration
+     * would report success, write its tracking row, and leave no table behind:
+     * the one failure mode this stub exists to prevent, arrived at from the other
+     * side. So the handle is now taken from the adapter that is mid-call when one
+     * is available ({@see WpDatabaseAdapter::connection()}), and the global is
+     * only the fallback.
+     *
+     * @return mixed Whatever the test set as the simulated result.
+     */
+    function dbDelta($queries = '', $execute = true)
+    {
+        foreach ((array) $queries as $query) {
+            $query = (string) $query;
+
+            WpStub::$dbDeltaStatements[] = $query;
+
+            // A dbDelta() call with no database behind it — which happens in the
+            // unit tests that only want the recorded text — still records and
+            // returns, rather than fataling on a missing global.
+            $db = \Tests\Support\SchemaAdapterRegistry::connection();
+
+            if (!$execute || $db === null) {
+                continue;
+            }
+
+            // **The one piece of diffing this stub does model, and it is the
+            // load-bearing one.** The real dbDelta() checks whether each table
+            // exists and does *not* re-issue a CREATE for one that does — it
+            // converges the live table with ALTERs instead. Replaying the CREATE
+            // here instead would make the fake reject a duplicate and fail every
+            // migration on a second run, which is the opposite of what the real
+            // helper does and would make a replay test assert the wrong thing.
+            if (preg_match('/^\s*CREATE\s+TABLE\s+`?([A-Za-z0-9_$]+)`?/i', $query, $m) === 1
+                && $db->get_var($db->prepare('SHOW TABLES LIKE %s', $db->esc_like($m[1]))) !== null
+            ) {
+                continue;
+            }
+
+            $db->query($query);
+        }
+
+        return WpStub::$dbDeltaResult;
     }
 }

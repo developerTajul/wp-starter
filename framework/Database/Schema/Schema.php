@@ -58,6 +58,16 @@ final class Schema
     private static ?DatabaseAdapterInterface $adapter = null;
 
     /**
+     * The adapter {@see pretend()} displaced, held so {@see stopPretending()}
+     * can put it back rather than clearing the slot.
+     *
+     * `null` is a meaningful value here — it means "there was nothing installed
+     * and the container should resolve one again" — so this is only read while
+     * {@see $pretending} is true.
+     */
+    private static ?DatabaseAdapterInterface $displaced = null;
+
+    /**
      * This is a namespace of static entry points, not a thing to construct.
      */
     private function __construct()
@@ -76,6 +86,118 @@ final class Schema
     }
 
     /**
+     * The adapter this namespace is currently talking to.
+     *
+     * Exposed because anything that *reads* the schema — the dumper, and the
+     * `migrate:dump` command over it — has to read through exactly the object the
+     * `Schema::` calls write through, or the two disagree about which database
+     * they are describing. That is not a hypothetical: a caller resolving the
+     * interface from the container itself would miss {@see useAdapter()}
+     * entirely, describe the real database, and look right doing it.
+     *
+     * Still not a place to *set* anything — {@see useAdapter()} is that, and an
+     * application configures this through a container binding.
+     */
+    public static function adapter(): DatabaseAdapterInterface
+    {
+        return self::resolveAdapter();
+    }
+
+    /**
+     * Record schema statements instead of running them.
+     *
+     * ## Why this pins the adapter
+     *
+     * {@see adapter()} re-resolves through the container on every call, which is
+     * right for normal use and wrong for this: pretending is a *stateful* mode,
+     * and a re-resolved instance would start with it off. So the first call
+     * captures the current adapter into the static slot — making the thing that
+     * records and the thing that is read back the same object — and
+     * {@see stopPretending()} hands the slot back to the container.
+     *
+     * ## The limit, stated plainly
+     *
+     * Only statements issued through this interface are recorded. A migration
+     * that runs raw `$wpdb` queries alongside its `Schema::` calls will have those
+     * queries neither recorded nor run — the framework does not route them, so
+     * there is nothing here to intercept. Callers built on this are expected to
+     * say so rather than present the output as complete.
+     *
+     * Reads still execute. A migration that guards on {@see hasColumn()} has to
+     * take the branch it would really take, or the recorded statements describe a
+     * decision nobody made.
+     */
+    public static function pretend(): void
+    {
+        $adapter = self::resolveAdapter();
+
+        // Remembered, not assumed to be null. `stopPretending()` used to clear
+        // the slot and let `resolveAdapter()` build a fresh adapter — which is
+        // wrong whenever someone had *installed* one, as `useAdapter()` does in
+        // every test and as a service provider does in an application. Clearing
+        // threw that adapter away and the next `Schema::` call silently described
+        // a different database (or, with no `$wpdb` global, threw). Restoring the
+        // displaced instance is what makes a pretend pass leave no trace.
+        self::$displaced = self::$adapter;
+
+        self::$adapter = $adapter;
+        self::$pretending = true;
+
+        $adapter->pretend();
+    }
+
+    /**
+     * Stop recording, and return the statements issued while pretending.
+     *
+     * Restores whatever adapter {@see pretend()} displaced — the one that was
+     * installed before the dry run, or the container-resolved one if there was
+     * none — so a pretend pass leaves no trace on the process. The recorded list
+     * is returned rather than read separately because the restore drops the only
+     * reference to the adapter that holds it.
+     *
+     * @return list<string>
+     */
+    public static function stopPretending(): array
+    {
+        if (! self::$adapter instanceof DatabaseAdapterInterface) {
+            self::$pretending = false;
+
+            return [];
+        }
+
+        $recorded = self::$adapter->recordedStatements();
+
+        self::$adapter->stopPretending();
+
+        self::$adapter = self::$displaced;
+        self::$displaced = null;
+        self::$pretending = false;
+
+        return $recorded;
+    }
+
+    /**
+     * Whether the adapter is currently recording rather than running.
+     *
+     * Read by {@see \Framework\Database\Migrator} to decide whether it may record
+     * a migration as applied — a pretend run must leave the tracking table
+     * untouched, since it did not do the work the row would claim.
+     */
+    public static function isPretending(): bool
+    {
+        return self::$pretending;
+    }
+
+    /**
+     * Records whether {@see pretend()} is in force, for {@see isPretending()}.
+     *
+     * A separate flag because `recordedStatements()` being non-empty is not the
+     * same question: a pretend run over a migration that issues nothing would
+     * read as "not pretending", and the caller would then record it as applied.
+     */
+    private static bool $pretending = false;
+
+    /**
      * Create a table from the given blueprint.
      *
      * The callback is handed a fresh {@see Blueprint} and may return nothing —
@@ -91,7 +213,7 @@ final class Schema
      */
     public static function create(string $table, Closure $callback): void
     {
-        $adapter = self::adapter();
+        $adapter = self::resolveAdapter();
         $blueprint = new Blueprint($table, creating: true, resolveTable: self::resolver($adapter));
 
         $callback($blueprint);
@@ -122,8 +244,13 @@ final class Schema
      */
     public static function table(string $table, Closure $callback): void
     {
-        $adapter = self::adapter();
-        $blueprint = new Blueprint($table, creating: false, resolveTable: self::resolver($adapter));
+        $adapter = self::resolveAdapter();
+        $blueprint = new Blueprint(
+            $table,
+            creating: false,
+            resolveTable: self::resolver($adapter),
+            resolveColumnDefinition: static fn (string $t, string $c): ?string => $adapter->columnDefinition($t, $c)
+        );
 
         $callback($blueprint);
 
@@ -142,6 +269,35 @@ final class Schema
     }
 
     /**
+     * Rename a table.
+     *
+     *     Schema::rename('notes', 'archive');
+     *
+     * Both names are schema names, resolved through the adapter's prefix — a
+     * rename that prefixed only the destination would move `wp_notes` to
+     * `archive`, a table nothing else in the application would look for again,
+     * and the data would appear to have vanished rather than the migration to
+     * have failed.
+     *
+     * **Not reversible for free.** The `down()` of a migration that renames is
+     * another rename in the other direction, and it has to be written; nothing
+     * here remembers the previous name. A rename is also the operation most
+     * likely to leave a foreign key pointing at a table that no longer exists —
+     * MySQL does not rewrite `REFERENCES` clauses on rename — so a migration
+     * that renames a table another table references needs to drop and re-add
+     * that constraint.
+     *
+     * Throws when the source table is absent. There is no tolerant spelling:
+     * a caller renaming a missing table holds a wrong belief about the schema.
+     *
+     * @throws SchemaException When the rename fails.
+     */
+    public static function rename(string $from, string $to): void
+    {
+        self::resolveAdapter()->renameTable($from, $to);
+    }
+
+    /**
      * Drop a table.
      *
      * The same operation as {@see dropIfExists()}; the separate name is here so
@@ -152,7 +308,7 @@ final class Schema
      */
     public static function drop(string $table): void
     {
-        self::adapter()->dropTableIfExists($table);
+        self::resolveAdapter()->dropTableIfExists($table);
     }
 
     /**
@@ -171,7 +327,7 @@ final class Schema
      */
     public static function dropIfExists(string $table): void
     {
-        self::adapter()->dropTableIfExists($table);
+        self::resolveAdapter()->dropTableIfExists($table);
     }
 
     /**
@@ -183,7 +339,42 @@ final class Schema
      */
     public static function hasTable(string $table): bool
     {
-        return self::adapter()->hasTable($table);
+        return self::resolveAdapter()->hasTable($table);
+    }
+
+    /**
+     * Whether a table carries a column of the given name.     *
+     * The precondition every alteration is written against: a second `ADD COLUMN`
+     * for a column that is already there is an error MySQL refuses outright, so a
+     * migration that means to be re-runnable has to ask first. This is the
+     * question, and the adapter answers it from the catalogue rather than from a
+     * failed statement.
+     *
+     * `false` when the table does not exist — a column cannot exist on a table
+     * that does not, and on a fresh install the table is often not there yet.
+     * Guarding a create-then-alter pair with this therefore does the right thing
+     * in both orders.
+     */
+    public static function hasColumn(string $table, string $column): bool
+    {
+        return self::resolveAdapter()->hasColumn($table, $column);
+    }
+
+    /**
+     * Whether a table carries an index of the given name.
+     *
+     * By name, because a name is how MySQL identifies a key and therefore the
+     * only thing a `DROP INDEX`/`ADD INDEX` pair can be written against.
+     * {@see Blueprint} derives an index's name from its columns joined by
+     * underscores — `title`, `note_id_occurred_at` — so a guard can name the
+     * index it is about to replace without having recorded it anywhere.
+     *
+     * `false` when the table does not exist, as in {@see hasColumn()}. A primary
+     * key is found under the name the database records it as: `PRIMARY`.
+     */
+    public static function hasIndex(string $table, string $index): bool
+    {
+        return self::resolveAdapter()->hasIndex($table, $index);
     }
 
     /**
@@ -197,7 +388,7 @@ final class Schema
      * Falls back to constructing the WordPress adapter directly when there is no
      * container, which is the case in a migration run outside a loaded plugin.
      */
-    private static function adapter(): DatabaseAdapterInterface
+    private static function resolveAdapter(): DatabaseAdapterInterface
     {
         if (self::$adapter instanceof DatabaseAdapterInterface) {
             return self::$adapter;

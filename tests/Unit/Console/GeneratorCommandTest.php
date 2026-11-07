@@ -91,26 +91,39 @@ final class GeneratorCommandTest extends TestCase
     }
 
     /**
-     * Path separators and a .php suffix are stripped rather than rejected: a
-     * caller writing `Providers/Blog.php` means Blog, and failing on it would
-     * be pedantry rather than protection.
+     * A `.php` suffix is not part of the name and is stripped, while the
+     * separator that precedes it is not.
+     *
+     * The two halves of this used to be asserted together, both stripped. Only
+     * the suffix is noise; the separator carries meaning, and a generator that
+     * discarded it would put `Nested/Blog.php` in the root directory and call it
+     * `NestedBlog` — a class whose name the caller never asked for, at a path
+     * they never asked for, reported as success.
      */
-    public function test_it_strips_path_separators_and_a_php_suffix_from_the_name(): void
+    public function test_it_strips_a_php_suffix_but_keeps_the_sub_directory(): void
     {
         $this->generator()->handle(['Nested/Blog.php'], []);
 
-        $this->assertFileExists($this->workspace . '/out/NestedBlog.php');
+        $this->assertFileExists($this->workspace . '/out/Nested/Blog.php');
+        $this->assertFileDoesNotExist($this->workspace . '/out/NestedBlog.php');
     }
 
     /**
-     * Backslashes are the namespace spelling of the same thing and must not
-     * escape into the file name.
+     * A `\`-separated name is the namespace spelling of a sub-namespace, and
+     * means the same thing as the `/` spelling.
+     *
+     * This used to assert the separators were *stripped*, producing a flat
+     * `NestedBlog.php`. They are now honoured, because `Nested\Blog` and
+     * `Nested/Blog` are one request written two ways and a generator that read
+     * them differently would put the same class in two different places
+     * depending on which key the developer happened to press.
      */
-    public function test_it_strips_backslashes_from_the_name(): void
+    public function test_a_backslash_separated_name_means_the_same_as_a_slash(): void
     {
         $this->generator()->handle(['Nested\\Blog'], []);
 
-        $this->assertFileExists($this->workspace . '/out/NestedBlog.php');
+        $this->assertFileExists($this->workspace . '/out/Nested/Blog.php');
+        $this->assertFileDoesNotExist($this->workspace . '/out/NestedBlog.php');
     }
 
     /**
@@ -228,7 +241,10 @@ final class TestableGenerator extends GeneratorCommand
 
     protected function getTargetPath(string $className): string
     {
-        return $this->workspace . '/out/' . $className . '.php';
+        // The sub-directory is applied by the implementation, not by the base
+        // class — which is the contract the shipped generators follow. See
+        // MakeControllerCommand::getTargetPath().
+        return $this->workspace . '/out/' . $this->subDirectoryPath() . $className . '.php';
     }
 
     protected function getNamespace(): string

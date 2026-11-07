@@ -20,11 +20,26 @@ namespace Tests\Support;
 final class WpStub
 {
     /**
-     * Hooks registered through add_action(), as tag => list of callbacks.
+     * Hooks registered through add_action(), as tag => list of entries.
      *
-     * @var array<string, list<callable>>
+     * Each entry is `['callback' => callable, 'acceptedArgs' => int]` rather than
+     * a bare callable, because the accepted-argument count is part of what
+     * `add_action()` means and a stub that dropped it could not tell a correctly
+     * declared listener from one that would fatal in production.
+     *
+     * @var array<string, list<array{callback: callable, acceptedArgs: int}>>
      */
     public static array $actions = [];
+
+    /**
+     * Hook tags fired through do_action(), in order, including repeats.
+     *
+     * A list rather than a count so a test can assert on *order* — the thing a
+     * migration-events test most wants to check — as well as on presence.
+     *
+     * @var list<string>
+     */
+    public static array $fired = [];
 
     /**
      * Routes handed to register_rest_route(), as namespace => list of args.
@@ -175,9 +190,38 @@ final class WpStub
      */
     public static bool $isAdmin = false;
 
+    /**
+     * Statements handed to `dbDelta()`, in order.
+     *
+     * Recorded rather than executed. `dbDelta()` is WordPress's schema *differ*
+     * — it reads a CREATE TABLE, compares it against the live table and issues
+     * whatever ALTERs it decides are needed — so running it would mean
+     * re-implementing its parser here, and a test double for a parser proves
+     * only that the double agrees with itself.
+     *
+     * What a test actually needs to assert is the *statement*, because every
+     * dbDelta rule the adapter satisfies is a rule about the text: the table
+     * name must be unquoted, `PRIMARY KEY` must be followed by two spaces, each
+     * key must be on its own line. Asserting on the text is asserting on the
+     * contract; asserting on a simulated diff would not be.
+     *
+     * @var list<string>
+     */
+    public static array $dbDeltaStatements = [];
+
+    /**
+     * The value `dbDelta()` returns. Defaults to an empty array, which is what
+     * the real function returns for a statement it parses and finds nothing to
+     * change — the success case, not a failure one.
+     *
+     * @var mixed
+     */
+    public static mixed $dbDeltaResult = [];
+
     public static function reset(): void
     {
         self::$actions = [];
+        self::$fired = [];
         self::$registeredRoutes = [];
         self::$currentUserCan = true;
         self::$capabilities = [];
@@ -199,6 +243,8 @@ final class WpStub
         self::$adminUrl = null;
         self::$homeUrl = null;
         self::$isAdmin = false;
+        self::$dbDeltaStatements = [];
+        self::$dbDeltaResult = [];
     }
 
     /**
@@ -215,21 +261,34 @@ final class WpStub
 
     /**
      * Fire every callback registered for a hook, as WordPress would.
+     *
+     * Honours the registered `acceptedArgs` the way `do_action()` does: a
+     * callback declared with one parameter on a hook fired with three receives
+     * one. Calling every callback with every argument would let a
+     * wrongly-declared listener — the kind that fatals in production — pass here.
      */
     public static function doAction(string $tag, mixed ...$args): void
     {
-        foreach (self::$actions[$tag] ?? [] as $callback) {
-            $callback(...$args);
+        foreach (self::$actions[$tag] ?? [] as $entry) {
+            $callback = $entry['callback'] ?? $entry;
+            $accepted = $entry['acceptedArgs'] ?? count($args);
+
+            $callback(...array_slice($args, 0, $accepted));
         }
     }
 
     /**
-     * Callbacks registered for a hook.
+     * Callbacks registered for a hook, as bare callables.
      *
      * @return list<callable>
      */
     public static function actionsFor(string $tag): array
     {
-        return self::$actions[$tag] ?? [];
+        return array_map(
+            static fn (array|callable $entry): callable => is_array($entry) && isset($entry['callback'])
+                ? $entry['callback']
+                : $entry,
+            self::$actions[$tag] ?? []
+        );
     }
 }

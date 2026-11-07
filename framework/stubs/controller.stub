@@ -3,37 +3,8 @@ declare(strict_types=1);
 
 namespace {{ namespace }};
 
-use Framework\Routing\Attributes\Route;
 use Framework\Routing\Controller;
-use WP_REST_Request;
-use WP_REST_Response;
 
 class {{ class }} extends Controller
 {
-    /**
-     * GET /{{ class }}
-     */
-    #[Route('GET', '{{ class }}')]
-    public function index(WP_REST_Request $request): WP_REST_Response
-    {
-        return $this->respond([]);
-    }
-
-    /**
-     * GET /{{ class }}/{id}
-     */
-    #[Route('GET', '{{ class }}/{id}')]
-    public function show(WP_REST_Request $request): WP_REST_Response
-    {
-        return $this->respond(['id' => $request->get_param('id')]);
-    }
-
-    /**
-     * POST /{{ class }}
-     */
-    #[Route('POST', '{{ class }}')]
-    public function store(WP_REST_Request $request): WP_REST_Response
-    {
-        return $this->created([]);
-    }
 }

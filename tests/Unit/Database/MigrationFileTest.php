@@ -18,12 +18,19 @@ use PHPUnit\Framework\TestCase;
 final class MigrationFileTest extends TestCase
 {
     /**
-     * The canonical form, `Y_m_d_His`.
+     * The underscored form parses, and its sort key is the *digits*.
      *
-     * The timestamp segment here is 17 characters, not 14: `2026_11_05_100000`
-     * is four digits, three underscore-separated pairs, then six. An earlier
-     * version of this parser counted a flat 14 digits and rejected every real
-     * filename, so this case is the regression guard for exactly that.
+     * `timestamp()` used to return the timestamp exactly as the filename spelled
+     * it, and these two tests asserted that. It now normalises both spellings to
+     * the same 14 digits, because the two do not compare as strings — `_` is
+     * 0x5F and digits are 0x30–0x39, so every `2026_11_05_...` sorts after every
+     * `20261105...` whatever the dates say. The identifier still carries the
+     * original spelling, and is still what the tracking table stores.
+     *
+     * The timestamp segment is 17 characters, not 14: `2026_11_05_100000` is four
+     * digits, three underscore-separated pairs, then six. An earlier version of
+     * the parser counted a flat 14 digits and rejected every real filename, so
+     * this case is the regression guard for exactly that.
      */
     public function test_it_parses_the_laravel_timestamp_form(): void
     {
@@ -32,7 +39,7 @@ final class MigrationFileTest extends TestCase
         $this->assertInstanceOf(MigrationFile::class, $migration);
         $this->assertSame('2026_11_05_100000_create_users_table', $migration->identifier);
         $this->assertSame('CreateUsersTable', $migration->class);
-        $this->assertSame('2026_11_05_100000', $migration->timestamp());
+        $this->assertSame('20261105100000', $migration->timestamp());
     }
 
     public function test_it_parses_the_compact_timestamp_form(): void
@@ -42,6 +49,28 @@ final class MigrationFileTest extends TestCase
         $this->assertInstanceOf(MigrationFile::class, $migration);
         $this->assertSame('CreateUsersTable', $migration->class);
         $this->assertSame('20261105100000', $migration->timestamp());
+    }
+
+    /**
+     * The property the normalisation exists for, asserted directly.
+     *
+     * Two files naming the same instant in the two different spellings must
+     * produce the *same* key — otherwise ordering depends on which spelling a
+     * developer happened to use, which is the defect.
+     */
+    public function test_both_timestamp_spellings_produce_the_same_sort_key(): void
+    {
+        $underscored = MigrationFile::fromPath('/tmp/2026_11_05_100000_create_users_table.php');
+        $compact = MigrationFile::fromPath('/tmp/20261105100000_create_users_table.php');
+
+        $this->assertNotNull($underscored);
+        $this->assertNotNull($compact);
+
+        $this->assertSame(
+            $underscored->timestamp(),
+            $compact->timestamp(),
+            'The two accepted filename spellings name the same instant and must sort to the same key.'
+        );
     }
 
     /**

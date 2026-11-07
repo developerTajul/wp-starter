@@ -22,17 +22,23 @@ class Kernel extends BaseKernel
         // Generators.
         \Framework\Console\Commands\MakeProviderCommand::class,
         \Framework\Console\Commands\MakeControllerCommand::class,
+        // Beside the controller generator, because the resource stub it renders
+        // names two classes this command is what writes.
+        \Framework\Console\Commands\MakeRequestCommand::class,
         \Framework\Console\Commands\MakeRouteCommand::class,
         \Framework\Console\Commands\MakeCommandCommand::class,
         \Framework\Database\Commands\MakeMigrationCommand::class,
 
         // Migrations, in the order a developer meets them: apply, undo one
-        // batch, undo everything and redo it, throw it all away and rebuild.
+        // batch, undo every batch, undo everything and redo it, throw it all
+        // away and rebuild.
         \Framework\Database\Commands\MigrateCommand::class,
         \Framework\Database\Commands\MigrateRollbackCommand::class,
+        \Framework\Database\Commands\MigrateResetCommand::class,
         \Framework\Database\Commands\MigrateRefreshCommand::class,
         \Framework\Database\Commands\MigrateFreshCommand::class,
         \Framework\Database\Commands\MigrateStatusCommand::class,
+        \Framework\Database\Commands\MigrateDumpCommand::class,
 
         // Introspection.
         \Framework\Console\Commands\RouteListCommand::class,

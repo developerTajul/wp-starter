@@ -137,6 +137,28 @@ if (!class_exists('wpdb')) {
         {
             return null;
         }
+
+        /**
+         * The charset/collation clause for new tables.
+         *
+         * Declared on the base class because the schema adapter probes for it
+         * with `method_exists()` before calling: WordPress gained it in 4.6, so
+         * a handle built by an older install would not have it, and the adapter
+         * omits the clause rather than fataling.
+         */
+        public function get_charset_collate(): string
+        {
+            return 'DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci';
+        }
+
+        /**
+         * WordPress 6.7+. Absent on older installs, which is why the adapter and
+         * the migrator both probe for it rather than calling it outright.
+         */
+        public function set_transaction_rollback(bool $enable): void
+        {
+            // Recorded by subclasses that care; a no-op here.
+        }
     }
 }
 

@@ -281,6 +281,30 @@ final class MakeCommandCommandTest extends TestCase
     }
 
     /**
+     * A command may be nested, and the command *name* is unaffected by the
+     * directory it lives in.
+     *
+     * The verb is derived from the class basename, so `Admin/SendDigest` still
+     * registers `send-digest` — nesting is a file-organization decision, not a
+     * second way to spell the command. Deriving the verb from the whole argument
+     * instead would register `admin-send-digest` and quietly rename a command
+     * that already had a name.
+     */
+    public function test_a_nested_command_lands_in_a_sub_directory_with_an_unchanged_verb(): void
+    {
+        $this->command()->handle(['Admin/SendDigest'], []);
+
+        $contents = (string) file_get_contents(
+            $this->workspace . '/app/Console/Commands/Admin/SendDigest.php'
+        );
+
+        $this->assertStringContainsString('namespace App\\Console\\Commands\\Admin;', $contents);
+        $this->assertStringContainsString('class SendDigest', $contents);
+        $this->assertStringContainsString("' send-digest'", $contents);
+        $this->assertStringNotContainsString('admin-send-digest', $contents);
+    }
+
+    /**
      * @return TestableMakeCommandCommand
      */
     private function command(): TestableMakeCommandCommand
@@ -330,7 +354,12 @@ final class TestableMakeCommandCommand extends MakeCommandCommand
 
     protected function getTargetPath(string $className): string
     {
-        return $this->workspace . '/app/Console/Commands/' . $className . '.php';
+        // Mirrors the shipped override, sub-directory included. A double that
+        // ignored `subDirectoryPath()` would still pass every flat-name case
+        // below while the real generator nested them.
+        return $this->workspace . '/app/Console/Commands/'
+            . $this->subDirectoryPath()
+            . $className . '.php';
     }
 
     protected function success(string $message): void

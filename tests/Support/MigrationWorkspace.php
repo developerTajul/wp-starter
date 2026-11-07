@@ -129,13 +129,27 @@ final class MigrationWorkspace
             return;
         }
 
-        foreach (glob($this->path . '/*') ?: [] as $file) {
-            if (is_file($file)) {
-                unlink($file);
-            }
-        }
-
-        rmdir($this->path);
+        // Recursive, because a test may legitimately have had the workspace write
+        // into a subdirectory — `migrate:dump --path=dumps/schema.php` creates one
+        // — and a shallow unlink leaves it behind. `rmdir()` then fails on a
+        // non-empty directory, which surfaces as a PHPUnit warning on a test that
+        // passed. Removing the tree is the honest fix: the workspace's contract is
+        // that its directory is gone afterwards.
+        $this->removeDirectory($this->path);
     }
 
+    private function removeDirectory(string $directory): void
+    {
+        foreach (glob($directory . '/*') ?: [] as $entry) {
+            if (is_dir($entry)) {
+                $this->removeDirectory($entry);
+
+                continue;
+            }
+
+            unlink($entry);
+        }
+
+        rmdir($directory);
+    }
 }

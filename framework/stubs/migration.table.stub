@@ -1,0 +1,25 @@
+<?php
+declare(strict_types=1);
+
+namespace {{ namespace }};
+
+use Framework\Database\Migration;
+use Framework\Database\Schema\Blueprint;
+use Framework\Database\Schema\Schema;
+
+final class {{ class }} extends Migration
+{
+    public function up(): void
+    {
+        Schema::table('{{ table }}', function (Blueprint $table) {
+            $table->string('column_name');
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::table('{{ table }}', function (Blueprint $table) {
+            $table->dropColumn('column_name');
+        });
+    }
+}

@@ -1,0 +1,42 @@
+<?php
+declare(strict_types=1);
+
+namespace {{ namespace }};
+
+use Framework\Routing\Attributes\Route;
+use Framework\Routing\Controller;
+use WP_REST_Request;
+use WP_REST_Response;
+
+class {{ class }} extends Controller
+{
+    #[Route('GET', '{{ route }}')]
+    public function index(WP_REST_Request $request): WP_REST_Response
+    {
+        return $this->respond([]);
+    }
+
+    #[Route('POST', '{{ route }}')]
+    public function store(WP_REST_Request $request): WP_REST_Response
+    {
+        return $this->created([]);
+    }
+
+    #[Route('GET', '{{ route }}/(?P<id>\d+)')]
+    public function show(WP_REST_Request $request): WP_REST_Response
+    {
+        return $this->respond(['id' => $request->get_param('id')]);
+    }
+
+    #[Route('PUT', '{{ route }}/(?P<id>\d+)')]
+    public function update(WP_REST_Request $request): WP_REST_Response
+    {
+        return $this->respond(['id' => $request->get_param('id')]);
+    }
+
+    #[Route('DELETE', '{{ route }}/(?P<id>\d+)')]
+    public function destroy(WP_REST_Request $request): WP_REST_Response
+    {
+        return $this->noContent();
+    }
+}

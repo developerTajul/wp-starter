@@ -353,3 +353,59 @@ if (! function_exists('route')) {
         return $generator->route($name, $parameters);
     }
 }
+
+if (! function_exists('redirect')) {
+    /**
+     * A redirect response, to a URL or to a named route.
+     *
+     * Laravel's helper, spelled the same way on purpose:
+     *
+     *     redirect('/somewhere');
+     *     redirect()->route('leads.index');
+     *     redirect()->route('leads.show', ['id' => 42]);
+     *     redirect()->route('leads.index')->with('notice', 'Saved.');
+     *
+     * ## Why the no-argument form exists
+     *
+     * `redirect()` with no URL returns a response pointed at the empty string,
+     * which is not a usable redirect on its own — it exists so that
+     * `redirect()->route(...)` reads the way it reads in Laravel. The chained
+     * call replaces the URL before anything can send it, so the placeholder is
+     * never followed.
+     *
+     * That is also why {@see \Framework\Http\Responses\RedirectResponse} carries
+     * a `to()` method rather than the helper building a second response: the
+     * response already owns the flash bag, and a redirect that flashes a notice
+     * must be one object, not two stitched together.
+     *
+     * @param string|null $url The target URL; omitted to build one by name.
+     */
+    function redirect(?string $url = null): \Framework\Http\Responses\RedirectResponse
+    {
+        return new \Framework\Http\Responses\RedirectResponse($url ?? '');
+    }
+}
+
+if (! function_exists('to_route')) {
+    /**
+     * Redirect straight to a named route.
+     *
+     * The short form of `redirect()->route(...)`, matching Laravel:
+     *
+     *     return to_route('leads.index');
+     *     return to_route('leads.show', ['id' => 42])->with('notice', 'Saved.');
+     *
+     * It resolves the name *through* {@see route()} so that an unknown name fails
+     * the same way and with the same message in both spellings — a second lookup
+     * path here would be a second place for the ambiguity check to be forgotten.
+     *
+     * @param array<string, scalar> $parameters Placeholder values, keyed by name.
+     *
+     * @throws \InvalidArgumentException When no route carries the name.
+     * @throws \RuntimeException         When a path placeholder has no value.
+     */
+    function to_route(string $name, array $parameters = []): \Framework\Http\Responses\RedirectResponse
+    {
+        return redirect()->route($name, $parameters);
+    }
+}

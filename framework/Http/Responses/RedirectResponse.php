@@ -121,7 +121,7 @@ final class RedirectResponse implements ResponseInterface
      *                       line that got it wrong.
      */
     public function __construct(
-        private readonly string $url,
+        private string $url,
         int $status = 302,
         private readonly ?Request $request = null
     ) {
@@ -177,6 +177,35 @@ final class RedirectResponse implements ResponseInterface
     public function url(): string
     {
         return $this->url;
+    }
+
+    /**
+     * Point this redirect at a named route, instead of at a URL.
+     *
+     * What makes `redirect()->route('leads.index')` read the way it does in
+     * Laravel. The name is resolved through {@see route()}, so an unknown name
+     * fails here with the same message it fails with in a template — one lookup
+     * path, one ambiguity check, one exception.
+     *
+     * Resolution happens *now* rather than at `send()`. A route table is built
+     * while the request is handled, and a name that missed would otherwise be
+     * discovered after the flash cookie had been written and the request was
+     * already over.
+     *
+     * Returns `$this` rather than a new response so that a redirect carrying a
+     * flash message stays one object: `redirect()->route(...)->with(...)` writes
+     * the flash onto the response that is going to be sent.
+     *
+     * @param array<string, scalar> $parameters Placeholder values, keyed by name.
+     *
+     * @throws \InvalidArgumentException When no route carries the name.
+     * @throws \RuntimeException         When a path placeholder has no value.
+     */
+    public function route(string $name, array $parameters = []): self
+    {
+        $this->url = route($name, $parameters);
+
+        return $this;
     }
 
     /**

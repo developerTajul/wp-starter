@@ -7,12 +7,21 @@ use Framework\Config\Config;
 use Framework\Console\Command;
 use Framework\Database\Exceptions\MigrationException;
 use Framework\Database\Migrator;
+use Framework\Database\Schema\Schema;
 
 /**
  * `wp wp_mini migrate:rollback` — reverse the most recent batch.
  *
  * `--batch=<n>` targets a specific batch instead, which is the recovery path for
  * a batch that failed partway: its number is visible in `migrate:status`.
+ *
+ * ## Why `--pretend` matters most here
+ *
+ * This is the command an operator reaches for when something has already gone
+ * wrong, and the one whose blast radius is hardest to predict — "the last batch"
+ * is however many migrations happened to be in it. `migrate` has had a dry run
+ * since it was written; leaving it off the recovery path meant the one command
+ * you would most want to rehearse was the one you could not.
  */
 class MigrateRollbackCommand extends Command
 {
@@ -32,12 +41,27 @@ class MigrateRollbackCommand extends Command
 
     public function handle(array $args, array $assocArgs): void
     {
+        $pretend = $this->flagIsTrue($assocArgs, 'pretend');
+
+        if ($pretend) {
+            Schema::pretend();
+        }
+
         try {
             $reverted = $this->revert($assocArgs);
         } catch (MigrationException $e) {
             $this->error($e->getMessage());
 
             return;
+        } finally {
+            // Restored on every path, including the early return above. A leaked
+            // pretend adapter would turn every *later* command in the same
+            // process into a dry run — and this command is often followed
+            // immediately by the real one, so the operator would be told the
+            // schema had been rolled back when nothing had moved.
+            if ($pretend) {
+                $this->reportPretend(Schema::stopPretending());
+            }
         }
 
         if ($reverted === []) {
@@ -46,7 +70,30 @@ class MigrateRollbackCommand extends Command
             return;
         }
 
-        $this->success(sprintf('Rolled back %d migration(s).', count($reverted)));
+        $this->success($pretend
+            ? sprintf('Pretended to roll back %d migration(s).', count($reverted))
+            : sprintf('Rolled back %d migration(s).', count($reverted)));
+    }
+
+    /**
+     * Print the statements a pretend run would have issued.
+     *
+     * The same contract `migrate --pretend` documents: only statements routed
+     * through the schema builder are recorded, and a migration issuing raw
+     * `$wpdb` calls has those neither recorded nor run.
+     *
+     * @param list<string> $statements
+     */
+    private function reportPretend(array $statements): void
+    {
+        $this->info(sprintf(
+            'Pretending: %d statement(s) would have been issued. Nothing was written.',
+            count($statements)
+        ));
+
+        foreach ($statements as $statement) {
+            $this->info('  ' . $statement);
+        }
     }
 
     /**

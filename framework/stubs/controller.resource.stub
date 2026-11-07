@@ -1,0 +1,53 @@
+<?php
+declare(strict_types=1);
+
+namespace {{ namespace }};
+
+use Framework\Http\Contracts\ResponseInterface;
+use Framework\Http\Request;
+
+final class {{ class }}
+{
+    public function index(): ResponseInterface
+    {
+        return view('{{ view }}.index', [
+            '{{ items }}' => [],
+        ]);
+    }
+
+    public function create(): ResponseInterface
+    {
+        return view('{{ view }}.create', [
+            '{{ item }}' => null,
+        ]);
+    }
+
+    public function store(Request $request): ResponseInterface
+    {
+        return redirect()->route('{{ name }}.index')->with('success', 'Created.');
+    }
+
+    public function show(string $id): ResponseInterface
+    {
+        return view('{{ view }}.show', [
+            '{{ item }}' => ['id' => $id],
+        ]);
+    }
+
+    public function edit(string $id): ResponseInterface
+    {
+        return view('{{ view }}.edit', [
+            '{{ item }}' => ['id' => $id],
+        ]);
+    }
+
+    public function update(Request $request, string $id): ResponseInterface
+    {
+        return redirect()->route('{{ name }}.index')->with('success', 'Updated.');
+    }
+
+    public function destroy(string $id): ResponseInterface
+    {
+        return redirect()->route('{{ name }}.index')->with('success', 'Deleted.');
+    }
+}

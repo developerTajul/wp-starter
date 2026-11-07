@@ -180,6 +180,24 @@ class Blueprint
     private array $unindexable = [];
 
     /**
+     * Columns that cannot carry a `DEFAULT`, by the reason.
+     *
+     * Populated by the type methods, consulted by {@see default()}. Three types
+     * need it and each for a different reason: `json` because MySQL rejects the
+     * clause outright, `enum`/`set` because MySQL accepts a default outside the
+     * member list and silently stores the empty member instead of refusing it.
+     *
+     * Refused at build time rather than emitted, because both failures are
+     * invisible from the migration source: the first is a statement error the
+     * database reports without naming the column, and the second is not an error
+     * at all — it is a schema that accepts a value the application never meant to
+     * allow.
+     *
+     * @var array<string, string>
+     */
+    private array $noDefault = [];
+
+    /**
      * Resolves a table name from how a schema names it to how the database
      * spells it — the prefix, plus whatever else the target needs.
      *
@@ -191,6 +209,22 @@ class Blueprint
      * @var callable(string): string
      */
     private $resolveTable;
+
+    /**
+     * Reads an existing column's definition back from the database.
+     *
+     * Needed by {@see renameColumn()}, and by nothing else. MySQL's `CHANGE
+     * COLUMN` makes the caller restate the definition, and the whole point of a
+     * rename is that the caller gave two *names* — so the definition has to come
+     * from the target rather than from the caller or from a schema-introspection
+     * dependency this framework deliberately does not carry.
+     *
+     * Returns null when the column is absent, which a rename treats as an error
+     * rather than as "invent a definition".
+     *
+     * @var callable(string, string): (string|null)
+     */
+    private $resolveColumnDefinition;
 
     /**
      * @param string   $table    The bare table name, with no prefix. Resolved by
@@ -207,9 +241,12 @@ class Blueprint
     public function __construct(
         public readonly string $table,
         private readonly bool $creating = true,
-        ?callable $resolveTable = null
+        ?callable $resolveTable = null,
+        ?callable $resolveColumnDefinition = null
     ) {
         $this->resolveTable = $resolveTable ?? static fn (string $name): string => $name;
+        $this->resolveColumnDefinition = $resolveColumnDefinition
+            ?? static fn (string $table, string $column): ?string => null;
     }
 
     /**
@@ -325,6 +362,480 @@ class Blueprint
     }
 
     /**
+     * A `longtext` column, spelled out.
+     *
+     * The same type {@see text()} emits. It exists so a *dumper* has a name to
+     * reach for that says what it means: a `SHOW COLUMNS` reports `longtext`, and
+     * a reconstruction that had to call it `text()` would read as a deliberate
+     * downgrade to anyone comparing the two.
+     *
+     * Unindexable, for the same reason and with the same message — the two
+     * methods emit the identical definition and must therefore carry identical
+     * guards.
+     */
+    public function longText(string $column): static
+    {
+        return $this->text($column);
+    }
+
+    /**
+     * A JSON column.
+     *
+     * MySQL's native `json` type, not a `longtext` that happens to hold JSON.
+     * The difference is not cosmetic: `json` validates on write, so a malformed
+     * document is rejected at the statement rather than discovered by whatever
+     * reads the column months later — and it normalises key order and whitespace,
+     * so two documents that differ only in formatting compare equal.
+     *
+     * **No default, ever.** MySQL does not permit a `DEFAULT` on a `json` column
+     * (before 8.0.13 it rejects the clause outright; after, only an expression
+     * default is allowed), so {@see default()} refuses to apply to one rather
+     * than emitting a statement the database will reject. Make the column
+     * `nullable()` and let absence mean "no document".
+     */
+    public function json(string $column): static
+    {
+        $this->noDefault[$column] = 'MySQL does not accept a DEFAULT clause on a json column. '
+            . 'Make the column nullable() and let NULL mean "no document".';
+
+        return $this->addColumn($column, 'json NOT NULL');
+    }
+
+    /**
+     * An `ENUM` column over a fixed list of values.
+     *
+     * ## Why this is worth having despite the reputation
+     *
+     * `ENUM` is genuinely awkward to change — adding a value is an `ALTER TABLE`
+     * that rewrites the table on older MySQL — and it is still the right type for
+     * a value whose set is closed and known: a status, a role, a direction. The
+     * alternative, a `varchar(191)` with the valid values in application code,
+     * has the same alteration problem plus no enforcement, so a typo writes a
+     * value no reader expects and nothing rejects it.
+     *
+     * ## Values are escaped, never interpolated raw
+     *
+     * Each value becomes a single-quoted SQL literal through {@see quote()}, the
+     * same path a {@see default()} takes, so a value containing a quote cannot
+     * break out of the list. They are also checked for length: MySQL's limit is
+     * 255 *total* bytes across the list, and going over is a statement error
+     * rather than a truncation, so it is reported here where the list is visible.
+     *
+     * @param list<string> $values The permitted values, in the order MySQL stores
+     *                             them — which is the order a `ORDER BY` on the
+     *                             column sorts by, and is not alphabetical.
+     *
+     * @throws SchemaException When the list is empty, has non-string members, or
+     *                         exceeds MySQL's 255-byte total.
+     */
+    public function enum(string $column, array $values): static
+    {
+        return $this->enumLike('enum', $column, $values);
+    }
+
+    /**
+     * A `SET` column: a subset of a fixed list, stored as one value.
+     *
+     * The multi-select counterpart to {@see enum()}, and it carries the same
+     * trade-off further: a `SET` is at most 64 members, and querying one is a
+     * `FIND_IN_SET()` rather than an index-friendly equality. It is worth having
+     * because the alternative — a comma-joined `varchar` — makes the same query
+     * *and* loses enforcement.
+     *
+     * MySQL stores a `SET` as a bitmask, so `ORDER BY` on the column sorts by
+     * the declared order, not alphabetically. Same rules, same escaping and the
+     * same 255-byte ceiling as {@see enum()}.
+     *
+     * @param list<string> $values The permitted members. At most 64.
+     *
+     * @throws SchemaException When the list is empty, too long, or not strings.
+     */
+    public function set(string $column, array $values): static
+    {
+        if (count($values) > 64) {
+            throw new SchemaException(sprintf(
+                'Column [%s] on table [%s] was given %d set values, but MySQL stores a SET as a '
+                . '64-bit mask and accepts at most 64. Use a json column or a related table instead.',
+                $column,
+                $this->table,
+                count($values)
+            ));
+        }
+
+        return $this->enumLike('set', $column, $values);
+    }
+
+    /**
+     * A fixed-length `CHAR` column.
+     *
+     * Not a `varchar` with a short length, and the distinction is load-bearing
+     * for exactly two kinds of value: a fixed-width code — a country code, a
+     * currency code, a hash — where the padding is meaningful and an index over
+     * it is denser than one over a variable-length column.
+     *
+     * `CHAR` right-pads with spaces and strips them on read, so `'ab '` and `'ab'`
+     * compare equal. That is the point for a code and a trap for anything else,
+     * which is why the length is required rather than defaulted: the caller has
+     * to know what width the value really is.
+     *
+     * @throws SchemaException When the length is outside MySQL's 0–255 range.
+     */
+    public function char(string $column, int $length): static
+    {
+        if ($length < 1 || $length > 255) {
+            throw new SchemaException(sprintf(
+                'Column [%s] on table [%s] was given char(%d), but MySQL accepts a CHAR length '
+                . 'between 1 and 255. Use string() for a longer variable-length column.',
+                $column,
+                $this->table,
+                $length
+            ));
+        }
+
+        return $this->addColumn($column, sprintf('char(%d) NOT NULL', $length));
+    }
+
+    /**
+     * A `CHAR(36)` holding a UUID.
+     *
+     * Stored as text rather than as `BINARY(16)`, deliberately. The binary form
+     * is half the size and a UUID is compared by equality in the overwhelming
+     * majority of cases, so the storage argument is real — but it makes the
+     * column unreadable in every `SELECT`, every log line and every manual
+     * repair, and it puts a conversion between the application and the database
+     * that has to be applied identically on both sides of every comparison. For
+     * a plugin table that a human will inspect, readable wins.
+     *
+     * The collation note matters: at `utf8mb4`, `CHAR(36)` is 144 bytes, well
+     * inside the 767-byte index limit, so a `UNIQUE` over it is fine.
+     */
+    public function uuid(string $column): static
+    {
+        return $this->addColumn($column, 'char(36) NOT NULL');
+    }
+
+    /**
+     * A `CHAR(26)` holding a ULID.
+     *
+     * 26 characters is Crockford base32: 48 bits of millisecond timestamp, 80
+     * bits of randomness. Not padded to the next power of two, because the type
+     * is fixed-width by definition.
+     *
+     * @see uuid() for why this is text rather than a binary encoding.
+     */
+    public function ulid(string $column): static
+    {
+        return $this->addColumn($column, 'char(26) NOT NULL');
+    }
+
+    /**
+     * The shared body of `enum()` and `set()`.
+     *
+     * Both are a quoted list under a different keyword, and both are subject to
+     * the same escaping and the same 255-byte total. One implementation means a
+     * fix to either cannot miss the other.
+     *
+     * @param 'enum'|'set' $type
+     * @param list<string> $values
+     */
+    private function enumLike(string $type, string $column, array $values): static
+    {
+        $this->assertIdentifier($column, 'column');
+
+        if ($values === []) {
+            throw new SchemaException(sprintf(
+                'Column [%s] on table [%s] was given an empty %s list. An %s with no permitted '
+                . 'values cannot be written to at all — name at least one, or use string().',
+                $column,
+                $this->table,
+                strtoupper($type),
+                strtoupper($type)
+            ));
+        }
+
+        $quoted = [];
+        $totalBytes = 0;
+
+        foreach ($values as $value) {
+            if (!is_string($value)) {
+                throw new SchemaException(sprintf(
+                    'Column [%s] on table [%s] was given a %s value that is not a string. '
+                    . '%s members are stored as text and every one must be a non-empty string.',
+                    $column,
+                    $this->table,
+                    strtoupper($type),
+                    strtoupper($type)
+                ));
+            }
+
+            if ($value === '') {
+                // An empty member is a value with no spelling, and it collides
+                // with the empty string MySQL uses for "no member selected".
+                throw new SchemaException(sprintf(
+                    'Column [%s] on table [%s] was given an empty %s value. An empty member is '
+                    . 'indistinguishable from "nothing selected", so it cannot be one.',
+                    $column,
+                    $this->table,
+                    strtoupper($type)
+                ));
+            }
+
+            $totalBytes += strlen($value);
+
+            $quoted[] = self::compileDefault($value);
+        }
+
+        // MySQL's own limit on the combined length of an ENUM/SET definition.
+        // Checked here rather than left to the database because MySQL's error
+        // ("Column length too big") does not name which column or by how much.
+        if ($totalBytes > 255) {
+            throw new SchemaException(sprintf(
+                'Column [%s] on table [%s] was given %d bytes of %s values, but MySQL stores the '
+                . 'list in a column definition limited to 255 bytes. Use fewer or shorter values, '
+                . 'or a related table.',
+                $column,
+                $this->table,
+                $totalBytes,
+                strtoupper($type)
+            ));
+        }
+
+        $this->noDefault[$column] = sprintf(
+            'A %s column takes no DEFAULT: MySQL compares a default against the member list at '
+            . 'write time and stores a value outside the list as the empty member rather than '
+            . 'refusing it, so a wrong default is silently wrong. Set it in the application, or '
+            . 'make the column nullable().',
+            strtoupper($type)
+        );
+
+        return $this->addColumn($column, sprintf('%s(%s) NOT NULL', $type, implode(', ', $quoted)));
+    }
+
+    /**
+     * A `MEDIUMTEXT` column — up to 16MB.
+     *
+     * Between {@see text()}'s `longtext` (4GB) and a `varchar` (65KB). Worth
+     * having because the difference is real at the row level: `longtext` stores a
+     * 4-byte length prefix and is otherwise identical, but choosing it for a
+     * column known to hold a few kilobytes states an intent the reader can act
+     * on. A `mediumtext` column is also indexable with a prefix length where a
+     * `longtext` one is not.
+     */
+    public function mediumText(string $column): static
+    {
+        $this->unindexable[$column] = sprintf(
+            'MySQL cannot index a mediumtext column without a prefix length, so a KEY on [%s] would '
+            . 'be rejected at creation. Index a shorter column, or its first 191 characters in a '
+            . 'varchar().',
+            $column
+        );
+
+        return $this->addColumn($column, 'mediumtext NOT NULL');
+    }
+
+    /**
+     * A `TINYTEXT` column — up to 255 bytes.
+     *
+     * The `varchar(255)` counterpart, and the reason to prefer it is the same one
+     * that makes `text()` a `longtext`: it is stored off-page past a threshold,
+     * so a row full of short values stays small. For anything a developer would
+     * also want to index, `string()` is the better choice.
+     */
+    public function tinyText(string $column): static
+    {
+        $this->unindexable[$column] = sprintf(
+            'MySQL cannot index a tinytext column without a prefix length, so a KEY on [%s] would '
+            . 'be rejected at creation. Use string() if you need to index it.',
+            $column
+        );
+
+        return $this->addColumn($column, 'tinytext NOT NULL');
+    }
+
+    /**
+     * A single-precision float.
+     *
+     * For a value that is genuinely approximate and where the storage matters —
+     * a coordinate, a measurement. **Not for money**: binary floating point
+     * cannot represent 0.10 exactly, so a sum of float values drifts. Use
+     * {@see decimal()} for anything that has to add up.
+     */
+    public function float(string $column): static
+    {
+        return $this->addColumn($column, 'float NOT NULL');
+    }
+
+    /**
+     * A double-precision float. The wider counterpart to {@see float()}, and
+     * subject to the same warning about money.
+     */
+    public function double(string $column): static
+    {
+        return $this->addColumn($column, 'double NOT NULL');
+    }
+
+    /**
+     * A `YEAR` column, holding a four-digit year.
+     *
+     * One byte rather than the four a `smallint` would take, and it rejects an
+     * out-of-range value at write time rather than storing `0000` for a typo.
+     * Distinct from an `integer` holding a year, which is what most schemas reach
+     * for and which stores four times as much to gain nothing.
+     */
+    public function year(string $column): static
+    {
+        return $this->addColumn($column, 'year(4) NOT NULL');
+    }
+
+    /**
+     * A `TIME` column, holding a clock time with no date.
+     *
+     * The counterpart to {@see date()}. `TIME` also accepts values past 24 hours
+     * and negative values — MySQL uses it for elapsed durations as well as for
+     * clock times — so a schedule column and a duration column can share the
+     * type. If the value is genuinely a span, that is worth a comment.
+     */
+    public function time(string $column): static
+    {
+        return $this->addColumn($column, 'time NOT NULL');
+    }
+
+    /**
+     * A `BLOB` column, holding raw bytes.
+     *
+     * `blob` rather than `longblob`: the same reasoning as {@see text()}, in
+     * reverse — this one is chosen for a value known to be small. MySQL's
+     * `blob` is binary and has no character set, so it neither validates nor
+     * converts on read, which is what makes it right for a hash, a key or an
+     * encoded payload and wrong for anything a human reads.
+     *
+     * No `default()`, because MySQL refuses one on a blob column — the same
+     * clause it refuses on `json`, for the same reason: there is no literal
+     * syntax for the value.
+     */
+    public function binary(string $column): static
+    {
+        $this->noDefault[$column] = 'MySQL does not accept a DEFAULT clause on a blob column. '
+            . 'Write the value in the application, or make the column nullable().';
+
+        return $this->addColumn($column, 'blob NOT NULL');
+    }
+
+    /**
+     * A fixed-width `BINARY(n)` column, padded with `\0` to exactly `n` bytes.
+     *
+     * **Not the same type as {@see binary()}**, and the difference is not
+     * cosmetic. `BLOB` is variable-width with a two-byte length prefix and
+     * compares by content; `BINARY(n)` is fixed-width, pads on the right, and
+     * compares by the padded bytes. A `BINARY(16)` holding a UUID and a `BLOB`
+     * holding the same 16 bytes are different storage and can compare unequal
+     * against the same literal, so the two cannot stand in for one another.
+     *
+     * The length is required rather than defaulted: MySQL has no meaningful
+     * default for `BINARY`, and a wrong one silently truncates or pads — both of
+     * which change the value rather than failing. Sixteen is the common case (a
+     * UUID, or the output of `INET6_ATON()`) but it is not the only one, so it is
+     * the caller's to name.
+     *
+     * `default()` is refused for the same reason as `binary()`: there is no
+     * literal syntax for a binary value, so a default the builder could emit
+     * would be read as a string of characters rather than bytes.
+     */
+    public function binaryFixed(string $column, int $length): static
+    {
+        $this->assertPositiveLength($column, $length, 'BINARY');
+
+        $this->noDefault[$column] = 'MySQL does not accept a DEFAULT clause on a binary column. '
+            . 'Write the value in the application, or make the column nullable().';
+
+        return $this->addColumn($column, sprintf('binary(%d) NOT NULL', $length));
+    }
+
+    /**
+     * A variable-width `VARBINARY(n)` column, up to `n` bytes.
+     *
+     * The variable-width counterpart to {@see binaryFixed()}, and the right choice
+     * for a value whose length varies — a hash, a token, an encrypted payload.
+     * Like `BLOB` it is variable-width, but unlike `BLOB` it carries an explicit
+     * maximum the database enforces on write, which is the difference that
+     * matters for an indexed column.
+     */
+    public function varbinary(string $column, int $length): static
+    {
+        $this->assertPositiveLength($column, $length, 'VARBINARY');
+
+        $this->noDefault[$column] = 'MySQL does not accept a DEFAULT clause on a binary column. '
+            . 'Write the value in the application, or make the column nullable().';
+
+        return $this->addColumn($column, sprintf('varbinary(%d) NOT NULL', $length));
+    }
+
+    /**
+     * A `BINARY(16)` column holding a UUID, the binary counterpart of
+     * {@see uuid()}.
+     *
+     * Sixteen bytes rather than `CHAR(36)`. {@see uuid()} argues for the readable
+     * form and that argument stands for a table a human inspects; this exists for
+     * the case where it does not — a join table, or a column indexed and compared
+     * in bulk — where the storage and the comparison cost are the point. The
+     * caller takes on the conversion between the textual and binary forms, which
+     * has to be applied identically on every read and every write; that is the
+     * whole cost of choosing this.
+     *
+     * A named method rather than `binaryFixed($c, 16)` so the intent is legible in
+     * a migration and so the length cannot be got wrong by a digit.
+     */
+    public function binaryUuid(string $column): static
+    {
+        return $this->binaryFixed($column, 16);
+    }
+
+    /**
+     * Refuse a length MySQL cannot accept, at the point the mistake is made.
+     *
+     * `BINARY(0)` and `VARBINARY(0)` are rejected by MySQL with a message about
+     * the column type, which names the symptom and not the call that produced it.
+     * A negative length is worse: it reaches the statement as `binary(-1)` and
+     * fails as a syntax error attributed to the whole CREATE.
+     */
+    private function assertPositiveLength(string $column, int $length, string $type): void
+    {
+        if ($length < 1) {
+            throw new SchemaException(sprintf(
+                'Cannot create column [%s]: %s needs a length of at least 1, got %d.',
+                $column,
+                $type,
+                $length
+            ));
+        }
+    }
+
+    /**
+     * A `VARCHAR(45)` holding an IPv4 or IPv6 address.
+     *
+     * 45 is the longest textual IPv6 form —
+     * `0000:0000:0000:0000:0000:ffff:255.255.255.255` — so the column fits either
+     * family without a length the caller has to reason about. Text rather than
+     * MySQL's `INET6_ATON()` binary form, for the same readability reason
+     * {@see uuid()} is text: an address in a `SELECT` should be legible.
+     */
+    public function ipAddress(string $column): static
+    {
+        return $this->addColumn($column, 'varchar(45) NOT NULL');
+    }
+
+    /**
+     * A `VARCHAR(17)` holding a MAC address in the usual colon-separated form.
+     *
+     * 17 is exactly `aa:bb:cc:dd:ee:ff`, so nothing shorter fits and nothing
+     * longer is a MAC address in that spelling.
+     */
+    public function macAddress(string $column): static
+    {
+        return $this->addColumn($column, 'varchar(17) NOT NULL');
+    }
+
+    /**
      * A signed integer column.
      *
      * Signed, so it can hold a negative number — a count, an offset, a delta. An
@@ -335,6 +846,37 @@ class Blueprint
     public function integer(string $column): static
     {
         return $this->addColumn($column, 'int(11) NOT NULL');
+    }
+
+    /**
+     * A signed big integer.
+     *
+     * Distinct from {@see unsignedBigInteger()} by what it can hold: a signed
+     * bigint reaches negative values and half the positive range, and a column
+     * that needs a negative value — an offset, a balance, a signed delta — is
+     * silently truncated to zero by the unsigned spelling rather than rejected.
+     *
+     * The dumper needs it because `bigint(20)` and `bigint(20) unsigned` are
+     * different definitions that `SHOW COLUMNS` reports differently, and
+     * collapsing both to the unsigned method would widen the range of every
+     * signed column in a dump without changing a line of its output that a
+     * reader would notice.
+     */
+    public function bigInteger(string $column): static
+    {
+        return $this->addColumn($column, 'bigint(20) NOT NULL');
+    }
+
+    /**
+     * A signed one-byte integer.
+     *
+     * The signed counterpart to {@see unsignedTinyInteger()}, and separate for
+     * the same reason `bigInteger()` is: a `tinyint(4)` that holds `-1` is not a
+     * `tinyint(3) unsigned`, and the difference is only visible in the data.
+     */
+    public function tinyInteger(string $column): static
+    {
+        return $this->addColumn($column, 'tinyint(4) NOT NULL');
     }
 
     /**
@@ -537,6 +1079,112 @@ class Blueprint
         return $this;
     }
 
+    /**
+     * A nullable polymorphic relation: `{name}_type` and `{name}_id`, both null.
+     *
+     * The pair a relation that may not be set needs. {@see morphs()} emits both
+     * columns `NOT NULL`, which is correct for a relation that always exists and
+     * wrong for one that is optional — and "optional" is the common case for an
+     * audit or activity row that is *sometimes* about a subject.
+     *
+     * Nullability is applied to both columns rather than to one, because a morph
+     * with a type and no id (or the reverse) is a relation that names nothing.
+     * MySQL's `NULL` semantics make the composite index still work: `(NULL, NULL)`
+     * is stored and does not collide with any other row, since a NULL never
+     * compares equal to another NULL in a unique index.
+     */
+    public function nullableMorphs(string $name): static
+    {
+        $this->morphs($name);
+
+        // Applied by name rather than through `nullable()`, which only ever
+        // reaches the *last* column — and the last column here is `{name}_id`,
+        // so the type column would silently stay NOT NULL.
+        $this->makeNullable($name . '_type');
+        $this->makeNullable($name . '_id');
+
+        return $this;
+    }
+
+    /**
+     * A nullable `deleted_at` datetime, for soft deletes.
+     *
+     * A column and nothing more: this framework has no model layer, so nothing
+     * here filters on it — a query that means "only live rows" says
+     * `WHERE deleted_at IS NULL` itself. What the helper buys is the convention:
+     * one name, one type, and a *nullable* column, so "not deleted" is NULL
+     * rather than a sentinel timestamp like `'0000-00-00'` that some MySQL
+     * configurations reject outright.
+     *
+     * Deliberately not indexed. The usual companion is a composite index over
+     * `(deleted_at, <something you filter by>)`, which depends on what a given
+     * table queries on — so the caller adds it, and a bare index here would
+     * usually be the wrong one and always a second B-tree to maintain.
+     */
+    public function softDeletes(string $column = 'deleted_at'): static
+    {
+        $this->assertIdentifier($column, 'column');
+
+        return $this->datetime($column)->nullable();
+    }
+
+    /**
+     * A nullable `remember_token` varchar, for "remember me" sessions.
+     *
+     * 100 characters, matching what Laravel's own migrations use. Nullable
+     * because most rows never have one — the token exists only between a user
+     * checking "remember me" and that session ending — and an empty-string
+     * default would make "no token" and "a token that happens to be empty"
+     * indistinguishable.
+     */
+    public function rememberToken(): static
+    {
+        return $this->string('remember_token', 100)->nullable();
+    }
+
+    /**
+     * A foreign key column holding a UUID: `{name}` as `CHAR(36)`, constrained.
+     *
+     * `char(36)` rather than `varchar`, because the referenced column is
+     * {@see uuid()} and InnoDB requires a foreign key's type to match the column
+     * it points at — including the fixed-versus-variable distinction. A
+     * `varchar(36)` here produces a constraint the server refuses, so the reason
+     * the type is what it is belongs in the code rather than in a comment
+     * somebody will delete.
+     *
+     * The column name is the whole input; the referenced table is derived the
+     * same way {@see foreignId()} derives it — `company_id` names `companies`.
+     * That derivation lives in {@see guessForeignTable()} and is shared rather
+     * than repeated, so the two cannot drift.
+     */
+    public function foreignUuid(string $column): static
+    {
+        $this->assertIdentifier($column, 'column');
+
+        $this->addColumn($column, 'char(36) NOT NULL');
+        $this->foreignColumns[$column] = true;
+        $this->pendingForeignKeyTable = $this->guessForeignTable($column);
+
+        return $this;
+    }
+
+    /**
+     * A foreign key column holding a ULID: `{name}` as `CHAR(26)`, constrained.
+     *
+     * @see foreignUuid() for why the type is fixed-width, and {@see ulid()} for
+     * why it is 26 characters.
+     */
+    public function foreignUlid(string $column): static
+    {
+        $this->assertIdentifier($column, 'column');
+
+        $this->addColumn($column, 'char(26) NOT NULL');
+        $this->foreignColumns[$column] = true;
+        $this->pendingForeignKeyTable = $this->guessForeignTable($column);
+
+        return $this;
+    }
+
     // --------------------------------------------------------- column modifiers
 
     /**
@@ -553,28 +1201,131 @@ class Blueprint
     public function nullable(): static
     {
         return $this->modifyLastColumn(function (string $definition, string $name): string {
-            $definition = str_replace(' NOT NULL', '', $definition);
+            return $this->dropNotNull($definition, $name);
+        });
+    }
 
-            // A column that becomes nullable keeps any default it was given, but
-            // one it inherited from its *type* — `boolean()` and `id()` both
-            // emit one — loses it. The distinction is what stops a nullable
-            // boolean from reporting `false` for a row whose value was never
-            // set, which is the difference between "no" and "no answer".
-            if (($this->hasDefault[$name] ?? false) === false) {
-                $definition = preg_replace('/ DEFAULT .*$/', '', $definition) ?? $definition;
+    /**
+     * Allow NULL in a column named explicitly, wherever it is in the list.
+     *
+     * The by-name counterpart to {@see nullable()}, which can only ever reach the
+     * most recent column. A helper that defines *two* columns needs this: the
+     * thing that wants nullability is the pair, and `nullable()` after it would
+     * reach only the second of them.
+     *
+     * Not part of the public builder API — a migration chains `nullable()` — but
+     * `private` would force the two morph helpers to duplicate the definition
+     * rewrite below, which is exactly the kind of duplication that lets one copy
+     * drift.
+     *
+     * @throws SchemaException When no column by that name has been defined.
+     */
+    private function makeNullable(string $column): static
+    {
+        $found = false;
+
+        foreach ($this->columns as $index => $existing) {
+            if ($existing['name'] !== $column) {
+                continue;
             }
 
+            $found = true;
+            $this->columns[$index]['definition'] = $this->dropNotNull($existing['definition'], $column);
+        }
+
+        if (!$found) {
+            throw new SchemaException(sprintf(
+                'Column [%s] was asked to be nullable on table [%s], but no such column was defined '
+                . 'by this blueprint.',
+                $column,
+                $this->table
+            ));
+        }
+
+        return $this;
+    }
+
+    /**
+     * Strip `NOT NULL` from a definition, state `NULL`, and drop any default the
+     * *type* supplied.
+     *
+     * A column that becomes nullable keeps a default the author gave it, but
+     * loses one it inherited from its type — `boolean()` and `id()` both emit
+     * one. The distinction is what stops a nullable boolean from reporting
+     * `false` for a row whose value was never set, which is the difference
+     * between "no" and "no answer".
+     *
+     * ## Why `NULL` is written rather than merely implied
+     *
+     * Omitting `NOT NULL` is *enough* — MySQL reads a column with no nullability
+     * clause as nullable — so this method worked for years while saying nothing.
+     * It is written out anyway because of the two places the difference is
+     * observable.
+     *
+     * A dump is the first. {@see SchemaDumper} reads nullability from the
+     * catalogue and re-emits it as an explicit `->nullable()`, so a migration the
+     * dumper generated and one a person wrote spell the same column two ways —
+     * and a text comparison of the two reports a difference that does not exist.
+     *
+     * The second is that relying on a default makes the intent unrecoverable from
+     * the source. `tinyint(1)` states a type; `tinyint(1) NULL` states a type and
+     * a decision. The next reader should not have to know MySQL's rules to see
+     * which was meant.
+     *
+     * `NULL` goes *before* any surviving default, because that is the order
+     * MySQL's grammar requires — `type [NULL | NOT NULL] [DEFAULT v] [extra]`.
+     * `tinyint(1) NULL DEFAULT 1` parses; `tinyint(1) DEFAULT 1 NULL` is a syntax
+     * error. The adapter's own {@see WpDatabaseAdapter::columnDefinition()} builds
+     * a definition the same way round, which is a second reason not to guess: the
+     * two have to describe a column identically for an `ALTER` to be a no-op
+     * against a column this created.
+     */
+    private function dropNotNull(string $definition, string $column): string
+    {
+        $definition = str_replace(' NOT NULL', '', $definition);
+
+        if (($this->hasDefault[$column] ?? false) === false) {
+            $definition = preg_replace('/ DEFAULT .*$/', '', $definition) ?? $definition;
+        }
+
+        $definition = rtrim($definition);
+
+        // Idempotent, because `nullable()` can legitimately be reached twice for
+        // one column: `$table->string('x')->nullable()` followed by a helper that
+        // makes the whole group nullable, or a doubled modifier. Without this the
+        // second pass would emit `... NULL NULL`, which MySQL rejects — turning a
+        // harmless repeat into a migration that will not run.
+        if (preg_match('/(?:^|\s)NULL(?:\s|$)/i', $definition) === 1) {
             return $definition;
-        });
+        }
+
+        // Split the default off, insert `NULL` ahead of it, and put it back.
+        if (preg_match('/^(.*?)(\s+DEFAULT\s+.*)$/is', $definition, $m) === 1) {
+            return rtrim($m[1]) . ' NULL' . $m[2];
+        }
+
+        return $definition . ' NULL';
     }
 
     /**
      * Give the most recently added column a default value.
      *
      * @throws SchemaException When no column has been added yet.
-     */
-    public function default(string|int|float|bool $value): static
+     */    public function default(string|int|float|bool $value): static
     {
+        // Refused before the rewrite, so a refusal leaves the column as the type
+        // method defined it rather than half-modified.
+        $column = $this->lastColumn()['name'];
+
+        if (isset($this->noDefault[$column])) {
+            throw new SchemaException(sprintf(
+                'Column [%s] on table [%s] cannot be given a default value. %s',
+                $column,
+                $this->table,
+                $this->noDefault[$column]
+            ));
+        }
+
         $this->modifyLastColumn(function (string $definition) use ($value): string {
             // Any existing default is replaced, not appended to. A column type
             // may already carry one — `boolean()` does, so that an ADD COLUMN
@@ -626,6 +1377,109 @@ class Blueprint
 
             return preg_replace('/ DEFAULT .*$/', '', $definition) . ' DEFAULT CURRENT_TIMESTAMP';
         });
+    }
+
+    // ----------------------------------------------------------- positioning
+
+    /**
+     * Place the column after a named one.
+     *
+     *     Schema::table('notes', function (Blueprint $table) {
+     *         $table->string('title')->after('id');
+     *     });
+     *
+     * Without it MySQL appends a new column to the end of the table, so a column
+     * declared between two others lands last. That is cosmetic in the schema and
+     * not at all cosmetic in `SELECT *`, where column order is what every
+     * positional `fetch_row()` index and every `while ($row = ...)` loop over
+     * named columns depends on — and it is the difference a `dbDelta()`-managed
+     * WordPress table shows after an upgrade on two sites that applied different
+     * batches.
+     *
+     * Also the way an *existing* column is repositioned: MySQL's `MODIFY COLUMN`
+     * takes `AFTER`, so `->after('id')->change()` moves a column that is already
+     * there. There is deliberately no separate `moveColumn()`.
+     *
+     * The last positioning call wins — see {@see first()}.
+     *
+     * @throws SchemaException When no column has been added yet, the name is not
+     *                         a usable identifier, or the table is being created.
+     */
+    public function after(string $column): static
+    {
+        $this->assertIdentifier($column, 'column');
+
+        return $this->position(sprintf('AFTER `%s`', $column), sprintf('after(\'%s\')', $column));
+    }
+
+    /**
+     * Place the column first in the table.
+     *
+     * A separate method rather than `after(null)`, because `FIRST` is a keyword
+     * and `AFTER NULL` is a syntax error — the distinction is in the grammar, so
+     * it is in the API.
+     *
+     * **The last positioning call wins.** `->first()->after('id')` positions
+     * after `id`; `->after('id')->first()` positions first. Both clauses cannot
+     * be emitted — `FIRST AFTER x` does not parse — so one has to win, and
+     * last-wins is the rule `default()` already follows for the same reason: a
+     * second call is a correction, not an addition. Refusing the pair instead
+     * would break the reordering idiom that makes the methods useful together.
+     *
+     * @throws SchemaException When no column has been added yet, or the table is
+     *                         being created.
+     */
+    public function first(): static
+    {
+        return $this->position('FIRST', 'first()');
+    }
+
+    /**
+     * Append a positioning clause to the current column's definition.
+     *
+     * Strips any clause a previous `after()`/`first()` appended, which is what
+     * makes last-wins work: the definition carries its position, so replacing it
+     * means removing the old one rather than tracking it separately.
+     *
+     * @param string $clause     The SQL — `FIRST` or `AFTER \`x\``.
+     * @param string $describeAs How the call reads, for the refusal message.
+     *
+     * @throws SchemaException When no column has been added, or the table is
+     *                         being created.
+     */
+    private function position(string $clause, string $describeAs): static
+    {
+        // Refused on a CREATE rather than emitted. MySQL rejects FIRST/AFTER
+        // inside CREATE TABLE, and the request is meaningless there anyway: a new
+        // table's column order is the order the migration declared them in, so
+        // after() asks for something the caller already has.
+        if ($this->creating) {
+            throw new SchemaException(sprintf(
+                '%s was requested while creating table [%s]. Column position is the order the '
+                . 'columns are declared in, so declare it there instead; positioning applies to '
+                . 'Schema::table() on a table that already exists.',
+                $describeAs,
+                $this->table
+            ));
+        }
+
+        if ($this->columns === []) {
+            throw new SchemaException(sprintf(
+                '%s was called on table [%s] before any column was defined. It positions the column '
+                . 'the chain is on, so it has to follow one: $table->string(\'title\')->after(\'id\').',
+                $describeAs,
+                $this->table
+            ));
+        }
+
+        $index = count($this->columns) - 1;
+
+        $definition = preg_replace('/\s+(?:FIRST|AFTER\s+`[^`]+`)$/i', '', $this->columns[$index]['definition'])
+            ?? $this->columns[$index]['definition'];
+
+        $this->columns[$index]['definition'] = $definition . ' ' . $clause;
+
+        return $this;
     }
 
     // --------------------------------------------------------------- indexes
@@ -783,7 +1637,208 @@ class Blueprint
         return $this;
     }
 
-    // ---------------------------------------------------- indexes to drop
+    // ---------------------------------------------------- columns and indexes to drop
+
+    /**
+     * Rewrite the definition of a column that already exists.
+     *
+     *     Schema::table('notes', function (Blueprint $table) {
+     *         $table->string('body', 500)->nullable()->change();
+     *     });
+     *
+     * ## The caller states the whole definition
+     *
+     * This is the rule the framework settled on, and it is a deliberate cost.
+     * Laravel reads the current definition via Doctrine DBAL and applies a diff;
+     * this has no Doctrine, so `change()` takes the definition the fluent chain
+     * built and emits it verbatim as `MODIFY COLUMN`. That means a caller must
+     * restate everything they want to keep — a `->change()` on a `NOT NULL`
+     * column without `->nullable()` makes it `NOT NULL`, and a default that is
+     * not restated is dropped.
+     *
+     * The trade is worth stating plainly because it is the one place in this
+     * builder where the code does *not* say what it means: `$table->string('body')->change()`
+     * reads like "make body a string" and actually means "make body exactly
+     * `varchar(191) NOT NULL`", discarding whatever else it had. Conversely it is
+     * honest about itself — nothing is inferred, so nothing is silently guessed
+     * wrong — and it needs no schema-introspection dependency to work.
+     *
+     * ## The column must exist
+     *
+     * MySQL's `MODIFY COLUMN` is an error against a missing column, and by the
+     * time it fails the other clauses of the same `ALTER TABLE` have run. Checked
+     * first so the message names the column rather than arriving as a syntax
+     * error from the server.
+     *
+     * @throws SchemaException When no column was defined before it, the column
+     *                         does not exist, or the blueprint is creating a
+     *                         table.
+     */
+    public function change(): static
+    {
+        // Read before the guard below, because the guard needs the column's name
+        // to name it in its own message — and the "no column chained" case is
+        // reported by that same guard, with wording that mentions change().
+        if ($this->columns === []) {
+            throw new SchemaException(sprintf(
+                'change() was called on table [%s] before any column was defined. It rewrites the '
+                . 'definition of the column the chain is on, so it has to follow one: '
+                . '$table->string(\'body\', 500)->nullable()->change().',
+                $this->table
+            ));
+        }
+
+        if ($this->creating) {
+            $this->assertAlterable(sprintf('MODIFY COLUMN `%s`', $this->columns[count($this->columns) - 1]['name']));
+        }
+
+        // Consumed from the column list, not copied from it. A `change()` is a
+        // *replacement*: leaving the column in $columns would emit both an
+        // `ADD COLUMN` and a `MODIFY COLUMN` for it, and on a table where the
+        // column already exists the ADD is the statement that fails.
+        $column = array_pop($this->columns);
+
+        $this->assertColumnExists($column['name']);
+
+        $this->alterations[] = sprintf('MODIFY COLUMN `%s` %s', $column['name'], $column['definition']);
+
+        // The default-tracking map is keyed by name and is consulted by
+        // nullable() to keep `->default(0)->nullable()` order-independent. The
+        // column it described is no longer in the list being compiled, so the
+        // entry is stale either way; dropped so a later same-named definition
+        // does not read the old answer.
+        unset($this->hasDefault[$column['name']]);
+
+        return $this;
+    }
+
+    /**
+     * Refuse a modification to a column that does not exist.
+     *
+     * @throws SchemaException When the column is absent.
+     */
+    private function assertColumnExists(string $column): void
+    {
+        if (($this->resolveColumnDefinition)($this->table, $column) !== null) {
+            return;
+        }
+
+        throw new SchemaException(sprintf(
+            'Cannot change column [%s] on table [%s]: no such column. change() rewrites a column '
+            . 'that already exists; add it with Schema::table() instead.',
+            $column,
+            $this->table
+        ));
+    }
+
+    /**
+     * Rename a column.
+     *
+     *     Schema::table('notes', function (Blueprint $table) {
+     *         $table->renameColumn('body', 'content');
+     *     });
+     *
+     * Two names and no type, which is the whole point: the definition is read
+     * back from the database through the adapter, so a caller cannot accidentally
+     * reset a column's type or nullability while renaming it. That is the failure
+     * this signature exists to prevent — restating a definition by hand is how a
+     * `varchar(255)` quietly becomes a `varchar(191)`, or a `NOT NULL` loses its
+     * not.
+     *
+     * **The data is preserved.** MySQL's `CHANGE COLUMN` moves the values with
+     * the name; it is not a drop-and-add in disguise. The compiled statement is
+     * `CHANGE COLUMN` rather than the more modern `RENAME COLUMN` because that
+     * one needs MySQL 8.0, and the plugin supports hosts older than that.
+     *
+     * Refused when the source column does not exist — there is nothing to
+     * rename, and inventing a definition would create the column empty. Refused
+     * when the destination already exists, because MySQL would fail with a
+     * duplicate-column error after other clauses in the same statement had
+     * already run; catching it here names both columns instead.
+     *
+     * @throws SchemaException When the blueprint is creating a table, the
+     *                         definition cannot be read, or either name is
+     *                         unusable.
+     */
+    public function renameColumn(string $from, string $to): static
+    {
+        $this->assertIdentifier($from, 'column');
+        $this->assertIdentifier($to, 'column');
+
+        // Checked before the definitions are read, not after. A rename inside a
+        // `CREATE TABLE` is invalid whatever the database holds, and reading it
+        // first would report "no such column" — sending an author to look at a
+        // table that is not the problem. It would also query a table that, on a
+        // first install, does not exist yet.
+        $this->assertAlterable(sprintf('RENAME COLUMN `%s` TO `%s`', $from, $to));
+
+        $definition = ($this->resolveColumnDefinition)($this->table, $from);
+
+        if ($definition === null) {
+            throw new SchemaException(sprintf(
+                'Cannot rename column [%s] on table [%s]: no such column. A rename needs an '
+                . 'existing definition to restate, and there is nothing here to restate.',
+                $from,
+                $this->table
+            ));
+        }
+
+        if (($this->resolveColumnDefinition)($this->table, $to) !== null) {
+            throw new SchemaException(sprintf(
+                'Cannot rename column [%s] to [%s] on table [%s]: [%s] already exists. '
+                . 'Rename or drop the existing column first.',
+                $from,
+                $to,
+                $this->table,
+                $to
+            ));
+        }
+
+        $this->alterations[] = sprintf('CHANGE COLUMN `%s` `%s` %s', $from, $to, $definition);
+
+        return $this;
+    }
+
+    /**
+     * Drop a column, or several.
+     *
+     *     Schema::table('notes', function (Blueprint $table) {
+     *         $table->dropColumn('slug');
+     *         $table->dropColumn(['slug', 'excerpt']);
+     *     });
+     *
+     * **This destroys the data in the column, and nothing here can undo it.**
+     * There is no soft-delete for a schema: `down()` has to re-add the column,
+     * and it comes back empty. A migration that drops a column is therefore only
+     * reversible in the structural sense, and the `down()` written beside it
+     * should say so rather than implying the values return.
+     *
+     * A list is compiled into one `ALTER TABLE` with a `DROP COLUMN` clause per
+     * name, rather than one statement each — see {@see toAddColumnStatements()}
+     * for why every change in a callback shares a statement. The practical
+     * consequence here is that a multi-column drop either happens or does not,
+     * so a caller who catches a failure is never left guessing which of the
+     * columns went.
+     *
+     * Valid only when altering an existing table. MySQL rejects `DROP` inside
+     * `CREATE TABLE`, so dropping a column from a table being created is refused
+     * here, where the message can say which column and which table.
+     *
+     * @param string|list<string> $columns
+     *
+     * @throws SchemaException When the blueprint is creating a table, or a name
+     *                         is not a usable identifier.
+     */
+    public function dropColumn(string|array $columns): static
+    {
+        foreach (is_string($columns) ? [$columns] : $columns as $column) {
+            $this->assertIdentifier($column, 'column');
+
+            $this->addAlteration(sprintf('DROP COLUMN `%s`', $column));
+        }
+
+        return $this;
+    }
 
     /**
      * Drop an index by the columns it covers.
@@ -841,19 +1896,39 @@ class Blueprint
      */
     private function addAlteration(string $clause): static
     {
-        if ($this->creating) {
-            throw new SchemaException(sprintf(
-                '%s was requested while creating table [%s]. Dropping an index is an ALTER TABLE '
-                . 'operation and has nothing to drop on a table that does not exist yet; use '
-                . 'Schema::table() with the table already created.',
-                $clause,
-                $this->table
-            ));
-        }
+        $this->assertAlterable($clause);
 
         $this->alterations[] = $clause;
 
         return $this;
+    }
+
+    /**
+     * Refuse an alteration to a table that is being created.
+     *
+     * `MySQL` has no `DROP`, `CHANGE` or `MODIFY` inside a `CREATE TABLE`, so the
+     * alternative to refusing is emitting a statement the server rejects — and
+     * the author would be reading a syntax error when the mistake is really "you
+     * altered a table you have not made yet".
+     *
+     * `$describeAs` lets a caller name the operation in its own vocabulary when
+     * the clause it compiles to reads differently: a rename is `CHANGE COLUMN` to
+     * MySQL but `RENAME COLUMN` to the person who wrote it, and a message
+     * quoting the second is the one that matches their code.
+     *
+     * @throws SchemaException When the blueprint is creating a table.
+     */
+    private function assertAlterable(string $describeAs): void
+    {
+        if ($this->creating) {
+            throw new SchemaException(sprintf(
+                '%s was requested while creating table [%s]. Altering an existing table is not '
+                . 'something a CREATE can express; define what the table should contain instead, '
+                . 'or use Schema::table() with the table already created.',
+                $describeAs,
+                $this->table
+            ));
+        }
     }
 
     // --------------------------------------------------------- foreign keys
@@ -1425,7 +2500,7 @@ class Blueprint
         // produces them in table names derived from a site's own; refusing it
         // would reject a name the host application considers entirely normal.
         if ($name === '' || preg_match('/^[A-Za-z0-9_$]+$/', $name) !== 1) {
-            throw SchemaException::invalidTableName($name === '' ? '(empty ' . $kind . ' name)' : $name);
+            throw SchemaException::invalidIdentifier($name === '' ? '(empty ' . $kind . ' name)' : $name, $kind);
         }
 
         if (strlen($name) > 64) {

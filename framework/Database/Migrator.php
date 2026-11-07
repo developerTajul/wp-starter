@@ -3,27 +3,48 @@ declare(strict_types=1);
 
 namespace Framework\Database;
 
+use Framework\Database\Adapters\DatabaseAdapterInterface;
 use Framework\Database\Exceptions\MigrationException;
+use Framework\Database\Schema\Schema;
+use Framework\Database\Storage\MigrationStorageInterface;
 use Throwable;
-use wpdb;
 
 /**
  * Runs and reverses the plugin's database migrations.
  *
  * ## What it owns
  *
- * Three things, and nothing else: the tracking table, discovery of migration
- * files, and the two execution directions. It does not know about WP-CLI, service
+ * Three things, and nothing else: discovery of migration files, the ordering
+ * rules, and the two execution directions. It does not know about WP-CLI, service
  * providers, or the plugin's base path unless it is told — the path is injected,
  * so the same class runs in a test against a temporary directory.
  *
+ * It also does not know *how* the database is reached. Both seams are injected:
+ * {@see DatabaseAdapterInterface} for the schema the migrations build, and
+ * {@see MigrationStorageInterface} for the record of which ones have run, the
+ * batch numbering, and the lock that serialises runs. Nothing in this class
+ * names `$wpdb` or spells a statement by hand.
+ *
+ * That split is the point rather than tidiness. Before it, the migrator held a
+ * `$wpdb` it resolved from a global and issued its own SQL — twelve call sites'
+ * worth — which made it impossible to exercise without a real WordPress
+ * database handle, and made "run the migrations" and "keep the ledger" one
+ * class. Now the ordering logic, which is where the subtle bugs live, can be
+ * tested against any storage; and a project targeting something other than
+ * MySQL's `$wpdb` supplies its own storage instead of patching this class.
+ *
+ * The two interfaces stay separate because they are different jobs: one compiles
+ * and runs DDL, the other reads and writes rows and takes a lock. Folding the
+ * second into the first would put `insert()` and `get_var()` on every adapter in
+ * the project, including ones written for a target with no SQL at all, to serve
+ * one caller. See {@see MigrationStorageInterface} for the full argument.
+ *
  * ## Tracking
  *
- * Applied migrations are recorded in `{$wpdb->prefix}plugin_migrations` as
- * `(id, migration, batch)`. `migration` is the **filename identifier**, not the
- * class name (see {@see MigrationFile} for why), and carries a UNIQUE index so a
- * duplicate insert is rejected by the database rather than by a read-then-write
- * check that could race.
+ * Applied migrations are recorded as `(id, migration, batch)`. `migration` is the
+ * **filename identifier**, not the class name (see {@see MigrationFile} for why),
+ * and carries a UNIQUE index so a duplicate insert is rejected by the database
+ * rather than by a read-then-write check that could race.
  *
  * `batch` is what makes rollback coherent. Every `runPending()` call allocates
  * one new batch number and stamps every migration it applies with it, so
@@ -47,23 +68,95 @@ use wpdb;
  * The one piece of real atomicity WordPress *does* offer is its per-request
  * rollback flag. `set_transaction_rollback(true)` (WordPress 6.7+) makes the
  * *next* `$wpdb->query()` roll back if it errors, which is how a half-written
- * DDL statement is cleaned up. It is used here when available and skipped on
- * older WordPress, since calling it unconditionally would fatal on 6.0–6.6.
+ * DDL statement is cleaned up. It is asked for through
+ * {@see MigrationStorageInterface::guardAgainstPartialWrite()}, which is a no-op
+ * where the platform has no such concept — see that method for why the probe
+ * belongs there and not here.
  */
 class Migrator
 {
     /**
-     * Table suffix, appended to `$wpdb->prefix`.
+     * The hook fired immediately before a migration's `up()` runs.
+     *
+     * `{$prefix}…` is the action name with `MIGRATOR_HOOK_PREFIX` prepended, so
+     * the plugin's own prefix namespaces its hooks the way WordPress expects.
+     *
+     * Two arguments: the migration identifier (the filename, which is what
+     * `migrate:status` shows) and the direction (`'up'` or `'down'`).
      */
-    public const TABLE_SUFFIX = 'plugin_migrations';
+    public const HOOK_MIGRATION_STARTING = 'migration_starting';
+
+    /**
+     * The hook fired after a migration's `up()` returned without throwing.
+     *
+     * Deliberately *not* fired when the migration threw. "Finished" that also
+     * means "failed" is a hook no listener can act on — the failure is reported
+     * through {@see HOOK_MIGRATION_FAILED} and the propagating exception, and a
+     * listener that wants both subscribes to both.
+     */
+    public const HOOK_MIGRATION_FINISHED = 'migration_finished';
+
+    /**
+     * The hook fired when a migration threw, before the exception propagates.
+     *
+     * Three arguments: the identifier, the direction, and the `Throwable`. The
+     * exception is passed rather than the message so a listener can decide
+     * whether it cares — a migration that fails for a reason a listener knows how
+     * to handle is exactly the case this exists for.
+     */
+    public const HOOK_MIGRATION_FAILED = 'migration_failed';
+
+    /**
+     * How long to wait for the migration lock before giving up, in seconds.
+     *
+     * Long, deliberately. The competing holder is another migration run, not a
+     * stuck request: a run that has been going for a while is working, and a short
+     * timeout would turn "the deploy is still running" into "the deploy failed"
+     * for the second of two nearly-simultaneous deploys. Ten minutes is longer
+     * than any sane migration and shorter than a human's patience for a hung
+     * command.
+     */
+    private const LOCK_TIMEOUT_SECONDS = 600;
+
+    /**
+     * Prefixed to each hook constant to form the action name.
+     *
+     * Read from `app.prefix` — the same value the rebrander rewrites — rather than
+     * hardcoded, so a rebranded plugin's hooks are namespaced to it without any
+     * listener having to know the new name. The constants are the public spelling
+     * and this is what they resolve to.
+     *
+     * Read through the global `config()` helper rather than constructor-injected,
+     * for consistency with the rest of this class: it is constructed by the
+     * container before WordPress is necessarily up, and resolved values are read
+     * lazily everywhere else here for the same reason.
+     */
+    private function hookPrefix(): string
+    {
+        return (string) config('app.prefix', 'wp_mini_laravel_');
+    }
+
+    /**
+     * Fire a migration event, when WordPress's hook system is loaded.
+     *
+     * Guarded because this class runs in contexts without WordPress — the test
+     * suite, a script that drives the migrator directly — and an unguarded
+     * `do_action()` would be a fatal there. Nothing is lost when it is skipped:
+     * a listener is a WordPress callback and cannot exist without WordPress.
+     */
+    private function fire(string $hook, mixed ...$args): void
+    {
+        if (!function_exists('do_action')) {
+            return;
+        }
+
+        do_action($this->hookPrefix() . $hook, ...$args);
+    }
 
     /**
      * Column widths, named so the CREATE TABLE and the schema comparison in
      * {@see ensureTrackingTable()} cannot drift apart.
      */
-    private const MIGRATION_COLUMN_LENGTH = 191;
-    private const BATCH_COLUMN_TYPE = 'bigint(20) unsigned';
-
     private string $migrationPath;
 
     /**
@@ -75,16 +168,35 @@ class Migrator
     private array $lastRunApplied = [];
 
     /**
-     * @param string|null $migrationPath Directory holding the migration files.
-     *                                   Defaults to `base_path('database/migrations')`.
-     * @param wpdb|null   $wpdb          WordPress database handle. Defaults to the
-     *                                   `$wpdb` global, resolved lazily so
-     *                                   constructing the migrator before
-     *                                   WordPress is ready does not fail.
+     * What the most recent reversal actually reversed, published for the same
+     * reason as {@see $lastRunApplied} and read by the same kind of caller.
+     *
+     * A `down()` that throws propagates out of `rollbackBatch()` and
+     * `rollbackAll()`, so the partial list a local variable was building is lost
+     * with the stack frame — and a command reporting "failed" cannot say how much
+     * of the rollback landed. That number is the whole basis for deciding whether
+     * to re-run, so it is recorded here as it accumulates rather than returned.
+     *
+     * @var list<string>
+     */
+    private array $lastRunReverted = [];
+
+    /**
+     * @param string|null                $migrationPath Directory holding the migration files.
+     *                                                  Defaults to `base_path('database/migrations')`.
+     * @param DatabaseAdapterInterface   $adapter       The schema this runs migrations against. Also
+     *                                                  the source of the table prefix, which is what
+     *                                                  makes a migration's `Schema::` calls and the
+     *                                                  tracking table agree on a database.
+     * @param MigrationStorageInterface  $storage       Where "which migrations have run" is kept, and
+     *                                                  where the lock is taken. Injected rather than
+     *                                                  derived from the adapter, because reading rows
+     *                                                  is not what the schema seam is for.
      */
     public function __construct(
-        ?string $migrationPath = null,
-        private ?wpdb $wpdb = null
+        ?string $migrationPath,
+        private readonly DatabaseAdapterInterface $adapter,
+        private readonly MigrationStorageInterface $storage,
     ) {
         $this->migrationPath = $migrationPath ?? $this->defaultMigrationPath();
     }
@@ -102,7 +214,7 @@ class Migrator
      */
     public function getTableName(): string
     {
-        return $this->db()->prefix . self::TABLE_SUFFIX;
+        return $this->storage->tableName();
     }
 
     // ------------------------------------------------------------------ running
@@ -124,6 +236,26 @@ class Migrator
      */
     public function runPending(?callable $onProgress = null): array
     {
+        // The lock is taken before the tracking table is even ensured: two
+        // processes that both reach `ensureTrackingTable()` would both read "the
+        // table is absent" and both issue the CREATE, and only one of them is
+        // guaranteed to be the winner.
+        return $this->withLock(fn (): array => $this->runPendingLocked($onProgress));
+    }
+
+    /**
+     * {@see runPending()} with the lock already held.
+     *
+     * Split out rather than inlined into a closure so the whole body keeps its
+     * docblock and its local variable names — and because `withLock()` returns
+     * whatever the callback returns, which is only meaningful if the work is a
+     * real method with a declared return type.
+     *
+     * @param callable(string): void|null $onProgress
+     * @return list<string>
+     */
+    private function runPendingLocked(?callable $onProgress = null): array
+    {
         $this->ensureTrackingTable();
 
         // Cleared before the empty check, not after: a caller that inspects this
@@ -144,7 +276,15 @@ class Migrator
         // still burns its number. Reusing it on the retry would make an old
         // transcript's `--batch=<n>` point at the wrong set — the exact confusion
         // the high-water mark exists to prevent.
-        $this->rememberBatch($batch);
+        //
+        // Guarded against pretending for the same reason the tracking table is,
+        // but with a sharper consequence: this option only ever moves *up*, so a
+        // dry run that writes it advances the numbering permanently. The next
+        // real batch is then numbered from a run that created nothing, and the
+        // gap can never be explained or closed.
+        if (!Schema::isPretending()) {
+            $this->storage->rememberBatch($batch);
+        }
 
         $applied = [];
 
@@ -154,7 +294,97 @@ class Migrator
 
                 // Recorded only after up() returned without throwing, so the table
                 // never claims a migration that did not finish.
-                $this->record($migration->identifier, $batch);
+                //
+                // Under `migrate --pretend` the `up()` above ran its statements
+                // through the recording adapter — so nothing was created — and
+                // writing the row would leave the table claiming work that does
+                // not exist. Skipped, and the identifier is still listed as
+                // applied because from the operator's point of view it *would*
+                // have been. See {@see Schema::isPretending()}.
+                if (!Schema::isPretending()) {
+                    $this->storage->record($migration->identifier, $batch);
+                }
+
+                $applied[] = $migration->identifier;
+                $this->lastRunApplied = $applied;
+            }
+        } finally {
+            $this->lastRunApplied = $applied;
+        }
+
+        return $applied;
+    }
+
+    /**
+     * Apply every pending migration, one per batch.
+     *
+     * The `--step` form of {@see runPending()}. Each migration gets its own batch
+     * number rather than sharing one, which makes `migrate:rollback` undo exactly
+     * one of them — so a developer who wants to test a single migration's `down()`
+     * can step through and reverse as they go, instead of reversing an entire run.
+     *
+     * ## Why this does not just loop `runPending()`
+     *
+     * It almost could: `runPending()` re-reads the pending list each call, and the
+     * first migration it applies is no longer pending on the next pass. What stops
+     * it is the shape of the failure. A loop over `runPending()` would throw out of
+     * the middle with the earlier batches already committed — correct, but the
+     * caller cannot tell "the third migration failed" from "the whole thing failed"
+     * without diffing the tracking table, and it would re-query the pending list
+     * once per migration for no gain.
+     *
+     * So the pending list is read once and walked here, allocating a fresh batch
+     * per migration. A failure stops the loop at the same point it would have, but
+     * the exception names the migration that failed and every earlier one is
+     * already recorded under its own batch.
+     *
+     * @param callable(string): void|null $onProgress
+     * @return list<string> Identifiers applied, in execution order.
+     *
+     * @throws MigrationException
+     */
+    public function runPendingStepwise(?callable $onProgress = null): array
+    {
+        return $this->withLock(fn (): array => $this->runPendingStepwiseLocked($onProgress));
+    }
+
+    /**
+     * {@see runPendingStepwise()} with the lock already held.
+     *
+     * @param callable(string): void|null $onProgress
+     * @return list<string>
+     */
+    private function runPendingStepwiseLocked(?callable $onProgress = null): array
+    {
+        $this->ensureTrackingTable();
+
+        $this->lastRunApplied = [];
+
+        $pending = $this->pendingMigrations();
+
+        if ($pending === []) {
+            return [];
+        }
+
+        $applied = [];
+
+        try {
+            foreach ($pending as $migration) {
+                $batch = $this->nextBatchNumber();
+
+                // Per-migration here rather than once per run, which is what
+                // "stepwise" means — each migration is its own batch. It makes
+                // the pretend guard matter more, not less: unguarded, a dry run
+                // over N migrations advances the high-water mark by N.
+                if (!Schema::isPretending()) {
+                    $this->storage->rememberBatch($batch);
+                }
+
+                $this->runMigration($migration, 'up', $onProgress);
+
+                if (!Schema::isPretending()) {
+                    $this->storage->record($migration->identifier, $batch);
+                }
 
                 $applied[] = $migration->identifier;
                 $this->lastRunApplied = $applied;
@@ -183,6 +413,21 @@ class Migrator
     public function lastRunApplied(): array
     {
         return $this->lastRunApplied;
+    }
+
+    /**
+     * The migrations the most recent reversal actually reversed.
+     *
+     * The counterpart to {@see lastRunApplied()} for the other direction, and it
+     * exists for the identical reason: a rollback that fails partway throws
+     * rather than returning, so the caller has no other way to learn how much was
+     * reversed. Describes that call and no earlier one.
+     *
+     * @return list<string>
+     */
+    public function lastRunReverted(): array
+    {
+        return $this->lastRunReverted;
     }
 
     /**
@@ -232,6 +477,17 @@ class Migrator
      */
     public function rollbackBatch(int $batch, ?callable $onProgress = null): array
     {
+        return $this->withLock(fn (): array => $this->rollbackBatchLocked($batch, $onProgress));
+    }
+
+    /**
+     * {@see rollbackBatch()} with the lock already held.
+     *
+     * @param callable(string): void|null $onProgress
+     * @return list<string>
+     */
+    private function rollbackBatchLocked(int $batch, ?callable $onProgress = null): array
+    {
         $this->ensureTrackingTable();
 
         $ran = $this->migrationsInBatch($batch);
@@ -239,18 +495,33 @@ class Migrator
         if ($ran === []) {
             return [];
         }
-
-        // Newest first: the order comes from sorting the identifiers, not from
-        // whatever order the SELECT happened to return.
+        // Newest first, and the order comes from `discover()` rather than from a
+        // second sort of the identifiers.
+        //
+        // Re-sorting the raw identifiers `desc` looked equivalent and is not: the
+        // identifier carries the timestamp in whichever spelling the filename
+        // used, and the two do not compare as strings (`_` is 0x5F, digits are
+        // 0x30–0x39). Reversing `discover()`'s order inherits its fix for that by
+        // construction — and there is only one place for the ordering rule to be
+        // right, rather than two that can disagree about what "newest" means.
         $known = [];
 
         foreach ($this->discover() as $migration) {
             $known[$migration->identifier] = $migration;
         }
 
-        usort($ran, static fn (string $a, string $b): int => strcmp($b, $a));
+        // Oldest-first from `discover()`, reversed, with anything recorded but no
+        // longer on disk appended after it — so a missing file is still reached
+        // and reported by the loop below rather than silently dropped from the
+        // sweep. Taking only the intersection here would have done exactly that:
+        // a deleted migration would stop erroring and start passing unnoticed.
+        $onDisk = array_values(array_intersect(array_keys($known), $ran));
+        $missing = array_values(array_diff($ran, $onDisk));
+
+        $ran = array_merge(array_reverse($onDisk), $missing);
 
         $reverted = [];
+        $this->lastRunReverted = [];
 
         foreach ($ran as $identifier) {
             $migration = $known[$identifier] ?? null;
@@ -269,9 +540,22 @@ class Migrator
             }
 
             $this->runMigration($migration, 'down', $onProgress);
-            $this->forget($identifier);
+
+            // Skipped while pretending, for the mirror of the reason
+            // {@see runPending()} skips `record()`: the statements the `down()`
+            // issued were recorded rather than run, so the schema is unchanged and
+            // the row still describes it truthfully.
+            if (!Schema::isPretending()) {
+                $this->storage->forget($identifier);
+            }
 
             $reverted[] = $identifier;
+
+            // Recorded as it happens, not on return: a later migration throwing
+            // unwinds this frame and takes `$reverted` with it, and the caller
+            // needs the partial list to report how far the sweep got. See
+            // {@see lastRunReverted()}.
+            $this->lastRunReverted = $reverted;
         }
 
         return $reverted;
@@ -402,12 +686,40 @@ class Migrator
      */
     public function rollbackAll(?callable $onProgress = null): array
     {
+        // One lock for the whole sweep, not one per batch. `rollbackBatch()` takes
+        // its own, so calling the public form in a loop would take and release the
+        // lock N times — and MySQL's locks are *not* reentrant within a
+        // connection in the way that suggests: the second `GET_LOCK()` on a name
+        // the same connection already holds succeeds and increments nothing, but
+        // each `RELEASE_LOCK()` frees it outright, so the sweep would be
+        // unprotected for every batch after the first release. Delegating to the
+        // already-locked body keeps the whole sweep inside one hold.
+        return $this->withLock(fn (): array => $this->rollbackAllLocked($onProgress));
+    }
+
+    /**
+     * {@see rollbackAll()} with the lock already held.
+     *
+     * @param callable(string): void|null $onProgress
+     * @return list<string>
+     */
+    private function rollbackAllLocked(?callable $onProgress = null): array
+    {
         $reverted = [];
 
+        // Reset once for the whole sweep, then read back after each batch. Each
+        // `rollbackBatch()` call resets the recorded list to its own batch — it
+        // has to, since it is also called directly — so the accumulation across
+        // batches happens here, and a failure in a later batch still leaves the
+        // earlier batches' reversals visible to the caller.
+        $this->lastRunReverted = [];
+
         foreach (array_reverse($this->batches()) as $batch) {
-            foreach ($this->rollbackBatch($batch, $onProgress) as $identifier) {
+            foreach ($this->rollbackBatchLocked($batch, $onProgress) as $identifier) {
                 $reverted[] = $identifier;
             }
+
+            $this->lastRunReverted = $reverted;
         }
 
         return $reverted;
@@ -452,8 +764,20 @@ class Migrator
      */
     public function dropAllTables(): array
     {
-        $db = $this->db();
+        // `migrate:fresh` is the most destructive statement this framework issues
+        // and the one most likely to be typed while something else is running — a
+        // developer clearing a stuck state during a deploy. It takes the lock on
+        // the same terms as everything else.
+        return $this->withLock(fn (): array => $this->dropAllTablesLocked());
+    }
 
+    /**
+     * {@see dropAllTables()} with the lock already held.
+     *
+     * @return list<string>
+     */
+    private function dropAllTablesLocked(): array
+    {
         // Read *before* anything is dropped: the tracked names are the input to
         // this whole operation, and once the tracking table is gone there is no
         // way to learn what should have been dropped.
@@ -486,7 +810,7 @@ class Migrator
 
             $instance = $this->resolve($migration);
 
-            $this->guardAgainstPartialWrite($db);
+            $this->storage->guardAgainstPartialWrite();
 
             try {
                 $instance->down();
@@ -501,17 +825,12 @@ class Migrator
         // must not be left holding a tracking table that describes a schema it no
         // longer has. `DROP TABLE IF EXISTS` because on a truly fresh install
         // `ensureTrackingTable()` above is the only thing that created it.
-        if ($db->query(sprintf('DROP TABLE IF EXISTS `%s`', $this->escapeIdentifier($this->getTableName()))) === false) {
-            throw new MigrationException(sprintf(
-                'Unable to drop the migration tracking table [%s]: %s',
-                $this->getTableName(),
-                $db->last_error !== '' ? $db->last_error : 'unknown database error'
-            ));
-        }
+        $this->storage->dropTrackingTable();
 
-        if (function_exists('delete_option')) {
-            delete_option($this->highWaterOption());
-        }
+        // The high-water mark goes with the tracking table, and for the same
+        // reason: a fresh database that reports batch 47 is a state no one can
+        // reason about.
+        $this->storage->forgetBatchHighWaterMark();
 
         // The high-water mark is gone, so the next batch is 1 — reset the cached
         // read too, or a long-lived process would keep serving the old number.
@@ -600,12 +919,24 @@ class Migrator
         }
 
         // Sorted here rather than trusted from glob(), which documents no order.
-        // Ties are impossible in practice — two files cannot share a full
-        // timestamp and description — but strcmp keeps it deterministic if they do.
-        usort(
-            $found,
-            static fn (MigrationFile $a, MigrationFile $b): int => strcmp($a->identifier, $b->identifier)
-        );
+        //
+        // By `timestamp()`, **not** by the raw identifier. The identifier carries
+        // the timestamp in whichever of the two accepted spellings the filename
+        // used, and those two do not sort together: `_` is 0x5F and digits are
+        // 0x30–0x39, so every `2026_11_05_...` identifier sorts after every
+        // `20261105...` one regardless of the dates. Comparing identifiers runs
+        // every compact-named migration first — including one that alters a table
+        // a later-listed migration has not created yet.
+        //
+        // `timestamp()` returns the timestamp as written, so this alone would not
+        // fix it — see that method, which normalises the two spellings to a
+        // comparable form. Ties are impossible in practice, but the identifier is
+        // the tiebreak so the order stays deterministic if two files ever share a
+        // timestamp.
+        usort($found, static function (MigrationFile $a, MigrationFile $b): int {
+            return strcmp($a->timestamp(), $b->timestamp())
+                ?: strcmp($a->identifier, $b->identifier);
+        });
 
         return $found;
     }
@@ -622,26 +953,36 @@ class Migrator
      * direct `SHOW COLUMNS` probe is both cheaper and honest about the fact that
      * this table is created rarely.
      *
+     * The probes and the statements both live behind
+     * {@see MigrationStorageInterface} — this method is the *decision* (create,
+     * repair, or leave alone), which is the part worth reading, and the storage
+     * is the part that knows how to ask.
+     *
      * @throws MigrationException When the table cannot be created.
      */
     public function ensureTrackingTable(): void
     {
-        $table = $this->getTableName();
-        $db = $this->db();
+        // A no-op while pretending, and this guard has to live *here* rather than
+        // at the call sites. Three paths reach this method — `runPendingLocked()`,
+        // `runPendingStepwiseLocked()` and `pendingMigrations()` — and
+        // `pendingMigrations()` is called by `status()`, by `missing()` and by
+        // every rollback, so guarding only the two run paths would leave a dry
+        // run that merely *asks what is pending* creating the table.
+        //
+        // Read-only while pretending is not "skip the work": the callers below
+        // treat a missing table as "nothing recorded", which is the same answer
+        // the table would give, so nothing downstream needs it to exist.
+        //
+        // The guard cannot move into the storage implementation, because the
+        // storage is an interface with no opinion on dry runs — a second
+        // implementation would have to reproduce this rule, and the first one to
+        // forget would create a table during a `--pretend`.
+        if (Schema::isPretending()) {
+            return;
+        }
 
-        // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- table existence probe
-        // The pattern's `_` and `%` are LIKE metacharacters, and the WordPress
-        // table prefix contains underscores — so `wp_plugin_migrations` would
-        // match a sibling like `wpxpluginxmigrations` and a missing table would be
-        // reported as present, skipping the CREATE and failing every later query.
-        // Escaped with a backslash, which MySQL's LIKE honours by default.
-        $exists = $db->get_var($db->prepare(
-            'SHOW TABLES LIKE %s',
-            str_replace(['\\', '_', '%'], ['\\\\', '\\_', '\\%'], $table)
-        ));
-
-        if ($exists === null || $exists === '') {
-            $this->createTrackingTable($table);
+        if (!$this->storage->trackingTableExists()) {
+            $this->storage->createTrackingTable();
 
             return;
         }
@@ -650,54 +991,8 @@ class Migrator
         // upgraded in place would otherwise fail every write with "Unknown
         // column", so it is added on demand rather than left to a migration of
         // the migrations table.
-        // No prepare() here: the query has no placeholder, and WordPress 6.2+
-        // reports a placeholder-less prepare() as doing-it-wrong on every call.
-        // The identifier is escaped by hand instead, which prepare() would not
-        // have done for a table name anyway.
-        $columns = $db->get_col('SHOW COLUMNS FROM `' . $this->escapeIdentifier($table) . '`', 0);
-
-        if (is_array($columns) && !in_array('batch', $columns, true)) {
-            $db->query(sprintf(
-                'ALTER TABLE `%s` ADD COLUMN `batch` %s NOT NULL DEFAULT 0',
-                $table,
-                self::BATCH_COLUMN_TYPE
-            ));
-        }
-    }
-
-    private function createTrackingTable(string $table): void
-    {
-        $db = $this->db();
-
-        $this->guardAgainstPartialWrite($db);
-
-        // The UNIQUE key is on `migration`, not `id`: the identifier is what must
-        // never appear twice, and letting the database enforce it means two
-        // concurrent requests cannot both insert the same row.
-        $sql = sprintf(
-            'CREATE TABLE `%s` (
-                `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
-                `migration` varchar(%d) NOT NULL,
-                `batch` %s NOT NULL DEFAULT 0,
-                PRIMARY KEY (`id`),
-                UNIQUE KEY `migration` (`migration`),
-                KEY `batch` (`batch`)
-            )',
-            $this->escapeIdentifier($table),
-            self::MIGRATION_COLUMN_LENGTH,
-            self::BATCH_COLUMN_TYPE
-        );
-
-        // DDL implicitly commits, so `$wpdb->query()` returning false is the only
-        // signal available — and on a CREATE TABLE it returns false for "the
-        // statement failed", never for "zero rows affected". Checking it is
-        // therefore meaningful here in a way it is not for a DELETE.
-        if ($db->query($sql) === false) {
-            throw new MigrationException(sprintf(
-                'Unable to create the migration tracking table [%s]: %s',
-                $table,
-                $db->last_error !== '' ? $db->last_error : 'unknown database error'
-            ));
+        if (!$this->storage->trackingTableHasColumn('batch')) {
+            $this->storage->addTrackingTableColumn('batch', 'bigint(20) unsigned');
         }
     }
 
@@ -708,22 +1003,7 @@ class Migrator
      */
     private function appliedMigrations(): array
     {
-        $table = $this->getTableName();
-        $db = $this->db();
-
-        /** @var list<array{migration: string, batch: string}>|null $rows */
-        $rows = $db->get_results(
-            sprintf('SELECT `migration`, `batch` FROM `%s`', $this->escapeIdentifier($table)),
-            ARRAY_A
-        );
-
-        $applied = [];
-
-        foreach ((array) $rows as $row) {
-            $applied[(string) $row['migration']] = (int) $row['batch'];
-        }
-
-        return $applied;
+        return $this->storage->appliedMigrations();
     }
 
     /**
@@ -733,25 +1013,7 @@ class Migrator
      */
     private function migrationsInBatch(int $batch): array
     {
-        $table = $this->getTableName();
-        $db = $this->db();
-
-        /** @var list<array{migration: string}>|null $rows */
-        $rows = $db->get_results(
-            $db->prepare(
-                sprintf('SELECT `migration` FROM `%s` WHERE `batch` = %%d', $this->escapeIdentifier($table)),
-                $batch
-            ),
-            ARRAY_A
-        );
-
-        $identifiers = [];
-
-        foreach ((array) $rows as $row) {
-            $identifiers[] = (string) $row['migration'];
-        }
-
-        return $identifiers;
+        return $this->storage->migrationsInBatch($batch);
     }
 
     /**
@@ -765,54 +1027,16 @@ class Migrator
      * useless in a transcript or a runbook, because `--batch=1` from before the
      * rollback silently targets the new set.
      *
-     * The high-water mark is kept in an option rather than derived, since the
-     * whole point is that it survives the rows being deleted. Gaps are harmless:
-     * nothing iterates the batch numbers, it only ever asks for the newest or for
-     * one named explicitly.
+     * The high-water mark is kept outside the recorded rows rather than derived
+     * from them, since the whole point is that it survives those rows being
+     * deleted. Gaps are harmless: nothing iterates the batch numbers, it only
+     * ever asks for the newest or for one named explicitly.
      */
     private function nextBatchNumber(): int
     {
-        $recorded = (int) $this->db()->get_var(sprintf(
-            'SELECT MAX(`batch`) FROM `%s`',
-            $this->escapeIdentifier($this->getTableName())
-        ));
+        $recorded = $this->storage->maxRecordedBatch() ?? 0;
 
-        $highWater = max($recorded, $this->batchHighWaterMark());
-
-        return $highWater + 1;
-    }
-
-    /**
-     * The highest batch number ever handed out, remembered across rollbacks.
-     */
-    private function batchHighWaterMark(): int
-    {
-        if (!function_exists('get_option')) {
-            return 0;
-        }
-
-        return (int) get_option($this->highWaterOption(), 0);
-    }
-
-    /**
-     * Record a batch number as the new high-water mark, if it is higher.
-     */
-    private function rememberBatch(int $batch): void
-    {
-        if (!function_exists('update_option')) {
-            return;
-        }
-
-        if ($batch > $this->batchHighWaterMark()) {
-            // Autoload disabled: this is read only by the migrator during a
-            // migration run, so loading it on every page view would be waste.
-            update_option($this->highWaterOption(), $batch, false);
-        }
-    }
-
-    private function highWaterOption(): string
-    {
-        return $this->db()->prefix . 'plugin_migrations_batch';
+        return max($recorded, $this->storage->batchHighWaterMark()) + 1;
     }
 
     /**
@@ -829,52 +1053,7 @@ class Migrator
      */
     private function lastBatch(): ?int
     {
-        $max = $this->db()->get_var(sprintf(
-            'SELECT MAX(`batch`) FROM `%s`',
-            $this->escapeIdentifier($this->getTableName())
-        ));
-
-        return $max === null ? null : (int) $max;
-    }
-
-    /**
-     * @throws MigrationException When the row cannot be written.
-     */
-    private function record(string $identifier, int $batch): void
-    {
-        $table = $this->getTableName();
-        $db = $this->db();
-
-        $this->guardAgainstPartialWrite($db);
-
-        // Checked because a silently dropped row means the migration re-runs on
-        // the next invocation, and a migration that runs twice is how a column
-        // gets added twice or a table gets dropped when it should not be.
-        if ($db->insert($table, ['migration' => $identifier, 'batch' => $batch], ['%s', '%d']) === false) {
-            throw new MigrationException(sprintf(
-                'Migration [%s] ran, but recording it in [%s] failed: %s. '
-                . 'The schema change IS applied. Fix the cause, then insert the row '
-                . '(`migration` = %s, `batch` = %d) by hand so it is not run again.',
-                $identifier,
-                $table,
-                $db->last_error !== '' ? $db->last_error : 'unknown database error',
-                $identifier,
-                $batch
-            ));
-        }
-    }
-
-    private function forget(string $identifier): void
-    {
-        $table = $this->getTableName();
-        $db = $this->db();
-
-        $this->guardAgainstPartialWrite($db);
-
-        $db->query($db->prepare(
-            sprintf('DELETE FROM `%s` WHERE `migration` = %%s', $this->escapeIdentifier($table)),
-            $identifier
-        ));
+        return $this->storage->maxRecordedBatch();
     }
 
     // --------------------------------------------------------------- execution
@@ -895,14 +1074,24 @@ class Migrator
             $onProgress($migration->identifier);
         }
 
+        $this->fire(self::HOOK_MIGRATION_STARTING, $migration->identifier, $direction);
+
         try {
             $instance->{$direction}();
         } catch (Throwable $e) {
+            // Fired before the wrap, so a listener sees the exception the
+            // migration actually threw rather than the wrapper this method is
+            // about to build — the wrapper's job is the caller's message, not the
+            // listener's diagnosis.
+            $this->fire(self::HOOK_MIGRATION_FAILED, $migration->identifier, $direction, $e);
+
             // Wrapped rather than rethrown so the caller gets one exception type
             // to handle and a message naming the migration and the direction.
             // The original is kept as `previous` so nothing is lost.
             throw MigrationException::stepFailed($direction, $migration->identifier, $e);
         }
+
+        $this->fire(self::HOOK_MIGRATION_FINISHED, $migration->identifier, $direction);
     }
 
     /**
@@ -1052,56 +1241,63 @@ class Migrator
     // ----------------------------------------------------------------- plumbing
 
     /**
-     * The WordPress database handle, resolved on first use.
+     * Run `$work` holding the migration lock, releasing it whatever happens.
      *
-     * Resolved lazily rather than in the constructor so a migrator can be built
-     * and injected before WordPress has finished loading — which is exactly what
-     * a provider's `register()` does.
+     * ## What this protects against
+     *
+     * Two `migrate` runs overlapping. The tracking table cannot prevent it — both
+     * processes read the same "pending" list before either writes — and WordPress
+     * offers no schema-level transaction to fall back on, because MySQL DDL
+     * implicitly commits. So the second process has to be made to wait.
+     *
+     * ## Why MySQL's own lock and not an option row
+     *
+     * A lock built from `add_option()`/`get_option()` has to decide what to do
+     * when the holder dies: the row outlives the process, so every later run is
+     * blocked by a lock nobody holds, and expiring it needs a timeout that is
+     * either too short (two live runs collide) or too long (a dead run blocks a
+     * deploy). `GET_LOCK()` has no such problem because MySQL binds it to the
+     * *connection*: a process that dies takes its lock with it, immediately and
+     * correctly.
+     *
+     * The cost is that the lock is a MySQL feature — it does not exist on SQLite
+     * or Postgres. That is acceptable here rather than overlooked: this framework
+     * is a WordPress plugin, and WordPress on anything but MySQL is not a target
+     * it supports anywhere else either (the schema layer is built on `dbDelta()`,
+     * which is MySQL-specific in the same way).
+     *
+     * ## Why the caller wraps rather than this method doing the work
+     *
+     * Every operation that changes the schema has to hold the lock, and there are
+     * three of them that reach this class (`runPending` and its stepwise variant,
+     * `rollbackBatch`, and `dropAllTables`). Routing them through one helper is
+     * what keeps the release in a `finally` — the failing run is precisely the run
+     * whose lock must not be left held, since the operator's next action is to fix
+     * the migration and re-run, and that retry would otherwise block on a lock its
+     * own process is holding.
+     *
+     * A `--pretend` run takes no lock: it writes nothing and creates nothing, so
+     * there is nothing to race with, and locking would make a developer's harmless
+     * dry run block a real deploy that happens to be going.
+     *
+     * @template T
+     * @param callable(): T $work
+     * @return T
+     *
+     * @throws MigrationException When the lock cannot be taken.
      */
-    private function db(): wpdb
+    private function withLock(callable $work): mixed
     {
-        if ($this->wpdb instanceof wpdb) {
-            return $this->wpdb;
+        if (Schema::isPretending()) {
+            return $work();
         }
 
-        if (!isset($GLOBALS['wpdb']) || !$GLOBALS['wpdb'] instanceof wpdb) {
-            throw new MigrationException(
-                'No $wpdb instance is available. The migrator needs a WordPress database handle; '
-                . 'pass one to the constructor when running outside a loaded WordPress.'
-            );
-        }
+        $this->storage->acquireLock(self::LOCK_TIMEOUT_SECONDS);
 
-        return $this->wpdb = $GLOBALS['wpdb'];
-    }
-
-    /**
-     * Make a table name safe to interpolate inside backticks.
-     *
-     * Table names cannot be bound as parameters — `prepare()` only quotes *values*,
-     * and a quoted table name is a syntax error — so the identifier is escaped
-     * here instead. The name is built from `$wpdb->prefix` and a constant, so this
-     * is belt-and-braces rather than a live injection path; it exists so that no
-     * caller has to reason about that.
-     */
-    private function escapeIdentifier(string $identifier): string
-    {
-        return str_replace('`', '``', $identifier);
-    }
-
-    /**
-     * Ask WordPress to roll back the next failing statement, when it can.
-     *
-     * `set_transaction_rollback()` landed in WordPress 6.7 and the plugin's floor
-     * is 6.0, so this is probed rather than called outright — an unconditional
-     * call would be a fatal error on every older install, including this one's
-     * supported range. When it is unavailable nothing is lost: a failed DDL
-     * statement is a no-op in MySQL anyway, and the batch stop is what actually
-     * keeps the tracking table honest.
-     */
-    private function guardAgainstPartialWrite(wpdb $db): void
-    {
-        if (method_exists($db, 'set_transaction_rollback')) {
-            $db->set_transaction_rollback(true);
+        try {
+            return $work();
+        } finally {
+            $this->storage->releaseLock();
         }
     }
 

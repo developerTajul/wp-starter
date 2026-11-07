@@ -1,0 +1,15 @@
+<?php
+declare(strict_types=1);
+
+namespace {{ namespace }};
+
+use Framework\Http\Contracts\ResponseInterface;
+use Framework\Http\Request;
+
+class {{ class }}
+{
+    public function __invoke(Request $request): ResponseInterface
+    {
+        return view('{{ view }}');
+    }
+}

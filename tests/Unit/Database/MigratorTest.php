@@ -633,6 +633,89 @@ final class MigratorTest extends TestCase
         $migrator->rollback();
     }
 
+    // ------------------------------------------------------------- drop all
+
+    /**
+     * `migrate:fresh` drops what the migrations built, newest first.
+     *
+     * The sweep is driven by the tracking table, so the identifiers — not the
+     * files — are what decide which tables are dropped, and each one's own
+     * `down()` is what removes its table.
+     */
+    public function test_drop_all_tables_reverts_every_tracked_migration_newest_first(): void
+    {
+        $this->workspace->write('2026_11_05_100000_create_users_table', RecordingMigration::class);
+        $this->workspace->write('2026_11_05_120000_create_leads_table', RecordingMigration::class);
+
+        $migrator = $this->migrator();
+        $migrator->runPending();
+
+        $dropped = $migrator->dropAllTables();
+
+        // Newest first: a dependent table is created after the table it
+        // references, so reversing in forward order would apply a change on top
+        // of a structure that is about to be removed.
+        $this->assertSame([
+            '2026_11_05_120000_create_leads_table',
+            '2026_11_05_100000_create_users_table',
+        ], $dropped);
+    }
+
+    /**
+     * A fresh database must not be left holding a tracking table that describes
+     * a schema it no longer has.
+     */
+    public function test_drop_all_tables_drops_the_tracking_table(): void
+    {
+        $this->workspace->write('2026_11_05_100000_create_users_table', RecordingMigration::class);
+
+        $migrator = $this->migrator();
+        $migrator->runPending();
+
+        $migrator->dropAllTables();
+
+        $this->assertFalse($this->db->tableExists($this->table));
+    }
+
+    /**
+     * `migrate:fresh` must survive a migration file that has been deleted since
+     * it was applied.
+     *
+     * This is the state `migrate:status` already reports as "recorded as ran but
+     * its file is missing", and it is exactly the state a developer creates by
+     * squashing or renaming a migration locally. There is no `down()` to call
+     * for such a row, so it cannot be reverted — but it must not stop the sweep
+     * either, or the one command whose whole purpose is to produce a known-good
+     * schema is the command that cannot run.
+     *
+     * The table it created is left standing, which is the honest outcome: the
+     * migrator cannot know what it was, and guessing at a name to drop would be
+     * the wild sweep `dropAllTables()` explicitly refuses to perform.
+     */
+    public function test_drop_all_tables_skips_a_migration_whose_file_is_gone(): void
+    {
+        $this->workspace->write('2026_11_05_100000_create_users_table', RecordingMigration::class);
+        $this->workspace->write('2026_11_05_120000_create_leads_table', RecordingMigration::class);
+
+        $migrator = $this->migrator();
+        $migrator->runPending();
+
+        // The file is gone; its row in the tracking table is not.
+        $this->workspace->delete('2026_11_05_100000_create_users_table');
+
+        $dropped = $migrator->dropAllTables();
+
+        $this->assertSame(
+            ['2026_11_05_120000_create_leads_table'],
+            $dropped,
+            'The migration whose file survives must still be reverted.'
+        );
+
+        // The tracking table is dropped unconditionally at the end, so the
+        // leftover row is forgotten along with it.
+        $this->assertFalse($this->db->tableExists($this->table));
+    }
+
     // ----------------------------------------------------------------- status
 
     public function test_status_maps_every_file_to_its_batch_or_pending(): void
@@ -666,6 +749,99 @@ final class MigratorTest extends TestCase
             '2026_11_05_100000_create_users_table',
             '2026_11_05_130000_add_status',
         ], array_keys($this->migrator()->getStatus()));
+    }
+
+    /**
+     * **Ordering holds when the two filename spellings are mixed.**
+     *
+     * `MigrationFile` accepts both `Y_m_d_His` (`2026_11_05_100000_...`) and
+     * `YmdHis` (`20261105100000_...`), and discovery used to sort by the raw
+     * identifier. Within one spelling that is correct, which is why every
+     * ordering test before this one passed — they all wrote a single format.
+     *
+     * Across both it is wrong, and silently so. `_` is 0x5F and every digit is
+     * 0x30–0x39, so *every* underscored timestamp sorts after *every* compact
+     * one, whatever the dates say. A directory holding both runs in the order the
+     * *spelling* implies rather than the order the timestamps imply — so a
+     * migration adding a column can run before the migration creating its table,
+     * and the only signal is a failure inside `up()` that names neither ordering
+     * nor filename.
+     *
+     * The expected order below is chronological and deliberately interleaves the
+     * two spellings, because a sequence that happened to separate them would pass
+     * against the broken sort as well.
+     */
+    public function test_discovery_orders_mixed_filename_spellings_chronologically(): void
+    {
+        // Written out of order, so a `scandir()` ordering cannot pass by luck.
+        $this->workspace->write('2026_11_05_100000_create_users_table', RecordingMigration::class);
+        $this->workspace->write('20261105120000_add_email_to_users', RecordingMigration::class);
+        $this->workspace->write('2026_11_05_090000_create_teams_table', RecordingMigration::class);
+        $this->workspace->write('20261105080000_create_teams_members_table', RecordingMigration::class);
+
+        $this->assertSame(
+            [
+                '20261105080000_create_teams_members_table',
+                '2026_11_05_090000_create_teams_table',
+                '2026_11_05_100000_create_users_table',
+                '20261105120000_add_email_to_users',
+            ],
+            array_map(
+                static fn (\Framework\Database\MigrationFile $file): string => $file->identifier,
+                $this->migrator()->discover()
+            ),
+            'Discovery must order by the timestamp in the filename, not by the spelling that happens to '
+            . 'encode it. The underscore form sorting wholesale after the compact form means every '
+            . 'compact-named migration runs first, whatever its date.'
+        );
+    }
+
+    /**
+     * The same ordering where it actually bites: which migration runs when.
+     *
+     * `discover()` is asserted directly above; this asserts the consequence
+     * through a real run, because the ordering that matters is the order the
+     * migrations *execute* in. A `discover()` fixed while some other path kept
+     * its own sort would pass the test above and still fail here.
+     */
+    public function test_a_mixed_batch_runs_chronologically(): void
+    {
+        $this->workspace->write('20261105120000_add_email_to_users', RecordingMigration::class);
+        $this->workspace->write('2026_11_05_100000_create_users_table', RecordingMigration::class);
+
+        $this->assertSame(
+            [
+                '2026_11_05_100000_create_users_table',
+                '20261105120000_add_email_to_users',
+            ],
+            $this->migrator()->up(),
+            'A batch ran the compact-named migration first, so a migration that adds a column ran '
+            . 'before the one that creates the table it alters.'
+        );
+    }
+
+    /**
+     * Rollback reverses that order, which is the half that is easy to forget.
+     *
+     * "Oldest first" and "newest first" have to agree about what newest *is*, and
+     * they are computed in different places. Fixing only the forward sort would
+     * leave rollback dropping tables in the order they were created.
+     */
+    public function test_a_mixed_batch_rolls_back_newest_first(): void
+    {
+        $this->workspace->write('20261105120000_add_email_to_users', RecordingMigration::class);
+        $this->workspace->write('2026_11_05_100000_create_users_table', RecordingMigration::class);
+
+        $migrator = $this->migrator();
+        $migrator->up();
+
+        $this->assertSame(
+            [
+                '20261105120000_add_email_to_users',
+                '2026_11_05_100000_create_users_table',
+            ],
+            $migrator->rollback()
+        );
     }
 
     public function test_missing_reports_recorded_migrations_with_no_file(): void
@@ -884,7 +1060,11 @@ final class MigratorTest extends TestCase
 
     private function migrator(?string $path = null): \Framework\Database\Migrator
     {
-        return new \Framework\Database\Migrator($path ?? $this->workspace->path(), $this->db);
+        return new \Framework\Database\Migrator(
+            $path ?? $this->workspace->path(),
+            new \Framework\Database\Adapters\WpDatabaseAdapter($this->db),
+            new \Framework\Database\Storage\WpMigrationStorage($this->db),
+        );
     }
 
     /**

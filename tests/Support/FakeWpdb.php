@@ -78,6 +78,38 @@ final class FakeWpdb extends wpdb
     public array $queries = [];
 
     /**
+     * What `GET_LOCK()` answers, as a string.
+     *
+     * MySQL's contract is three-valued and all three matter: `'1'` the lock was
+     * taken, `'0'` it timed out because another connection holds it, `NULL` the
+     * request itself errored. The default is `'1'` so the common case — a single
+     * process, no contention — needs no setup, and a test that wants the contended
+     * case sets `'0'`.
+     *
+     * A string rather than an int because that is what `$wpdb->get_var()` returns:
+     * everything from the driver arrives as text, and a fake that handed back an
+     * int would let `=== 1` pass here and fail in production.
+     */
+    public ?string $lockResult = '1';
+
+    /**
+     * Lock names currently held, so a test can assert the lock was given back.
+     *
+     * @var list<string>
+     */
+    public array $heldLocks = [];
+
+    /**
+     * Lock name requested by the most recent `GET_LOCK()`, or null.
+     */
+    public ?string $lastLockName = null;
+
+    /**
+     * Lock name passed to the most recent `RELEASE_LOCK()`, or null.
+     */
+    public ?string $lastReleasedLock = null;
+
+    /**
      * Forget the recorded queries without touching the tables.
      *
      * Lets a test assert on only the statements one operation issued, rather than
@@ -117,9 +149,68 @@ final class FakeWpdb extends wpdb
         // not inherit the indexes of its previous life, or a test that asserts
         // "this migration added no index" would pass on leftover state.
         $this->indexes[$table] = [];
+        $this->indexColumns[$table] = [];
         $this->constraints[$table] = [];
 
+        // The tracking-table shape the migrator creates by hand always has an
+        // auto-increment `id` primary key; a table seeded through `createTable()`
+        // is given the same, since that is what a table created by `id()` has and
+        // a dumper that saw no primary key would emit one that is not there.
+        $this->primaryKeys[$table] = ['name' => 'PRIMARY', 'columns' => ['id']];
+
         $this->columnCache[$table] = $columns;
+
+        // Every column gets a plausible definition the moment the table is made,
+        // because `columnDefinition()` reads this and `renameColumn()` compiles a
+        // `CHANGE COLUMN` from it. Inventing a `varchar(191) NULL` here is the
+        // honest stand-in: a real table seeded through a migration gets its type
+        // from the CREATE, which this fake does not parse into metadata, and a
+        // test that cares about a *specific* type sets it with setColumnMeta().
+        $this->columnMeta[$table] = [];
+
+        foreach ($columns as $column) {
+            $this->columnMeta[$table][$column] = [
+                'Type' => 'varchar(191)',
+                'Null' => 'YES',
+                'Default' => null,
+                'Extra' => '',
+            ];
+        }
+    }
+
+    /**
+     * Record a real definition for a column, as `SHOW COLUMNS` would report it.
+     *
+     * @param array{Type?: string, Null?: string, Default?: string|null, Extra?: string} $meta
+     */
+    public function setColumnMeta(string $table, string $column, array $meta): void
+    {
+        $this->columnMeta[$table][$column] = $meta + [
+            'Type' => 'varchar(191)',
+            'Null' => 'YES',
+            'Default' => null,
+            'Extra' => '',
+        ];
+    }
+
+    /**
+     * A column's `SHOW COLUMNS` metadata, as the database currently holds it.
+     *
+     * The read side of {@see setColumnMeta()}, and what a test asserting on a
+     * *compiled* column definition goes through: reading it back out of the fake
+     * means the assertion is on what the adapter emitted rather than on what the
+     * blueprint intended.
+     *
+     * @return array{Type: string, Null: string, Default: string|null, Extra: string}
+     */
+    public function columnMeta(string $table, string $column): array
+    {
+        return $this->columnMeta[$table][$column] ?? [
+            'Type' => '',
+            'Null' => 'YES',
+            'Default' => null,
+            'Extra' => '',
+        ];
     }
 
     /**
@@ -160,6 +251,19 @@ final class FakeWpdb extends wpdb
     private array $columnCache = [];
 
     /**
+     * Full `SHOW COLUMNS` metadata per table, as column => row.
+     *
+     * Separate from `$columnCache`, which holds bare names: four places read that
+     * one to answer "does this column exist", and widening its values to arrays
+     * would break each of them to serve one caller. This holds what
+     * `columnDefinition()` needs — `Type`, `Null`, `Default`, `Extra` — so a
+     * `CHANGE COLUMN` has a real definition to restate.
+     *
+     * @var array<string, array<string, array<string, mixed>>>
+     */
+    private array $columnMeta = [];
+
+    /**
      * Indexes per table, as index name => whether it is UNIQUE.
      *
      * Populated by an `ALTER TABLE ... ADD KEY`, so a test can assert that a
@@ -179,11 +283,108 @@ final class FakeWpdb extends wpdb
     private array $constraints = [];
 
     /**
+     * `SHOW INDEX` rows per table, as index name => list of column rows.
+     *
+     * Separate from `$indexes`, which records only *whether* a key exists and
+     * whether it is unique. A dumper needs the columns and their order — a
+     * composite index dumped as its constituent single-column indexes is two
+     * indexes where the database has one — and widening `$indexes` would break
+     * every `hasIndex()` caller to serve one reader.
+     *
+     * @var array<string, array<string, list<array<string, string>>>>
+     */
+    private array $indexColumns = [];
+
+    /**
+     * The primary key per table, as `['name' => 'PRIMARY', 'columns' => [...]]`.
+     *
+     * Kept apart from `$indexColumns` because MySQL treats it apart: it is
+     * reported by `SHOW INDEX` but is not a `KEY` clause in the schema builder's
+     * vocabulary — a dumper that emitted it as `->index()` would create a second,
+     * duplicate key. The dumper asks about it through `columns()` and `Extra`
+     * instead, so this exists mainly to keep it *out* of the plain-index read.
+     *
+     * @var array<string, array{name: string, columns: list<string>}>
+     */
+    private array $primaryKeys = [];
+
+    /**
      * Whether a table carries an index of the given name.
      */
     public function hasIndex(string $table, string $index): bool
     {
         return isset($this->indexes[$table][$index]);
+    }
+
+    /**
+     * Register an index as the database would hold it, for dumper tests.
+     *
+     * The write-side counterpart to {@see hasIndex()} and what a `SHOW INDEX`
+     * read is answered from. Columns default to the index name, which is the
+     * convention the blueprint uses when it derives a name — so a single-column
+     * index can be written `addIndex('wp_notes', 'title')` and a composite one
+     * has to name its columns, mirroring how the two differ in the schema.
+     *
+     * @param list<string>|null $columns
+     */
+    public function addIndex(string $table, string $index, bool $unique = false, ?array $columns = null): void
+    {
+        if (!isset($this->tables[$table])) {
+            $this->createTable($table);
+        }
+
+        $this->indexes[$table][$index] = $unique;
+        $this->indexColumns[$table][$index] = $this->indexRows($index, $columns ?? [$index], $unique);
+    }
+
+    /**
+     * Build `SHOW INDEX` rows for one key.
+     *
+     * @param list<string> $columns
+     * @return list<array<string, string>>
+     */
+    private function indexRows(string $name, array $columns, bool $unique): array
+    {
+        $rows = [];
+
+        foreach (array_values($columns) as $position => $column) {
+            $rows[] = [
+                'Table' => '',
+                'Non_unique' => $unique ? '0' : '1',
+                'Key_name' => $name,
+                'Seq_in_index' => (string) ($position + 1),
+                'Column_name' => $column,
+                'Index_name' => $name,
+            ];
+        }
+
+        return $rows;
+    }
+
+    /**
+     * The column names inside a `KEY name (\`a\`, \`b\`)` parenthesised list.
+     *
+     * @return list<string>
+     */
+    private function columnNamesIn(string $list): array
+    {
+        preg_match_all('/`([a-z0-9_]+)`/i', $list, $m);
+
+        return $m[1];
+    }
+
+    /**
+     * A table's columns, in the order the table holds them.
+     *
+     * Order, not just membership, because `after()` and `first()` are about
+     * position — and a probe that returned a sorted or keyed list would report a
+     * correctly-positioned column and a badly-positioned one identically.
+     *
+     * @return list<string>
+     */
+    public function columns(string $table): array
+    {
+        return $this->columnCache[$table] ?? [];
     }
 
     /**
@@ -237,7 +438,7 @@ final class FakeWpdb extends wpdb
 
         // Mirrors class-wpdb.php:2308 — DDL returns the raw result, and for a
         // successful CREATE the migrator's `=== false` check must pass.
-        if (preg_match('/^\s*(create|alter|truncate|drop)\s/i', $sql) === 1) {
+        if (preg_match('/^\s*(create|alter|truncate|drop|rename)\s/i', $sql) === 1) {
             return $this->runDdl($sql);
         }
 
@@ -254,6 +455,15 @@ final class FakeWpdb extends wpdb
         }
 
         if (preg_match('/^\s*(select|show)\s/i', $sql) === 1) {
+            // Advisory-lock calls are answered here too, because `query()` is a
+            // legitimate way to reach them and the table parser below would choke
+            // on the function. `false` means "not a lock statement".
+            $lock = $this->advisoryLockAnswer($sql);
+
+            if ($lock !== false) {
+                return $lock;
+            }
+
             return count($this->select($sql));
         }
 
@@ -286,6 +496,18 @@ final class FakeWpdb extends wpdb
         }
 
         $this->queries[] = (string) $query;
+
+        // MySQL's advisory locks are scalar functions, so WordPress reaches them
+        // through `get_var('SELECT GET_LOCK(...)')`. Answered before the SELECT
+        // path below, which would otherwise parse them as a table query and
+        // return null — reading as "the lock could not be taken" and making every
+        // run refuse to proceed.
+        $lock = $this->advisoryLockAnswer((string) $query);
+
+        if ($lock !== false) {
+            return $lock;
+        }
+
         $rows = $this->select((string) $query);
 
         if ($rows === []) {
@@ -414,6 +636,20 @@ final class FakeWpdb extends wpdb
     }
 
     /**
+     * Escape a string's `LIKE` metacharacters, as `wpdb::esc_like()` does.
+     *
+     * The real `dbDelta()` calls this before matching a table name against
+     * `SHOW TABLES LIKE`, and the stub here mirrors that check so a replayed
+     * `CREATE` is not re-issued. Without it the stub fatals on a global `$wpdb`
+     * that is this fake, which is the arrangement every test needs in order to
+     * have a `Schema::create()` actually reach a table.
+     */
+    public function esc_like(string $text): string
+    {
+        return $this->escapeLike($text);
+    }
+
+    /**
      * @param string $query
      * @param mixed  ...$args
      * @return string
@@ -465,6 +701,59 @@ final class FakeWpdb extends wpdb
     }
 
     /**
+     * Answer a `GET_LOCK()` / `RELEASE_LOCK()` / `IS_USED_LOCK()` call.
+     *
+     * Returns `false` for "not an advisory-lock statement", which is why the
+     * caller compares against `false` rather than testing truthiness: `NULL` is a
+     * legitimate answer (the request errored) and must not be confused with
+     * "carry on and parse this as a SELECT".
+     *
+     * The name is extracted from the single-quoted literal, which is how it
+     * arrives — `prepare()` renders a `%s` placeholder as `'name'`, so this reads
+     * what WordPress would actually send. Modelling the held-lock set rather than
+     * returning a constant is what lets a test prove the lock was named correctly
+     * *and* released, which are the two halves of the contract that matter.
+     *
+     * @return string|null|false
+     */
+    private function advisoryLockAnswer(string $sql)
+    {
+        if (preg_match('/\bGET_LOCK\s*\(\s*\'((?:[^\']|\'\')*)\'/i', $sql, $m) === 1) {
+            $this->lastLockName = str_replace("''", "'", $m[1]);
+
+            if ($this->lockResult === '1') {
+                $this->heldLocks[] = $this->lastLockName;
+            }
+
+            return $this->lockResult;
+        }
+
+        if (preg_match('/\bRELEASE_LOCK\s*\(\s*\'((?:[^\']|\'\')*)\'/i', $sql, $m) === 1) {
+            $this->lastReleasedLock = str_replace("''", "'", $m[1]);
+
+            $index = array_search($this->lastReleasedLock, $this->heldLocks, true);
+
+            if ($index === false) {
+                // MySQL returns NULL when releasing a lock this connection does
+                // not hold, and the distinction is worth keeping: a migrator that
+                // releases a lock it never took has a bug a flat '1' would hide.
+                return null;
+            }
+
+            unset($this->heldLocks[$index]);
+            $this->heldLocks = array_values($this->heldLocks);
+
+            return '1';
+        }
+
+        if (preg_match('/\bIS_USED_LOCK\s*\(/i', $sql) === 1) {
+            return $this->heldLocks === [] ? null : '1';
+        }
+
+        return false;
+    }
+
+    /**
      * @return mixed
      */
     private function runDdl(string $sql)
@@ -472,9 +761,30 @@ final class FakeWpdb extends wpdb
         if (preg_match('/^\s*create\s+table\s+`?([a-z0-9_]+)`?/i', $sql, $m) === 1) {
             $table = $m[1];
 
-            preg_match_all('/^\s*`([a-z0-9_]+)`\s+(bigint|varchar|int|tinyint)/im', $sql, $cols);
+            // MySQL refuses a duplicate CREATE and reports "Table ... already
+            // exists". Refusing it *here* is what stops the fake from handing out
+            // a false green: `createTable()` is idempotent by design (it resets
+            // the table), so without this guard a migration that replayed a
+            // `CREATE TABLE` over a live table looked like it succeeded. It does
+            // not — it fails on a real server, and that is exactly the failure a
+            // two-table `up()` produces when its second half dies and the
+            // migrator replays the first.
+            //
+            // A real `$wpdb` returns `false` and fills `last_error` rather than
+            // throwing, so the caller's own `=== false` check is what reports it.
+            if (isset($this->tables[$table])) {
+                $this->last_error = sprintf(
+                    "Table '%s' already exists",
+                    $table
+                );
 
-            $this->createTable($table, $cols[1] !== [] ? $cols[1] : ['id', 'migration', 'batch']);
+                return false;
+            }
+
+            // The body between the outermost parentheses — every column
+            // definition and every key clause, one per line, which is the shape
+            // `WpDatabaseAdapter` emits and dbDelta requires.
+            $this->applyCreateBody($table, $sql);
 
             return 0;
         }
@@ -491,15 +801,70 @@ final class FakeWpdb extends wpdb
             unset(
                 $this->tables[$m[1]],
                 $this->columnCache[$m[1]],
+                $this->columnMeta[$m[1]],
                 $this->autoIncrement[$m[1]],
                 $this->indexes[$m[1]],
+                $this->indexColumns[$m[1]],
+                $this->primaryKeys[$m[1]],
                 $this->constraints[$m[1]]
             );
 
             return 0;
         }
 
+        // `RENAME TABLE a TO b`. Refused when the source is absent, which is what
+        // MySQL does and what `Schema::rename()` documents — a no-op here would
+        // let a test pass on a migration that on a real server fails, and the
+        // whole point of the fake's loudness is not to do that.
+        if (preg_match(
+            '/^\s*rename\s+table\s+`?([a-z0-9_]+)`?\s+to\s+`?([a-z0-9_]+)`?\s*$/is',
+            $sql,
+            $m
+        ) === 1) {
+            if (!isset($this->tables[$m[1]])) {
+                $this->last_error = sprintf("Table '%s' doesn't exist", $m[1]);
+
+                return false;
+            }
+
+            $this->renameTableInPlace($m[1], $m[2]);
+
+            return 0;
+        }
+
         throw new \LogicException('FakeWpdb cannot execute DDL: ' . $sql);
+    }
+
+    /**
+     * Move a table's whole record — rows, columns, metadata, keys — to a new name.
+     *
+     * Every parallel map is moved together, because they are all keyed by table
+     * name and a rename that moved some and not others would leave the fake
+     * answering about two different tables depending on which question was asked.
+     * Insertion order is preserved in each, so a table's column order survives the
+     * move the way it does on a real server.
+     */
+    private function renameTableInPlace(string $from, string $to): void
+    {
+        $this->tables[$to] = $this->tables[$from];
+        $this->columnCache[$to] = $this->columnCache[$from] ?? [];
+        $this->columnMeta[$to] = $this->columnMeta[$from] ?? [];
+        $this->autoIncrement[$to] = $this->autoIncrement[$from] ?? 1;
+        $this->indexes[$to] = $this->indexes[$from] ?? [];
+        $this->indexColumns[$to] = $this->indexColumns[$from] ?? [];
+        $this->primaryKeys[$to] = $this->primaryKeys[$from] ?? ['name' => 'PRIMARY', 'columns' => []];
+        $this->constraints[$to] = $this->constraints[$from] ?? [];
+
+        unset(
+            $this->tables[$from],
+            $this->columnCache[$from],
+            $this->columnMeta[$from],
+            $this->autoIncrement[$from],
+            $this->indexes[$from],
+            $this->indexColumns[$from],
+            $this->primaryKeys[$from],
+            $this->constraints[$from]
+        );
     }
 
     /**
@@ -580,11 +945,60 @@ final class FakeWpdb extends wpdb
     private function runAlterClause(string $table, string $clause): void
     {
         if (preg_match('/^add\s+column\s+`?([a-z0-9_]+)`?/i', $clause, $m) === 1) {
-            $this->columnCache[$table][] = $m[1];
+            $this->insertColumn($table, $m[1], $this->positionFrom($clause));
+
+            // A definition has to exist for a later `change()` or `renameColumn()`
+            // to read, and the clause carries one — take the type from it rather
+            // than leaving the placeholder, so a rename of a freshly-added column
+            // restates the type the migration actually asked for.
+            $this->columnMeta[$table][$m[1]] = $this->parseColumnDefinition($clause) + [
+                'Type' => 'varchar(191)',
+                'Null' => 'YES',
+                'Default' => null,
+                'Extra' => '',
+            ];
 
             foreach ($this->tables[$table] ?? [] as $i => $row) {
                 $this->tables[$table][$i][$m[1]] = 0;
             }
+
+            return;
+        }
+
+        // `MODIFY COLUMN` replaces a definition in place; `CHANGE COLUMN` does the
+        // same and renames on the way. MySQL's grammar for both is
+        // `CHANGE [COLUMN] old new definition` / `MODIFY [COLUMN] name definition`,
+        // and the definition may be anything up to the next comma — so it is
+        // parsed greedily and handed to the shared definition reader.
+        if (preg_match('/^change\s+(?:column\s+)?`?([a-z0-9_]+)`?\s+`?([a-z0-9_]+)`?\s+(.+)$/is', $clause, $m) === 1) {
+            $this->renameColumnInPlace($table, $m[1], $m[2]);
+            $this->columnMeta[$table][$m[2]] = $this->parseColumnDefinition('add column `x` ' . $m[3]);
+
+            return;
+        }
+
+        if (preg_match('/^modify\s+(?:column\s+)?`?([a-z0-9_]+)`?\s+(.+)$/is', $clause, $m) === 1) {
+            $this->columnMeta[$table][$m[1]] = $this->parseColumnDefinition('add column `x` ' . $m[2]);
+
+            // MySQL's MODIFY takes the same FIRST/AFTER clauses as ADD, and it is
+            // the only way to move a column that already exists — so this is where
+            // `->after('id')->change()` lands.
+            $position = $this->positionFrom($clause);
+
+            if ($position !== null) {
+                $this->moveColumn($table, $m[1], $position);
+            }
+
+            return;
+        }
+
+        if (preg_match('/^add\s+(unique\s+)?key\s+`?([a-z0-9_]+)`?\s*\(([^)]*)\)/i', $clause, $m) === 1) {
+            $this->indexes[$table][$m[2]] = strtolower(trim($m[1] ?? '')) === 'unique';
+
+            // The column list is recorded too, so a dumper reading `SHOW INDEX`
+            // sees the same shape the ALTER created rather than an index with no
+            // columns — which would dump as `->index([])` and be refused.
+            $this->indexColumns[$table][$m[2]] = $this->indexRows($m[2], $this->columnNamesIn($m[3]), $this->indexes[$table][$m[2]]);
 
             return;
         }
@@ -601,13 +1015,331 @@ final class FakeWpdb extends wpdb
             return;
         }
 
+        if (preg_match('/^drop\s+column\s+`?([a-z0-9_]+)`?/i', $clause, $m) === 1) {
+            // The column list is what `hasColumn()` reads, so emptying it is what
+            // makes a drop observable rather than merely recorded. The stored
+            // rows are pruned too: a fake that kept the data would let a
+            // repository test read back a column the schema no longer has, and
+            // pass on a table that a real server would reject the query against.
+            $this->columnCache[$table] = array_values(array_filter(
+                $this->columnCache[$table] ?? [],
+                static fn (string $column): bool => $column !== $m[1]
+            ));
+
+            unset($this->columnMeta[$table][$m[1]]);
+
+            foreach ($this->tables[$table] ?? [] as $i => $row) {
+                unset($this->tables[$table][$i][$m[1]]);
+            }
+
+            return;
+        }
+
         if (preg_match('/^drop\s+(?:key|index)\s+`?([a-z0-9_]+)`?/i', $clause, $m) === 1) {
-            unset($this->indexes[$table][$m[1]]);
+            unset($this->indexes[$table][$m[1]], $this->indexColumns[$table][$m[1]]);
 
             return;
         }
 
         throw new \LogicException('FakeWpdb cannot execute ALTER clause: ' . $clause);
+    }
+
+    /**
+     * Read a `FIRST` / `AFTER \`x\`` clause out of an ALTER clause.
+     *
+     * @return array{0: string, 1: string|null}|null  `['first', null]` or
+     *         `['after', 'column']`, or null when the clause positions nothing.
+     */
+    private function positionFrom(string $clause): ?array
+    {
+        if (preg_match('/\bAFTER\s+`?([a-z0-9_]+)`?\s*$/i', $clause, $m) === 1) {
+            return ['after', $m[1]];
+        }
+
+        if (preg_match('/\bFIRST\s*$/i', $clause) === 1) {
+            return ['first', null];
+        }
+
+        return null;
+    }
+
+    /**
+     * Insert a new column at a position rather than appending it.
+     *
+     * Column *order* is the thing `after()`/`first()` exist to control, so a fake
+     * that appended regardless would report a correctly-positioned column and a
+     * badly-positioned one identically — and the test asserting on order would be
+     * asserting on nothing.
+     *
+     * @param array{0: string, 1: string|null} $position
+     */
+    private function insertColumn(string $table, string $column, ?array $position): void
+    {
+        $columns = $this->columnCache[$table] ?? [];
+
+        if ($position === null) {
+            $columns[] = $column;
+        } else {
+            [$where, $anchor] = $position;
+
+            if ($where === 'first') {
+                array_unshift($columns, $column);
+            } elseif (($at = array_search($anchor, $columns, true)) !== false) {
+                array_splice($columns, $at + 1, 0, [$column]);
+            } else {
+                // An anchor that does not exist: MySQL rejects the statement, and
+                // appending here would let a typo'd `after()` pass as correct.
+                throw new \LogicException(
+                    "FakeWpdb: AFTER `{$anchor}` on [{$table}] names no such column."
+                );
+            }
+        }
+
+        $this->columnCache[$table] = array_values($columns);
+    }
+
+    /**
+     * Move an existing column to a position.
+     *
+     * @param array{0: string, 1: string|null} $position
+     */
+    private function moveColumn(string $table, string $column, array $position): void
+    {
+        $columns = array_values(array_filter(
+            $this->columnCache[$table] ?? [],
+            static fn (string $c): bool => $c !== $column
+        ));
+
+        [$where, $anchor] = $position;
+
+        if ($where === 'first') {
+            array_unshift($columns, $column);
+        } elseif (($at = array_search($anchor, $columns, true)) !== false) {
+            array_splice($columns, $at + 1, 0, [$column]);
+        } else {
+            throw new \LogicException(
+                "FakeWpdb: AFTER `{$anchor}` on [{$table}] names no such column."
+            );
+        }
+
+        $this->columnCache[$table] = $columns;
+    }
+
+    /**
+     * Move a column's name in every place the table records it.
+     *
+     * Four things are keyed by column name — the name list the `hasColumn()` probe
+     * reads, the metadata map, each stored row, and any index covering it — and a
+     * rename that missed one would leave the fake disagreeing with itself in a way
+     * no single assertion would catch. The data is moved rather than recreated,
+     * which is the property a `CHANGE COLUMN` has and the one a test can check.
+     */
+    private function renameColumnInPlace(string $table, string $from, string $to): void
+    {
+        $this->columnCache[$table] = array_map(
+            static fn (string $column): string => $column === $from ? $to : $column,
+            $this->columnCache[$table] ?? []
+        );
+
+        if (isset($this->columnMeta[$table][$from])) {
+            $this->columnMeta[$table][$to] = $this->columnMeta[$table][$from];
+            unset($this->columnMeta[$table][$from]);
+        }
+
+        foreach ($this->tables[$table] ?? [] as $i => $row) {
+            if (!array_key_exists($from, $row)) {
+                continue;
+            }
+
+            $rebuilt = [];
+
+            foreach ($row as $key => $value) {
+                $rebuilt[$key === $from ? $to : $key] = $value;
+            }
+
+            $this->tables[$table][$i] = $rebuilt;
+        }
+    }
+
+    /**
+     * Populate the catalogue from a `CREATE TABLE` body.
+     *
+     * ## Why this replaced a four-keyword scan
+     *
+     * It used to be `preg_match_all('/`(\w+)`\s+(bigint|varchar|int|tinyint)/')`
+     * — a scan for four type names that silently dropped every other kind of
+     * column. A table with a `decimal`, a `timestamp`, a `text`, a `date` or a
+     * `json` column came back from this method **missing those columns**, and
+     * every column it did find was stamped `varchar(191) NULL` regardless of what
+     * the statement said. Nullability, defaults and `AUTO_INCREMENT` were all
+     * discarded; `KEY` lines were never read at all.
+     *
+     * That is not a narrow inaccuracy. The dumper chooses its builder call from
+     * the type string, decides `id()` from `AUTO_INCREMENT`, and emits
+     * `->nullable()` and `->default()` from the other two — so a catalogue this
+     * wrong makes the dumper's *correct* branches unreachable and its incorrect
+     * ones look right. A test written against it cannot tell a working engine
+     * from a broken one, which is exactly how the inverted `down()` block
+     * survived a green suite.
+     *
+     * ## What it reads
+     *
+     * Column definitions and key clauses, reusing {@see parseColumnDefinition()}
+     * rather than re-implementing it — a second reader of the same grammar would
+     * drift from the first, and the drift would be invisible in both. The body is
+     * split on top-level commas by {@see splitClauses()}, which is already
+     * depth-aware, so `decimal(10,2)` and `KEY (a, b)` stay in one piece.
+     *
+     * Anything in the body that is neither a column nor a key it recognises is
+     * ignored rather than thrown on, because a `CREATE TABLE` legitimately
+     * carries trailing table options (`DEFAULT CHARACTER SET ... COLLATE ...`)
+     * that say nothing about its shape.
+     */
+    private function applyCreateBody(string $table, string $sql): void
+    {
+        $body = $this->bodyOfCreateStatement($sql);
+
+        $columns = [];
+        $meta = [];
+        $indexes = [];
+        $indexColumns = [];
+        $primary = [];
+
+        foreach ($this->splitClauses($body) as $clause) {
+            $clause = trim((string) preg_replace('/\s+/', ' ', trim($clause)));
+
+            if ($clause === '') {
+                continue;
+            }
+
+            if (preg_match('/^primary\s+key\s*\(([^)]*)\)/i', $clause, $m) === 1) {
+                $primary = $this->columnNamesIn($m[1]);
+
+                continue;
+            }
+
+            if (preg_match('/^(?:unique\s+)?key\s+`?([a-z0-9_]+)`?\s*\(([^)]*)\)/i', $clause, $m) === 1) {
+                $unique = stripos($clause, 'unique') === 0;
+
+                $indexes[$m[1]] = $unique;
+                $indexColumns[$m[1]] = $this->indexRows($m[1], $this->columnNamesIn($m[2]), $unique);
+
+                continue;
+            }
+
+            if (preg_match('/^`?([a-z0-9_]+)`?\s+(.+)$/is', $clause, $m) === 1) {
+                $columns[] = $m[1];
+                $meta[$m[1]] = $this->parseColumnDefinition($clause);
+            }
+        }
+
+        // `createTable()` seeds the default tracking-table shape and stamps every
+        // column with a `varchar(191)` placeholder. Both are replaced rather than
+        // merged into, because the statement is the whole truth about this table:
+        // the placeholder is a guess and a stale default on a column the CREATE
+        // did not declare would be a column that does not exist.
+        $this->createTable($table, $columns !== [] ? $columns : ['id', 'migration', 'batch']);
+
+        foreach ($meta as $column => $definition) {
+            $this->columnMeta[$table][$column] = $definition;
+        }
+
+        // Reported as the database would: the key exists as `PRIMARY` with the
+        // columns it names, and with none when the table declares no primary key.
+        // Read back rather than assumed, so the dumper's `id()` decision rests on
+        // the schema instead of on a column's name.
+        $this->primaryKeys[$table] = ['name' => 'PRIMARY', 'columns' => $primary];
+
+        $this->indexes[$table] = $indexes;
+        $this->indexColumns[$table] = $indexColumns;
+    }
+
+    /**
+     * The parenthesised body of a `CREATE TABLE`, without its table options.
+     *
+     * Scanned rather than matched with a greedy regex, because the body contains
+     * parentheses of its own — `decimal(10,2)`, `KEY (a, b)` — and the trailing
+     * `DEFAULT CHARACTER SET utf8mb4 COLLATE ...` is *outside* them. A `(.*)`
+     * match would swallow the options and hand them to the clause splitter as a
+     * final, unparseable clause. The first `(` opens the body and the matching
+     * `)` at depth zero closes it.
+     */
+    private function bodyOfCreateStatement(string $sql): string
+    {
+        $open = strpos($sql, '(');
+
+        if ($open === false) {
+            return '';
+        }
+
+        $depth = 0;
+        $length = strlen($sql);
+
+        for ($i = $open; $i < $length; $i++) {
+            if ($sql[$i] === '(') {
+                $depth++;
+            } elseif ($sql[$i] === ')') {
+                $depth--;
+
+                if ($depth === 0) {
+                    return substr($sql, $open + 1, $i - $open - 1);
+                }
+            }
+        }
+
+        return substr($sql, $open + 1);
+    }
+
+    /**
+     * Decompose a column definition into the `SHOW COLUMNS` shape.
+     *
+     * A real server would report what it stored; this reads back what the
+     * statement said, which is the closest a fake can honestly get and is enough
+     * for a rename to restate the type the migration declared.
+     *
+     * The type is taken as the leading run of non-keyword text — everything up to
+     * the first `NOT NULL` / `NULL` / `DEFAULT` / `AUTO_INCREMENT` — because a
+     * type may itself contain spaces (`bigint unsigned`, `double precision`) and
+     * stopping at the first space would truncate those to a type that does not
+     * exist.
+     *
+     * The name is stripped in either spelling it arrives in: the `ADD COLUMN x`
+     * form an `ALTER` clause carries, and the bare `` `x` `` a `CREATE TABLE`
+     * body does. Both reach here, and a name left in front of the type would be
+     * read as part of it.
+     *
+     * @return array{Type: string, Null: string, Default: string|null, Extra: string}
+     */
+    private function parseColumnDefinition(string $clause): array
+    {
+        $definition = trim((string) preg_replace('/^add\s+column\s+`?[a-z0-9_]+`?\s+/i', '', $clause));
+        $definition = trim((string) preg_replace('/^`[a-z0-9_]+`\s+/i', '', $definition));
+
+        preg_match('/^(.*?)(?=\s+(?:not\s+null|null|default|auto_increment|on\s+update)\b|$)/is', $definition, $m);
+        $type = trim($m[1] ?? '');
+
+        $null = preg_match('/\bnot\s+null\b/i', $definition) === 1 ? 'NO' : 'YES';
+
+        $default = null;
+
+        if (preg_match('/\bdefault\s+(\'((?:[^\']|\'\')*)\'|[^\s,]+)/i', $definition, $d) === 1) {
+            $default = isset($d[2]) && $d[2] !== ''
+                ? str_replace("''", "'", $d[2])
+                : trim($d[1], "'");
+        }
+
+        $extra = preg_match('/\bauto_increment\b/i', $definition) === 1 ? 'auto_increment' : '';
+
+        if ($extra === '' && preg_match('/\bon\s+update\s+(current_timestamp(?:\(\d*\))?)/i', $definition, $u) === 1) {
+            $extra = 'on update ' . strtoupper($u[1]);
+        }
+
+        return [
+            'Type' => $type,
+            'Null' => $null,
+            'Default' => $default,
+            'Extra' => $extra,
+        ];
     }
 
     /**
@@ -818,13 +1550,92 @@ final class FakeWpdb extends wpdb
             return [];
         }
 
-        if (preg_match('/^\s*show\s+columns\s+from\s+`?([a-z0-9_]+)`?/i', $sql, $m) === 1) {
+        // A bare `SHOW TABLES`, with no `LIKE` clause — what the schema dumper
+        // reads to list every table on the server.
+        //
+        // Placed before the `LIKE` form and anchored with `$`, so the two do not
+        // shadow each other: a pattern that matched both would answer the
+        // unqualified call with the *first* table rather than all of them, and a
+        // discovery test would then pass or fail depending on insertion order.
+        //
+        // Every table is returned, prefix and all, because that is what MySQL
+        // does — deciding which of them are the plugin's is the caller's job, and
+        // a fake that pre-filtered would make that decision untestable.
+        if (preg_match('/^\s*show\s+tables\s*$/is', $sql) === 1) {
+            $rows = [];
+
+            foreach (array_keys($this->tables) as $name) {
+                $rows[] = ['Tables_in_' . ($this->dbname ?? 'wordpress') => (string) $name];
+            }
+
+            return $rows;
+        }
+
+        // `SHOW INDEX FROM` — what the schema dumper reads to reconstruct a
+        // table's keys. Rows are ordered by index name then column position, which
+        // is the order MySQL returns them in and therefore the order a dumper may
+        // rely on for a composite key's column list.
+        if (preg_match('/^\s*show\s+(?:index|keys)\s+from\s+`?([a-z0-9_]+)`?\s*$/is', $sql, $m) === 1) {
+            $rows = [];
+
+            foreach ($this->indexColumns[$m[1]] ?? [] as $name => $entries) {
+                // The primary key comes back first on a real server, and this
+                // mirrors that: a dumper that assumed it was absent would emit a
+                // table with no primary key.
+                if (isset($this->primaryKeys[$m[1]]) && $name === $this->primaryKeys[$m[1]]['name']) {
+                    continue;
+                }
+
+                foreach ($entries as $entry) {
+                    $rows[] = $entry;
+                }
+            }
+
+            return $rows;
+        }
+
+        if (preg_match('/^\s*show\s+columns\s+from\s+`?([a-z0-9_]+)`?\s*(?:like\s+\'(.*)\')?\s*$/is', $sql, $m) === 1) {
             $table = $m[1];
+            $columns = $this->columnCache[$table] ?? [];
+
+            // The column probe narrows with `LIKE`, and the two metacharacters
+            // matter here for the same reason they do in the table probe: a
+            // column name is an identifier, so `_` in one has to be a literal
+            // underscore and not "any single character". A fake that ignored the
+            // clause would answer every column probe true and let a guard written
+            // against the wrong column name pass.
+            if (isset($m[2]) && $m[2] !== '') {
+                $pattern = str_replace("''", "'", $m[2]);
+                $columns = array_values(array_filter(
+                    $columns,
+                    fn (string $column): bool => $this->likeMatches($pattern, $column)
+                ));
+            }
 
             return array_map(
-                static fn (string $column): array => ['Field' => $column],
-                $this->columnCache[$table] ?? []
+                fn (string $column): array => ['Field' => $column]
+                    + ($this->columnMeta[$table][$column] ?? []),
+                $columns
             );
+        }
+
+        // The index-registry probe the schema adapter makes before replacing a
+        // key. Answered from the same `$indexes` map the ALTER parser fills, so
+        // the fake reports an index present exactly when it has seen the
+        // statement that creates one.
+        //
+        // Equality, not LIKE — there is no wildcard to interpret, and a name
+        // containing `_` must compare literally. Both placeholders arrive
+        // single-quoted, having been substituted by prepare() before this runs.
+        if (preg_match(
+            '/^\s*select\s+index_name\s+from\s+information_schema\.statistics\s+'
+            . 'where\s+.*?table_name\s*=\s*[\'`]?([a-z0-9_]+)[\'`]?\s+.*?index_name\s*=\s*[\'`]?([a-z0-9_]+)[\'`]?/is',
+            $sql,
+            $m
+        ) === 1) {
+            return isset($this->indexes[$m[1]][$m[2]])
+                ? [['INDEX_NAME' => $m[2]]]
+                : [];
         }
 
         // MAX(batch) — one value, or no row at all on an empty table.
@@ -1068,6 +1879,18 @@ final class FakeWpdb extends wpdb
 
             return true;
         };
+    }
+
+    /**
+     * Neutralise the `LIKE` metacharacters in a string bound to a pattern.
+     *
+     * The backslash is escaped *first*, necessarily: done after, it would double
+     * the backslashes this method had just added and unescape the metacharacters
+     * again. Mirrors `wpdb::esc_like()`, which is what {@see esc_like()} exposes.
+     */
+    private function escapeLike(string $value): string
+    {
+        return str_replace(['\\', '_', '%'], ['\\\\', '\\_', '\\%'], $value);
     }
 
     /**

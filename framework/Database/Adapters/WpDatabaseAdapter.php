@@ -64,6 +64,18 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
     private ?wpdb $wpdb;
 
     /**
+     * Whether statements are being recorded rather than run.
+     */
+    private bool $pretending = false;
+
+    /**
+     * Statements issued while {@see pretend()} was on, in order.
+     *
+     * @var list<string>
+     */
+    private array $recorded = [];
+
+    /**
      * @param wpdb|null $wpdb WordPress database handle. Defaults to the `$wpdb`
      *                        global, resolved lazily so constructing the adapter
      *                        during a provider's `register()` — before
@@ -72,6 +84,21 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
     public function __construct(?wpdb $wpdb = null)
     {
         $this->wpdb = $wpdb;
+    }
+
+    public function pretend(): void
+    {
+        $this->pretending = true;
+    }
+
+    public function stopPretending(): void
+    {
+        $this->pretending = false;
+    }
+
+    public function recordedStatements(): array
+    {
+        return $this->recorded;
     }
 
     public function prefix(): string
@@ -126,7 +153,80 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
 
         $found = $db->get_var($db->prepare(
             'SHOW TABLES LIKE %s',
-            str_replace(['\\', '_', '%'], ['\\\\', '\\_', '\\%'], $qualified)
+            $this->escapeLike($qualified)
+        ));
+
+        return $found !== null && $found !== '';
+    }
+
+    /**
+     * Whether a table carries a column of the given name.
+     *
+     * Read from `SHOW COLUMNS`, which is scoped to a table that must exist and
+     * therefore answers "no such table" with an error rather than with an empty
+     * result. That error is the reason {@see hasTable()} runs first: the contract
+     * says an absent table is `false`, and asking `SHOW COLUMNS` about a table
+     * that is not there would raise instead — turning the most ordinary use of
+     * this probe (a migration guarding an `ADD COLUMN` on a table an earlier
+     * migration in the same batch has just created) into a hard failure.
+     *
+     * `SHOW COLUMNS` over `information_schema.COLUMNS` for the same reason
+     * `hasTable()` uses `SHOW TABLES`: `%s` binds the table name as a *value*,
+     * which is what the table list expects, whereas `information_schema` wants
+     * the bare name compared literally and a prefix carries no wildcards to
+     * escape. The result is a list either way, so absence is "the list is empty".
+     */
+    public function hasColumn(string $table, string $column): bool
+    {
+        if (! $this->hasTable($table)) {
+            return false;
+        }
+
+        $db = $this->db();
+
+        $columns = $db->get_results($db->prepare(
+            'SHOW COLUMNS FROM `' . $this->qualify($table) . '` LIKE %s',
+            $this->escapeLike($column)
+        ));
+
+        return is_array($columns) && $columns !== [];
+    }
+
+    /**
+     * Whether a table carries an index of the given name.
+     *
+     * Asked of `information_schema.STATISTICS` rather than `SHOW INDEX`, because
+     * `SHOW INDEX` has no name filter — it returns every key on the table for the
+     * caller to sift, and the sifting is exactly where a `_` in a name would be
+     * taken for a wildcard. Matched with `=` here, so nothing is escaped and
+     * nothing is interpreted: the comparison is the literal string.
+     *
+     * `TABLE_SCHEMA = DATABASE()` pins the lookup to the database the connection
+     * is already on, which is the one `SHOW TABLES` reads. Without it the query
+     * would answer `true` for an index that exists on a same-named table in some
+     * *other* database on the server — and a `DROP`/`ADD` built on that answer
+     * would run against an index this migration does not own.
+     *
+     * The table still has to exist for the question to mean anything, and it is
+     * checked first for the same reason as in {@see hasColumn()}.
+     *
+     * Reports a `PRIMARY` key as present when asked for `PRIMARY`: MySQL records
+     * the primary key in this table under that name, and no other key may take
+     * it. Anything else is the name the index was declared with.
+     */
+    public function hasIndex(string $table, string $index): bool
+    {
+        if (! $this->hasTable($table)) {
+            return false;
+        }
+
+        $db = $this->db();
+
+        $found = $db->get_var($db->prepare(
+            'SELECT INDEX_NAME FROM information_schema.STATISTICS '
+            . 'WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND INDEX_NAME = %s',
+            $this->qualify($table),
+            $index
         ));
 
         return $found !== null && $found !== '';
@@ -134,6 +234,12 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
 
     public function statement(string $sql, string $operation): void
     {
+        if ($this->pretending) {
+            $this->recorded[] = $sql;
+
+            return;
+        }
+
         $db = $this->db();
 
         // WordPress 6.7+ can roll back the next failing statement, which cleans
@@ -153,6 +259,27 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
 
     public function createTable(string $table, string $sql): void
     {
+        // Recorded as the two statements a real run issues, not as the raw
+        // blueprint output: the constraint lift-out below is the adapter's own
+        // doing, and a `--pretend` that showed the CREATE with its foreign keys
+        // still inside would be showing SQL that is never executed — dbDelta's
+        // field parser would misread it as a column named CONSTRAINT.
+        if ($this->pretending) {
+            [$create, $constraints] = $this->separateConstraints($sql);
+
+            $this->recorded[] = $this->toDbDeltaStatement($create);
+
+            foreach ($constraints as $constraint) {
+                $this->recorded[] = sprintf(
+                    'ALTER TABLE `%s` ADD %s',
+                    $this->escape($this->qualify($table)),
+                    $constraint
+                );
+            }
+
+            return;
+        }
+
         $db = $this->db();
 
         // Guarded rather than checked with function_exists() after the fact:
@@ -195,7 +322,15 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
         // `dbDelta()` returns an array of the statements it ran. It does not
         // throw and does not set `last_error` on a parse failure, so a
         // non-array return is the only structural failure it reports.
-        $result = dbDelta($this->toDbDeltaStatement($create));
+        //
+        // The adapter announces itself for the duration of the call because
+        // `dbDelta()` takes no connection argument and would otherwise reach for
+        // the `$wpdb` global — a different connection, or none, when this adapter
+        // was constructed with an explicit handle. See
+        // {@see \Tests\Support\SchemaAdapterRegistry}. The class is a test
+        // double's seam, so it is probed with `class_exists()` rather than
+        // required: production has no such class and must not.
+        $result = $this->throughDbDelta(fn () => dbDelta($this->toDbDeltaStatement($create)));
 
         if (!is_array($result)) {
             throw SchemaException::statementFailed(
@@ -229,6 +364,128 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
         );
     }
 
+    /**
+     * Rebuild a column's definition from what `SHOW COLUMNS` reports.
+     *
+     * `SHOW COLUMNS` returns the definition already decomposed — `Type` is
+     * `varchar(191)`, `Null` is `YES`/`NO`, `Default` is the default or null,
+     * `Extra` carries `auto_increment` — and this puts it back together in the
+     * order MySQL's grammar requires after `CHANGE COLUMN`: type, then null,
+     * then default, then extra. That order is not negotiable; MySQL rejects
+     * `DEFAULT` before `NOT NULL`.
+     *
+     * Three details are load-bearing:
+     *
+     * - **`Default` is itself nullable, and the distinction matters.** A column
+     *   with no default and a column whose default is `NULL` are different
+     *   schemas, and `SHOW COLUMNS` reports both as null — with the column's
+     *   nullability as the only discriminator. So `NULL DEFAULT NULL` is emitted
+     *   only for a nullable column, and a `NOT NULL` column with no default gets
+     *   no clause at all.
+     * - **`Default` is unquoted by the server** for numeric and string defaults
+     *   alike, so it is re-quoted as a string. A column defaulting to the string
+     *   `0` and one defaulting to the number `0` are equivalent in MySQL, so
+     *   quoting it is correct and does not change meaning. The exception is a
+     *   default the server reports as a function — `CURRENT_TIMESTAMP` — which is
+     *   emitted bare, since quoting it would compare a literal string against a
+     *   timestamp column.
+     * - **`Extra` is appended verbatim**, because it is already the syntax —
+     *   `auto_increment`, `on update CURRENT_TIMESTAMP`, or empty.
+     *
+     * Returns null when there is no such column, leaving the caller to decide
+     * whether that is an error.
+     */
+    public function columnDefinition(string $table, string $column): ?string
+    {
+        // No `hasColumn()` guard first: the row read below answers the same
+        // question, so guarding would be a second round trip to learn nothing.
+        // The distinction the contract cares about — absent versus failed — is
+        // already carried by `SHOW COLUMNS` itself, which raises on a missing
+        // table rather than quietly returning nothing.
+        if (! $this->hasTable($table)) {
+            return null;
+        }
+
+        $db = $this->db();
+
+        $row = $db->get_row($db->prepare(
+            'SHOW COLUMNS FROM `' . $this->qualify($table) . '` LIKE %s',
+            $this->escapeLike($column)
+        ), ARRAY_A);
+
+        if (!is_array($row) || !isset($row['Type'])) {
+            return null;
+        }
+
+        $definition = (string) $row['Type'];
+
+        $nullable = strtoupper((string) ($row['Null'] ?? 'NO')) === 'YES';
+
+        $definition .= $nullable ? ' NULL' : ' NOT NULL';
+
+        // `array_key_exists`, not `isset`: a null default is a real value here,
+        // and `isset` would report it absent and drop the clause.
+        if (array_key_exists('Default', $row) && $row['Default'] !== null) {
+            $default = (string) $row['Default'];
+
+            $definition .= ' DEFAULT ' . ($this->isFunctionDefault($default)
+                ? $default
+                : "'" . str_replace("'", "''", $default) . "'");
+        } elseif ($nullable) {
+            $definition .= ' DEFAULT NULL';
+        }
+
+        $extra = trim((string) ($row['Extra'] ?? ''));
+
+        if ($extra !== '') {
+            $definition .= ' ' . $extra;
+        }
+
+        return $definition;
+    }
+
+    /**
+     * Whether a default the server reported is a function call rather than a
+     * literal.
+     *
+     * `CURRENT_TIMESTAMP` is the one that occurs in practice, usually with
+     * `on update` in `Extra` beside it. It must not be quoted: `DEFAULT
+     * 'CURRENT_TIMESTAMP'` is a string, and assigning a string to a timestamp
+     * column is how a migration quietly zeroes every timestamp it meant to
+     * preserve. Matched case-insensitively because the server's spelling varies
+     * by version, and by the `CURRENT_TIMESTAMP(n)` precision form.
+     */
+    private function isFunctionDefault(string $default): bool
+    {
+        return preg_match('/^current_timestamp(\(\d*\))?$/i', $default) === 1;
+    }
+
+    /**
+     * Rename a table, addressing both names through the prefix.
+     *
+     * `RENAME TABLE a TO b` rather than `ALTER TABLE a RENAME TO b`: the two are
+     * equivalent for a single table and the former is what WordPress's own schema
+     * migration has always used, so it is the spelling that reads as expected in
+     * a `SHOW PROCESSLIST` or a slow query log on a WordPress host.
+     *
+     * MySQL raises "Table '...' doesn't exist" for a missing source, which is the
+     * behaviour this wants — the statement is left to fail and the adapter
+     * reports it, rather than pre-checking with {@see hasTable()} and inventing a
+     * message. The check would be a TOCTOU gap for no gain: the failure is
+     * already the right failure.
+     */
+    public function renameTable(string $from, string $to): void
+    {
+        $this->statement(
+            sprintf(
+                'RENAME TABLE `%s` TO `%s`',
+                $this->escape($this->qualify($from)),
+                $this->escape($this->qualify($to))
+            ),
+            sprintf('rename the [%s] table to [%s]', $from, $to)
+        );
+    }
+
     public function charsetCollation(): string
     {
         $db = $this->db();
@@ -241,6 +498,165 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
         }
 
         return (string) $db->get_charset_collate();
+    }
+
+    // ------------------------------------------------------------- introspection
+
+    /**
+     * Every table in the database, sorted.
+     *
+     * Read through `SHOW TABLES` rather than by listing the plugin's own tracking
+     * table, because the point of the dumper is to report what is *there* —
+     * including a table an earlier developer created by hand, which no migration
+     * would mention.
+     *
+     * No `LIKE` narrowing: the caller decides what to dump, and a filter applied
+     * here would silently hide the table someone is trying to find. The WordPress
+     * core tables come back too, for the same reason — excluding them would be
+     * this class deciding what is interesting, and a plugin that legitimately
+     * extends a core table has no way to say so.
+     *
+     * @return list<string>
+     */
+    public function tables(): array
+    {
+        $db = $this->db();
+
+        /** @var list<string>|null $names */
+        $names = $db->get_col('SHOW TABLES', 0);
+
+        $tables = array_map(static fn (mixed $name): string => (string) $name, (array) $names);
+
+        sort($tables);
+
+        return array_values($tables);
+    }
+
+    /**
+     * A table's columns in declaration order, with the attributes a dump needs.
+     *
+     * `SHOW COLUMNS` is the source, and each row's four fields map to one
+     * blueprint concern: `Type` chooses the builder method, `Null` decides
+     * `nullable()`, `Default` decides `default()`/`useCurrent()`, and `Extra`
+     * carries the `auto_increment` marker that identifies a primary key the
+     * builder spells `id()`.
+     *
+     * Returns an empty list for a table that does not exist, which the dumper
+     * reports rather than turning into a column-less `create`.
+     *
+     * @return list<array{name: string, type: string, nullable: bool, default: string|null, autoIncrement: bool}>
+     */
+    public function columnDetails(string $table): array
+    {
+        $db = $this->db();
+        $qualified = $this->qualify($table);
+
+        /** @var list<array<string, mixed>>|null $rows */
+        $rows = $db->get_results(sprintf('SHOW COLUMNS FROM `%s`', $this->escape($qualified)), ARRAY_A);
+
+        $columns = [];
+
+        foreach ((array) $rows as $row) {
+            $columns[] = [
+                'name' => (string) ($row['Field'] ?? ''),
+                'type' => strtolower((string) ($row['Type'] ?? '')),
+                'nullable' => strtoupper((string) ($row['Null'] ?? '')) === 'YES',
+                'default' => $this->normaliseDefault($row['Default'] ?? null),
+                'autoIncrement' => stripos((string) ($row['Extra'] ?? ''), 'auto_increment') !== false,
+            ];
+        }
+
+        return $columns;
+    }
+
+    /**
+     * A table's keys, primary first, each with its columns in index order.
+     *
+     * `SHOW INDEX` returns one row per column *per key*, so a composite index
+     * arrives as several rows that have to be gathered by name and ordered by
+     * `Seq_in_index`. Reading it as a flat list would report a two-column index
+     * as two one-column indexes — which compiles, and produces the wrong schema.
+     *
+     * The primary key is included under `PRIMARY` rather than filtered out: a
+     * caller has to be able to see that a table has one, and it is the caller
+     * that decides not to emit it as an `index()`.
+     *
+     * @return list<array{name: string, columns: list<string>, unique: bool, primary: bool}>
+     */
+    public function indexDetails(string $table): array
+    {
+        $db = $this->db();
+        $qualified = $this->qualify($table);
+
+        /** @var list<array<string, mixed>>|null $rows */
+        $rows = $db->get_results(sprintf('SHOW INDEX FROM `%s`', $this->escape($qualified)), ARRAY_A);
+
+        /** @var array<string, array{columns: array<int, string>, unique: bool}> $gathered */
+        $gathered = [];
+
+        foreach ((array) $rows as $row) {
+            $name = (string) ($row['Key_name'] ?? $row['Index_name'] ?? '');
+
+            if ($name === '') {
+                continue;
+            }
+
+            $position = (int) ($row['Seq_in_index'] ?? 0);
+            $column = (string) ($row['Column_name'] ?? '');
+
+            $gathered[$name]['columns'][$position] = $column;
+
+            // `Non_unique` is 0 for a unique index — the field is named for the
+            // opposite of what a reader wants, so it is inverted once, here.
+            $gathered[$name]['unique'] = (string) ($row['Non_unique'] ?? '1') === '0';
+        }
+
+        $indexes = [];
+
+        foreach ($gathered as $name => $details) {
+            // Sorted by sequence rather than trusted from row order, because a
+            // composite key's column order is part of its definition: the same
+            // columns in the other order are a different index, and only one of
+            // them serves the query the migration was written for.
+            $columns = $details['columns'];
+            ksort($columns);
+
+            $indexes[] = [
+                'name' => $name,
+                'columns' => array_values($columns),
+                'unique' => $details['unique'] ?? false,
+                'primary' => strtoupper($name) === 'PRIMARY',
+            ];
+        }
+
+        // Primary first, then by name, so a dump is stable between runs.
+        usort($indexes, static function (array $a, array $b): int {
+            if ($a['primary'] !== $b['primary']) {
+                return $a['primary'] ? -1 : 1;
+            }
+
+            return strcmp($a['name'], $b['name']);
+        });
+
+        return $indexes;
+    }
+
+    /**
+     * A `SHOW COLUMNS` default as the schema language spells it.
+     *
+     * `NULL` — the database's "no default" — has to become PHP `null` so the
+     * dumper can tell it apart from the *string* `'NULL'`, which is a legitimate
+     * default for a nullable column and would otherwise be emitted as no default
+     * at all. The two are different schemas and only one of them is what the
+     * database holds.
+     */
+    private function normaliseDefault(mixed $default): ?string
+    {
+        if ($default === null) {
+            return null;
+        }
+
+        return (string) $default;
     }
 
     // ---------------------------------------------------------------- internals
@@ -541,6 +957,23 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
     }
 
     /**
+     * Neutralise the `LIKE` metacharacters in a string bound to a pattern.
+     *
+     * WordPress's table prefix is nearly always `wp_`, and `_` in a `LIKE` pattern
+     * matches any single character — so an unescaped `wp_notes` also matches
+     * `wpXnotes`, and a probe asked about the first can be answered by the second.
+     * `%` matching any run is the same hazard with a wider reach.
+     *
+     * The backslash is escaped *first*, necessarily: done after, it would double
+     * the backslashes this method had just added and unescape the metacharacters
+     * again.
+     */
+    private function escapeLike(string $value): string
+    {
+        return str_replace(['\\', '_', '%'], ['\\\\', '\\_', '\\%'], $value);
+    }
+
+    /**
      * The database's own explanation of the last failure, or a stand-in.
      *
      * Never returns an empty string: a failure reported with no reason reads as
@@ -575,5 +1008,53 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
         }
 
         return $this->wpdb = $GLOBALS['wpdb'];
+    }
+
+    /**
+     * Run a callback with this adapter visible to `dbDelta()`.
+     *
+     * `dbDelta()` is WordPress's and takes no connection argument, so the only
+     * way to tell it which handle to write to is to announce it around the call.
+     * In a real WordPress the announcement is unnecessary — the global is the
+     * connection — and there is no registry class to announce to, which is why
+     * this is a `class_exists()` probe rather than a hard dependency. The
+     * production path is the `return $callback();` at the end.
+     *
+     * @template T
+     * @param callable(): T $callback
+     * @return T
+     */
+    private function throughDbDelta(callable $callback): mixed
+    {
+        $registry = 'Tests\Support\SchemaAdapterRegistry';
+
+        if (!class_exists($registry)) {
+            return $callback();
+        }
+
+        return $registry::with($this, $callback);
+    }
+
+    /**
+     * The database handle this adapter is using, resolved.
+     *
+     * Exists because `dbDelta()` is a global function that takes no connection
+     * argument — it reaches for the `$wpdb` global itself, which is right inside
+     * WordPress and wrong anywhere the adapter was handed a handle directly. A
+     * caller that constructs this adapter with an explicit `$wpdb` (every test,
+     * and `MigrateDumpCommand` in production) would otherwise have `dbDelta()`
+     * operate on a *different* connection than the one the adapter just compiled
+     * the statement for, or on none at all.
+     *
+     * The framework does not read this; it is the seam a `dbDelta()` replacement
+     * uses to find the connection the statement was meant for.
+     */
+    public function connection(): ?wpdb
+    {
+        if ($this->wpdb instanceof wpdb) {
+            return $this->wpdb;
+        }
+
+        return isset($GLOBALS['wpdb']) && $GLOBALS['wpdb'] instanceof wpdb ? $GLOBALS['wpdb'] : null;
     }
 }

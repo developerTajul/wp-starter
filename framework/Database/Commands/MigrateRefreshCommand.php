@@ -7,6 +7,7 @@ use Framework\Config\Config;
 use Framework\Console\Command;
 use Framework\Database\Exceptions\MigrationException;
 use Framework\Database\Migrator;
+use Framework\Database\Schema\Schema;
 use Throwable;
 
 /**
@@ -56,6 +57,27 @@ class MigrateRefreshCommand extends Command
 
     public function handle(array $args, array $assocArgs): void
     {
+        $pretend = $this->flagIsTrue($assocArgs, 'pretend');
+
+        if ($pretend) {
+            Schema::pretend();
+        }
+
+        try {
+            $this->refresh($pretend);
+        } finally {
+            // `refresh` touches both halves — it reverses everything and then
+            // re-applies it — so a leak here would leave the schema either empty
+            // or double-applied depending on which side leaked. Restored on every
+            // path, including the early returns inside.
+            if ($pretend) {
+                $this->reportPretend(Schema::stopPretending());
+            }
+        }
+    }
+
+    private function refresh(bool $pretend): void
+    {
         try {
             $batches = $this->migrator->batches();
         } catch (MigrationException $e) {
@@ -69,7 +91,8 @@ class MigrateRefreshCommand extends Command
         // started, and the batch count is the only thing that distinguishes
         // "three migrations" from "three hundred".
         $this->info(sprintf(
-            'Rolling back %d batch(es) from %s',
+            '%s %d batch(es) from %s',
+            $pretend ? 'Pretending to roll back' : 'Rolling back',
             count($batches),
             $this->migrator->getMigrationPath()
         ));
@@ -92,7 +115,7 @@ class MigrateRefreshCommand extends Command
             $this->warning(sprintf(
                 'Stopped after %d migration(s). The ones already reversed stay reversed; '
                 . 'fix the cause and re-run.',
-                count($reverted)
+                count($this->migrator->lastRunReverted())
             ));
 
             return;
@@ -100,12 +123,15 @@ class MigrateRefreshCommand extends Command
 
         $this->info($reverted === []
             ? 'Nothing was applied, so there was nothing to roll back.'
-            : sprintf('Rolled back %d migration(s).', count($reverted)));
+            : sprintf(
+                $pretend ? 'Would have rolled back %d migration(s).' : 'Rolled back %d migration(s).',
+                count($reverted)
+            ));
 
         // Straight into the re-run, because the two halves are one operation: a
         // refresh that stopped after reversing would leave the schema empty and
         // the command reading as though it had succeeded.
-        $this->info('Re-running all migrations...');
+        $this->info($pretend ? 'Pretending to re-run all migrations...' : 'Re-running all migrations...');
 
         try {
             $applied = $this->migrator->runPending(function (string $identifier): void {
@@ -129,10 +155,25 @@ class MigrateRefreshCommand extends Command
             return;
         }
 
-        $this->success(sprintf(
-            'Refreshed: %d rolled back, %d applied.',
-            count($reverted),
-            count($applied)
+        $this->success($pretend
+            ? sprintf('Pretended to refresh: %d would be rolled back, %d re-applied.', count($reverted), count($applied))
+            : sprintf('Refreshed: %d rolled back, %d applied.', count($reverted), count($applied)));
+    }
+
+    /**
+     * Print the statements a pretend run would have issued.
+     *
+     * @param list<string> $statements
+     */
+    private function reportPretend(array $statements): void
+    {
+        $this->info(sprintf(
+            'Pretending: %d statement(s) would have been issued. Nothing was written.',
+            count($statements)
         ));
+
+        foreach ($statements as $statement) {
+            $this->info('  ' . $statement);
+        }
     }
 }

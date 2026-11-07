@@ -6,7 +6,8 @@ declare(strict_types=1);
  * `mini` — the project's WP-CLI entry point.
  *
  *     php mini route:list
- *     php mini make:controller LeadController
+ *     php mini make:controller LeadController --resource
+ *     php mini make:controller Admin/LeadController --resource
  *     php mini migrate
  *
  * ## What this is, and what it deliberately is not
@@ -740,7 +741,10 @@ function miniUsage(string $root): void
 
     EXAMPLES
       php mini route:list                    every registered route
-      php mini make:controller LeadController
+      php mini make:controller LeadController              a bare REST controller
+      php mini make:controller LeadController --resource   a REST resource
+      php mini make:controller LeadController --invokable  a REST single action
+      php mini make:controller Admin/LeadController --resource   an admin screen
       php mini make:migration create_leads_table
       php mini migrate
       php mini migrate:status

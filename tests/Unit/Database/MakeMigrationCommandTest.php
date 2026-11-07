@@ -134,24 +134,132 @@ final class MakeMigrationCommandTest extends TestCase
     }
 
     /**
-     * The stub's table hint is what makes the generated migration runnable
-     * without editing, so it has to resolve for the conventional name.
+     * `--create=` scaffolds a `CREATE TABLE` against the table it names.
+     *
+     * The table comes from the flag and nowhere else. The description is still
+     * `create_leads_table` here, which the old code would have read as naming
+     * `leads` — so a test that only checked the output would pass either way.
+     * The flag is deliberately given a table the description does *not* imply
+     * (`archived_leads`), which makes the assertion fail if any guessing creeps
+     * back in.
      */
-    public function test_it_fills_in_the_table_name_from_the_convention(): void
+    public function test_create_flag_scaffolds_a_create_table_against_the_named_table(): void
+    {
+        (new TestableMakeMigrationCommand())->handle(['create_leads_table'], ['create' => 'archived_leads']);
+
+        $contents = (string) file_get_contents($this->migrationFiles()[0]);
+
+        $this->assertStringContainsString("Schema::create('archived_leads'", $contents);
+        $this->assertStringContainsString("Schema::dropIfExists('archived_leads')", $contents);
+        $this->assertStringNotContainsString('{{ table }}', $contents);
+    }
+
+    /**
+     * `--table=` scaffolds an alter against a table that already exists, and the
+     * `down()` drops what the `up()` added rather than dropping the table.
+     *
+     * The distinction is the whole reason there are two stubs: a migration that
+     * used `Schema::create()` on an existing table is an error at run time, and a
+     * `down()` that dropped the table would destroy data a `rollback` was only
+     * meant to undo a column of.
+     */
+    public function test_table_flag_scaffolds_an_alter_against_the_named_table(): void
+    {
+        (new TestableMakeMigrationCommand())->handle(['add_status_to_leads'], ['table' => 'leads']);
+
+        $contents = (string) file_get_contents($this->migrationFiles()[0]);
+
+        $this->assertStringContainsString("Schema::table('leads'", $contents);
+        $this->assertStringContainsString('dropColumn', $contents);
+        $this->assertStringNotContainsString('Schema::create(', $contents);
+        $this->assertStringNotContainsString('dropIfExists', $contents);
+    }
+
+    /**
+     * Without a flag, nothing is scaffolded.
+     *
+     * This is the behaviour that replaced the regex guess, and it is the point of
+     * the change: `create_leads_table` looks like it names `leads`, and the old
+     * code would have written `Schema::create('leads')` into the file on that
+     * basis. A wrong table name is the line in a scaffold a developer is least
+     * likely to re-read, so the generator no longer invents one.
+     *
+     * Asserted on the *call*, not on the bare `Schema::create(` substring: the
+     * no-table stub's own comment names both calls, deliberately, to tell the
+     * developer what to reach for. A substring test would fail on the correct stub.
+     */
+    public function test_no_flag_scaffolds_nothing(): void
     {
         (new TestableMakeMigrationCommand())->handle(['create_leads_table'], []);
 
         $contents = (string) file_get_contents($this->migrationFiles()[0]);
 
-        $this->assertStringContainsString("'leads'", $contents);
+        $this->assertDoesNotMatchRegularExpression("/Schema::(?:create|table)\('[^']+'/", $contents);
+        $this->assertStringNotContainsString("'leads'", $contents);
         $this->assertStringNotContainsString('{{ table }}', $contents);
     }
 
-    public function test_it_extracts_the_table_from_an_alter_style_name(): void
+    /**
+     * An unguessable description is treated exactly like a guessable one now —
+     * there is no code path that reads the description for a table at all.
+     */
+    public function test_the_description_never_supplies_a_table_name(): void
     {
         (new TestableMakeMigrationCommand())->handle(['add_status_to_leads'], []);
 
-        $this->assertStringContainsString("'leads'", (string) file_get_contents($this->migrationFiles()[0]));
+        $this->assertStringNotContainsString("'leads'", (string) file_get_contents($this->migrationFiles()[0]));
+    }
+
+    /**
+     * `--table=false` is a caller saying no, not a caller naming a table `false`.
+     * Casting it through would scaffold `Schema::create('false')`.
+     */
+    public function test_a_falsy_table_flag_scaffolds_nothing(): void
+    {
+        (new TestableMakeMigrationCommand())->handle(['create_leads_table'], ['table' => 'false']);
+
+        $contents = (string) file_get_contents($this->migrationFiles()[0]);
+
+        // Asserted on the call, not on the bare `Schema::table(` substring: the
+        // no-table stub's own comment names both calls, so a substring test would
+        // pass on the wrong stub and would have to be weakened to a regex anyway.
+        $this->assertDoesNotMatchRegularExpression("/Schema::(?:create|table)\('[^']+'/", $contents);
+        $this->assertStringNotContainsString('false', $contents);
+    }
+
+    /**
+     * An unusable table name is refused at generation time.
+     *
+     * Left alone it would render a valid-looking migration that dies when it runs
+     * — long after the developer stopped looking at the generated file — so the
+     * check belongs at the moment the name was typed.
+     */
+    public function test_an_unusable_table_flag_value_is_refused(): void
+    {
+        $command = new TestableMakeMigrationCommand();
+        $command->handle(['create_leads_table'], ['table' => 'leads; DROP TABLE users']);
+
+        $output = implode("\n", $command->messages);
+
+        $this->assertStringContainsString('not a usable table name', $output);
+        $this->assertSame([], $this->migrationFiles(), 'Nothing may be written when the flag is refused.');
+    }
+
+    /**
+     * `--create` and `--table` together: `--create` wins, because it states an
+     * intent rather than naming a target.
+     */
+    public function test_create_wins_when_both_flags_are_given(): void
+    {
+        (new TestableMakeMigrationCommand())->handle(['create_leads_table'], [
+            'table' => 'leads',
+            'create' => 'leads',
+        ]);
+
+        $this->assertStringContainsString(
+            'Schema::create(',
+            (string) file_get_contents($this->migrationFiles()[0])
+        );
     }
 
     /**
@@ -161,7 +269,7 @@ final class MakeMigrationCommandTest extends TestCase
      */
     public function test_the_stub_leaves_no_placeholders_behind(): void
     {
-        (new TestableMakeMigrationCommand())->handle(['create_leads_table'], []);
+        (new TestableMakeMigrationCommand())->handle(['create_leads_table'], ['create' => 'leads']);
 
         $this->assertDoesNotMatchRegularExpression(
             '/\{\{\s*\w+\s*\}\}/',

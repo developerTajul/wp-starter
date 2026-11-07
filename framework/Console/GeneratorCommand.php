@@ -4,6 +4,8 @@ declare(strict_types=1);
 namespace Framework\Console;
 
 use Framework\Config\Config;
+use Framework\Support\ClassName;
+use InvalidArgumentException;
 use RuntimeException;
 
 /**
@@ -20,6 +22,63 @@ use RuntimeException;
  */
 abstract class GeneratorCommand extends Command
 {
+    /**
+     * The sub-namespace and sub-directory the current run is generating into.
+     *
+     * Set by {@see resolveClassName()} and read by {@see getNamespace()},
+     * {@see subNamespace()} and {@see getTargetPath()}.
+     *
+     * ## Why this is state rather than an argument
+     *
+     * `getTargetPath(string $className)` is the subclass's contract, and by the
+     * time a subclass sees it the caller's `Admin/CompanyController` has already
+     * been reduced to `CompanyController` — the directory is gone. Threading the
+     * parse through instead would change the signature of every generator, and,
+     * worse, would let a subclass that ignored the new parameter keep compiling
+     * while writing `CompanyController.php` into the *root* controllers folder
+     * and declaring `Admin` in its namespace. That mismatch is invisible until
+     * something tries to load the class: the file exists, the namespace parses,
+     * and only Composer's lookup fails.
+     *
+     * Held here, the sub-namespace and the sub-directory are one value that the
+     * base class appends to both, in the same pass. The two cannot disagree,
+     * because a subclass never sees them separately.
+     *
+     * `protected` rather than `private` for the one generator that builds its own
+     * class name from a description — see
+     * {@see \Framework\Database\Commands\MakeMigrationCommand::resolveClassName()},
+     * which parses the name itself and therefore has to publish the result.
+     */
+    protected ClassName $parsed;
+
+    /**
+     * The `--flag=value` arguments this run was invoked with.
+     *
+     * Published for the same reason {@see $parsed} is: `handle()` receives them
+     * and the methods that need them — `getStubPath()`, `getReplacements()`,
+     * `getPostWriteHint()` — are subclass overrides that take no argument of
+     * their own, so a generator with a flag that changes *what* it generates has
+     * nowhere else to read it from. Adding a parameter to any of those three
+     * signatures would change the contract of every generator to serve the one
+     * that has flags.
+     *
+     * Empty for a generator that takes none, which is every generator but
+     * `make:controller` — so the property costs nothing and changes no existing
+     * behaviour.
+     *
+     * ## Why the base class does not interpret it
+     *
+     * What a flag *means* is per-generator: `--resource` selects a file shape,
+     * and a future flag might select a namespace. So the array is passed through
+     * untouched and each generator reads the keys it knows. The one thing the
+     * base class does provide is the spelling normalization — see
+     * {@see assocArgs()} — because "is `--resource` the same key as `resource`"
+     * is a question about WP-CLI dispatch, not about controllers.
+     *
+     * @var array<string, mixed>
+     */
+    protected array $assocArgs = [];
+
     /**
      * The stub to render — a filename, or an absolute path.
      *
@@ -38,6 +97,12 @@ abstract class GeneratorCommand extends Command
 
     /**
      * Absolute path the generated file should be written to.
+     *
+     * The class name is the *file* name only; a caller-supplied sub-namespace is
+     * appended by the base class rather than by the implementation. Use
+     * {@see subDirectoryPath()} to get the directory this file belongs in, and
+     * apply {@see subNamespacePrefix()} to a namespace this generator has already
+     * assembled by hand.
      */
     abstract protected function getTargetPath(string $className): string;
 
@@ -85,14 +150,64 @@ abstract class GeneratorCommand extends Command
 
     /**
      * Namespace new classes of this type are placed in.
+     *
+     * A caller-supplied sub-namespace — `make:controller Admin/CompanyController`
+     * — is appended by {@see render()} rather than here, so a subclass that
+     * overrides this still gets the sub-namespace without having to remember to
+     * call `parent::getNamespace()`. A subclass that must *frame* the
+     * sub-namespace instead of appending it, or that has assembled a namespace by
+     * hand, uses {@see subNamespacePrefix()} directly.
      */
     protected function getNamespace(): string
     {
         return (string) config('app.namespace', Config::DEFAULT_NAMESPACE);
     }
 
+    /**
+     * The sub-namespace the current run is generating into — `Admin\Reports`, or
+     * `''` for a bare name.
+     *
+     * Read by a subclass that has to place something *under* the sub-namespace
+     * rather than beside it, and by the tests that pin the parse.
+     */
+    protected function subNamespace(): string
+    {
+        return $this->parsed->sub;
+    }
+
+    /**
+     * Append the caller's sub-namespace to a namespace this generator assembled.
+     *
+     * For a generator whose classes live somewhere other than directly under
+     * `app/` — {@see \Framework\Database\Commands\MakeMigrationCommand} builds
+     * `App\Database\Migrations` — where the sub-namespace belongs *after* the
+     * generator's own path rather than immediately after the project root.
+     */
+    protected function subNamespacePrefix(): string
+    {
+        return $this->parsed->namespacePrefix();
+    }
+
+    /**
+     * The sub-directory the current run's file belongs in — `Admin/Reports/`, or
+     * `''` for a bare name.
+     *
+     * The path spelling of {@see subNamespace()}, for a generator that resolves
+     * its target directory through something other than a literal.
+     */
+    protected function subDirectoryPath(): string
+    {
+        return $this->parsed->pathPrefix();
+    }
+
     public function handle(array $args, array $assocArgs): void
     {
+        // Published before anything can throw, because a generator reads its
+        // flags from inside getStubPath() — which handle() calls first, and which
+        // is where a flag conflict is refused. Assigning after the try block
+        // would mean the refusal was built from an empty array and never fired.
+        $this->assocArgs = $assocArgs;
+
         try {
             $className = $this->resolveClassName($args[0] ?? null);
 
@@ -135,6 +250,13 @@ abstract class GeneratorCommand extends Command
      * Returns null when no name was supplied at all; throws when a name was
      * supplied but is not usable as a class name.
      *
+     * ## Why the parse happens here
+     *
+     * {@see handle()} calls this before it calls {@see getTargetPath()}, so this
+     * is the only place that can populate {@see $parsed} in time for the target
+     * path to include the sub-directory. Resolving the class name and resolving
+     * its sub-namespace are one operation for that reason, not two.
+     *
      * @throws RuntimeException
      */
     protected function resolveClassName(?string $name): ?string
@@ -143,20 +265,115 @@ abstract class GeneratorCommand extends Command
             return null;
         }
 
-        // Class names cannot carry path separators or a .php suffix, and a
-        // `Blog/Index` argument is as likely to mean "BlogIndex" as it is to be
-        // a mistake — so strip both rather than reject the input.
-        $className = (string) preg_replace('/\.php$/i', '', str_replace(['\\', '/'], '', $name));
-
-        if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $className) !== 1) {
+        try {
+            $parsed = $this->parseName($name);
+        } catch (InvalidArgumentException $e) {
+            // The parse reports what is wrong with which segment, which is more
+            // than a generic "invalid name" can say. It throws the SPL exception
+            // because it is a value object with no opinion about how its caller
+            // reports failures; translating it here keeps the generators'
+            // "anticipated failure is a RuntimeException" contract intact.
             throw new RuntimeException(sprintf(
-                'Invalid %s name [%s]. Use letters, numbers and underscores, starting with a letter.',
+                'Invalid %s name [%s]. %s',
                 strtolower($this->getType()),
-                $className
+                $name,
+                $e->getMessage()
             ));
         }
 
-        return $className;
+        $this->parsed = $parsed;
+
+        return $parsed->class;
+    }
+
+    /**
+     * Whether a long flag was passed, in any of the spellings that reach here.
+     *
+     * `WP_CLI::runcommand()` hands a flag through as `['resource' => true]`,
+     * while a hand-built invocation — a test, or a caller assembling the array
+     * itself — may write `['resource' => 'true']` or `['--resource' => true]`.
+     * All three mean the same thing to the developer who typed it, so all three
+     * are accepted rather than only the one this framework's dispatch happens to
+     * produce.
+     *
+     * A flag passed as `--resource=false` is *not* a request for the flag:
+     * WP-CLI supplies that as the string `'false'`, and treating any non-empty
+     * string as truthy is exactly how a `--flag=false` silently turns a feature
+     * on. The falsy spellings are listed rather than the truthy ones for that
+     * reason — an unrecognized value is far more likely to be a genuine
+     * `--flag=something` than an attempt to say no.
+     */
+    protected function hasFlag(string $flag): bool
+    {
+        foreach ([$flag, '--' . $flag] as $key) {
+            if (!array_key_exists($key, $this->assocArgs)) {
+                continue;
+            }
+
+            $value = $this->assocArgs[$key];
+
+            if (is_bool($value)) {
+                return $value;
+            }
+
+            if (is_string($value) && in_array(strtolower(trim($value)), ['false', '0', 'no', ''], true)) {
+                return false;
+            }
+
+            return $value !== null;
+        }
+
+        return false;
+    }
+
+    /**
+     * The value of a long flag, or null when it was not given a usable one.
+     *
+     * The companion to {@see hasFlag()} for flags that carry a value —
+     * `--table=leads`. A bare `--table` (no `=`) arrives as boolean `true`, which
+     * is a request for the flag with no value and is reported as null rather than
+     * cast to the string `'1'`, which would scaffold a table literally named `1`.
+     *
+     * The falsy spellings are treated the same way they are in {@see hasFlag()},
+     * and for the same reason: `--table=false` is a caller saying no, not a caller
+     * naming a table `false`.
+     */
+    protected function flagValue(string $flag): ?string
+    {
+        foreach ([$flag, '--' . $flag] as $key) {
+            if (!array_key_exists($key, $this->assocArgs)) {
+                continue;
+            }
+
+            $value = $this->assocArgs[$key];
+
+            if (is_bool($value) || $value === null) {
+                return null;
+            }
+
+            $value = trim((string) $value);
+
+            if ($value === '' || in_array(strtolower($value), ['false', '0', 'no'], true)) {
+                return null;
+            }
+
+            return $value;
+        }
+
+        return null;
+    }
+
+    /**
+     * How a caller-supplied name is parsed into a class and its sub-namespace.
+     *
+     * Overridable because the argument is not a class name for every generator:
+     * `make:migration` takes a free-form description like `create_leads_table`
+     * and derives the class itself, so the strict upper-case rule that makes
+     * `Admin/CompanyController` meaningful would reject its input outright.
+     */
+    protected function parseName(string $name): ClassName
+    {
+        return ClassName::parse($name);
     }
 
     /**
@@ -180,13 +397,44 @@ abstract class GeneratorCommand extends Command
 
         $replacements = array_merge(
             [
-                '{{ namespace }}' => $this->getNamespace(),
+                '{{ namespace }}' => $this->namespaceFor(),
                 '{{ class }}' => $className,
             ],
             $this->getReplacements($className)
         );
 
         return str_replace(array_keys($replacements), array_values($replacements), $contents);
+    }
+
+    /**
+     * The namespace written into the generated file.
+     *
+     * The base class appends the caller's sub-namespace here rather than inside
+     * {@see getNamespace()} so that a subclass overriding it — which four of the
+     * five generators do, because their classes do not live directly under
+     * `app/` — still gets the sub-namespace without having to call
+     * `parent::getNamespace()` and remember to append to the result.
+     *
+     * The append is unconditional, and that is what keeps it correct: the class
+     * file is written into `<generator directory>/<sub>/<Class>.php` by
+     * {@see subDirectoryPath()}, so the namespace must carry `<sub>` for the two
+     * to agree. A generator appending the sub-namespace itself is the rejected
+     * design — see the docblocks on {@see getNamespace()} and {@see $parsed}.
+     *
+     * The separator is added here rather than assumed on the end of
+     * {@see getNamespace()}, because the generators spell their base namespace
+     * without a trailing `\` — so a bare concatenation produces
+     * `App\Http\ControllersAdmin`, which is a perfectly valid namespace name and
+     * therefore fails silently. `namespacePrefix()` already carries the *trailing*
+     * separator, which is why the one added here is only the divider between the
+     * two parts. It is empty for a bare name, so the flat case is untouched
+     * rather than gaining a doubled backslash.
+     */
+    private function namespaceFor(): string
+    {
+        $sub = $this->parsed->namespacePrefix();
+
+        return $sub === '' ? $this->getNamespace() : $this->getNamespace() . '\\' . rtrim($sub, '\\');
     }
 
     /**

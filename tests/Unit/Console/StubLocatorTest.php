@@ -65,7 +65,19 @@ final class StubLocatorTest extends TestCase
     {
         $locator = new StubLocator($this->workspace);
 
-        foreach (['controller.stub', 'provider.stub', 'routes.stub', 'migration.stub', 'command.stub'] as $name) {
+        foreach ([
+            'controller.stub',
+            'provider.stub',
+            'routes.stub',
+            'command.stub',
+            // `migration.stub` is the no-table shape; the other two are selected
+            // by `make:migration --create` and `--table`. A missing variant fails
+            // only when a developer happens to pass that flag, which is exactly
+            // the kind of gap a hand-checked list leaves behind.
+            'migration.stub',
+            'migration.create.stub',
+            'migration.table.stub',
+        ] as $name) {
             $this->assertTrue(
                 $locator->has($name),
                 "The framework must ship [{$name}]; without it, the corresponding make:* command "

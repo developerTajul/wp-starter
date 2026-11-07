@@ -1,0 +1,18 @@
+<?php
+declare(strict_types=1);
+
+namespace {{ namespace }};
+
+use Framework\Routing\Attributes\Route;
+use Framework\Routing\Controller;
+use WP_REST_Request;
+use WP_REST_Response;
+
+class {{ class }} extends Controller
+{
+    #[Route('POST', '{{ route }}')]
+    public function __invoke(WP_REST_Request $request): WP_REST_Response
+    {
+        return $this->respond([]);
+    }
+}

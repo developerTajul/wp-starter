@@ -71,7 +71,7 @@ class MakeCommandCommand extends GeneratorCommand
 
     protected function getTargetPath(string $className): string
     {
-        return app_path('Console/Commands/' . $className . '.php');
+        return app_path('Console/Commands/' . $this->subDirectoryPath() . $className . '.php');
     }
 
     /**

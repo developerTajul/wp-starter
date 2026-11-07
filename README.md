@@ -113,6 +113,78 @@ point inward — `app/` resolves a `Core\` contract (`NoteRepositoryContract`,
 
 ---
 
+## The `dbDelta()` Boundary
+
+If you are about to add anything to the schema layer, read this first. It is the
+single constraint that explains most of the migration engine's shape, and the one
+whose violation produces failures that are hard to trace back to their cause.
+
+**`dbDelta()` is used for `CREATE TABLE`, and for nothing else.**
+
+### What `dbDelta()` is
+
+It is WordPress's schema-diffing helper. It parses a `CREATE TABLE` statement,
+compares it against the live table, and issues the `ALTER`s needed to make the
+live table match. Applied to the right statement that is a genuine feature, and
+`Schema::create()` relies on it — a re-run against a partly-existing table
+converges instead of failing on the first duplicate.
+
+### Why it cannot be used for anything else
+
+`dbDelta()` can only diff tables the statement **creates**. A column being added
+to an existing table appears in no `CREATE TABLE`, so a `dbDelta()` over an
+`ALTER` is not a diff at all: it either does nothing, or — worse — re-asserts an
+older shape it found somewhere else.
+
+Consequences you will meet while extending the builder:
+
+- **`Schema::table()` issues plain SQL**, through
+  `DatabaseAdapterInterface::statement()`. Any future `dropColumn()`,
+  `change()` or `renameColumn()` must go the same way. Routing an alteration
+  through `dbDelta()` is the mistake this boundary exists to prevent.
+- **Foreign keys are lifted out of the `CREATE`** (`WpDatabaseAdapter::separateConstraints()`)
+  and applied afterwards as idempotent `ALTER`s. `dbDelta()`'s field parser has
+  no concept of a constraint — it reads a line beginning `CONSTRAINT` as a
+  *column* named `CONSTRAINT`. On a first run that is harmless, because the
+  original `CREATE` executes verbatim. On the **second** run it diffs that
+  phantom column and emits `ALTER TABLE … ADD COLUMN CONSTRAINT …` — a syntax
+  error. Without the lift-out, every migration with a foreign key would succeed
+  once and then be permanently un-runnable.
+- **Those follow-up `ALTER`s are guarded by an `information_schema` lookup**,
+  never by matching MySQL's error text — which differs between server versions
+  and between languages.
+
+### `dbDelta()` has its own dialect
+
+Its parser is line-oriented, and a `CREATE TABLE` that is perfectly valid MySQL
+can still be **misparsed** — which is worse than rejected, because the table is
+created without the key and the failure surfaces later as duplicated rows.
+`WpDatabaseAdapter::toDbDeltaStatement()` normalises the statement rather than
+trusting callers to write in dbDelta's dialect. The three rules:
+
+| Rule | Why |
+| --- | --- |
+| The table name must be **unquoted** | A backtick-quoted name is not recognised as a `CREATE` at all, and the statement is silently dropped. |
+| `PRIMARY KEY (` must be `PRIMARY KEY  (` — **two** spaces | That is the literal `dbDelta()` searches for. One space is read as a column named `PRIMARY` with an unknown type. |
+| **Named** keys are kept named | An unnamed clause normalises to a `KEY` with an **empty** name, which can never equal the real `SHOW INDEX` name — so every later run re-issues `ADD` for an index that already exists. On a unique index over duplicate rows that `ALTER` fails, which is the whole migration failing on its second execution. |
+
+`dbDelta()` also requires `wp-admin/includes/upgrade.php`, which WordPress loads
+for admin requests but **not** under WP-CLI's default bootstrap or during cron.
+The adapter requires it itself. Without that, `wp wp_mini migrate` fails while the
+identical migration works from the admin — historically the most common cause of
+a migration that "works on my machine".
+
+### What this means in practice
+
+| You want to | Route |
+| --- | --- |
+| Create a table | `Schema::create()` → `dbDelta()` (converges on re-run) |
+| Add a column or index to an existing table | `Schema::table()` → plain `ALTER` |
+| Change, drop or rename a column | plain `ALTER` — **never** `dbDelta()`. Not built yet; the builder today can only *add* to an existing table. |
+| Rewrite existing rows | `$wpdb` directly — see *When you need raw `$wpdb`* under Database Migrations |
+
+---
+
 ## Directory Structure
 
 ```
@@ -154,7 +226,8 @@ framework/                    THE LIBRARY  (Framework\) — never rebranded
   Database/                     Migration base class, Migrator, MigrationFile, migrate:* commands.
   Http/                         Request, responses, middleware Pipeline, FormRequest.
   Routing/                      Router, adapters, Route attribute, ParameterBinder, middleware.
-  Support/helpers.php           env(), app(), config(), base_path(), view(), e(), old().
+  Support/helpers.php           env(), app(), config(), base_path(), view(), e(), old(),
+                                route(), redirect(), to_route().
   Support/ViewRenderer.php      Dotted view-name resolution.
   Support/JsonResource.php      The resource base class.
   Validation/Validator.php      The rule engine behind FormRequest.
@@ -542,6 +615,28 @@ $urls = app(\Framework\Routing\UrlGenerator::class);
 $url = $urls->has('leads.optional') ? route('leads.optional') : '#';
 ```
 
+### Redirecting
+
+A controller answers with a response, so `redirect()` and `to_route()` return a
+`RedirectResponse` rather than sending one — you `return` it, exactly as in
+Laravel:
+
+```php
+return redirect('/somewhere');
+return redirect()->route('leads.index');
+return to_route('leads.index', ['page' => 2]);
+return to_route('leads.index')->with('notice', 'Saved.');
+```
+
+`to_route()` is the short form of `redirect()->route(...)`; both resolve the name
+through `route()`, so an unknown name fails the same way with the same message
+whichever spelling you use.
+
+The name is resolved **when the redirect is built**, not when it is sent. A route
+table only exists while a request is being handled, so a name that missed would
+otherwise be discovered after the flash cookie was written and the response was
+already on its way out.
+
 ### How the `Route` facade knows which router it is talking to
 
 It does not, and that is deliberate. `routes/web.php` and `routes/api.php` both
@@ -619,6 +714,79 @@ Routes can also be declared on a controller with the `#[Route]` attribute, which
 `Framework\Routing\Controller::registerRoutes()` reflects over; `make:controller`
 generates the attribute form.
 
+### Controller shapes
+
+`make:controller` generates a controller in one of two **surfaces** and one of
+three **shapes**. The flag picks the shape, the namespace picks the surface:
+
+```bash
+wp wp_mini make:controller CompanyController               # bare, no actions
+wp wp_mini make:controller CompanyController --resource    # five RESTful actions
+wp wp_mini make:controller CompanyController --invokable   # a single __invoke()
+
+wp wp_mini make:controller Admin/CompanyController --resource    # seven web actions
+wp wp_mini make:controller Admin/CompanyController --invokable   # a single __invoke()
+```
+
+**A controller under `Admin/` is a web controller. Anything else is a REST
+controller.** There is no flag for this, because the path already says it and a
+second way to say it is a second way to disagree with the first.
+
+The two surfaces share no base class, no request type and no return type, so
+they are different stubs rather than one file with a namespace swapped in:
+
+| Into | Flag | Stub | Extends | Takes | Returns |
+|---|---|---|---|---|---|
+| anywhere | *(none)* | `controller.stub` | `Controller` | — | — |
+| `Admin/` | `--resource` | `controller.resource.stub` | *(nothing)* | `Request` | `ResponseInterface` |
+| `Admin/` | `--invokable` | `controller.invokable.stub` | *(nothing)* | `Request` | `ResponseInterface` |
+| elsewhere | `--resource` | `controller.api.stub` | `Controller` | `WP_REST_Request` | `WP_REST_Response` |
+| elsewhere | `--invokable` | `controller.api.invokable.stub` | `Controller` | `WP_REST_Request` | `WP_REST_Response` |
+
+A `--resource` controller under `Admin/` renders views and redirects with a
+flash message, and is mounted with `Route::adminPage(...)` /
+`Route::adminAction(...)` in `routes/web.php`. It is generated as a `final` class
+with no constructor — the screens call the global `view()` helper and the form
+handlers answer with `success` flashes:
+
+```php
+final class CompanyController
+{
+    public function index(): ResponseInterface
+    {
+        return view('company.index', ['companies' => []]);
+    }
+
+    public function store(Request $request): ResponseInterface
+    {
+        return to_route('company.index')->with('success', 'Created.');
+    }
+}
+```
+
+Everywhere else a `--resource` controller declares `#[Route]` attributes and is
+mounted with `Route::controller(...)` in `routes/api.php`. The command prints the
+correct mount for whichever it generated.
+
+The web stubs name their redirect target `<name>.index` — `company.index` for
+`CompanyController` — so a generated `store()` only works once you have given the
+`index` route that name with `->name('company.index')`. A name that does not match
+throws when the redirect is built, naming the routes that do exist.
+
+Each shape is a separate file in `framework/stubs/`, so a project can override
+one without touching the others by copying it into its own `stubs/` directory.
+They are resolved through `StubLocator`, which prefers the project's copy and
+falls back to the framework's.
+
+`--resource` and `--invokable` together are refused rather than resolved: they
+name two different files, and silently picking one would report success for a
+controller nobody asked for.
+
+> **The attributes are declarative; the mount is what publishes them.**
+> `#[Route]` attributes describe each action in place, but they do not put the
+> controller on the router by themselves — add the controller to
+> `routes/api.php` for them to take effect.
+
 ### Resources and sparse fieldsets
 
 A `JsonResource` decides the public shape of a payload, field by field. Adding a
@@ -650,12 +818,18 @@ from `config('app.cli_prefix')` — `wp_mini` by default.
 
 ```bash
 wp wp_mini make:controller LeadController      # a controller class
+wp wp_mini make:controller LeadController --resource    # all seven actions
+wp wp_mini make:controller LeadController --invokable   # a single __invoke()
+wp wp_mini make:request StoreCompanyRequest     # a form request
 wp wp_mini make:provider BillingServiceProvider
 wp wp_mini make:route ReportController          # a route + controller
 wp wp_mini make:migration create_leads_table
 wp wp_mini migrate                              # run pending migrations
-wp wp_mini migrate:rollback
-wp wp_mini migrate:status
+wp wp_mini migrate:rollback                     # reverse the last batch
+wp wp_mini migrate:status                       # what ran, in which batch
+wp wp_mini migrate:refresh                      # reverse everything, then re-run
+wp wp_mini migrate:fresh --force                # drop and rebuild (destroys data)
+wp wp_mini migrate:dump --output=database/dumps/schema.php   # write the live schema out
 wp wp_mini route:list                           # every registered route
 ```
 
@@ -667,6 +841,7 @@ commands. It gives you a Laravel-like experience with no setup at all:
 ```bash
 php mini route:list                    # -> wp <CLI_PREFIX> route:list
 php mini make:controller LeadController
+php mini make:controller LeadController --resource
 php mini make:migration create_leads_table
 php mini migrate
 php mini migrate:status
@@ -844,73 +1019,210 @@ that the class its filename promises exists; the class name is the description i
 StudlyCase with the timestamp stripped. Each migration is one reversible step —
 whatever `up()` creates, `down()` must remove.
 
-The shipped example, `2026_11_05_120000_create_notes_tables.php`, shows the
-house style: two tables in one migration, table names read from the repository
-constants that query them, and every DDL failure reported with `last_error`.
-Condensed to one table, in the namespace `make:migration` generates:
+The primary way to write one is the **fluent schema builder**. `make:migration`
+renders it, and it is what every migration shipped in this project uses:
+
+### `make:migration` does not guess which table you mean
+
+The description you type is a **filename**, not a declaration of intent. So the
+generator takes the table name from a flag or not at all:
+
+```bash
+wp wp_mini make:migration create_leads_table --create=leads   # Schema::create('leads')
+wp wp_mini make:migration add_status_to_leads --table=leads   # Schema::table('leads')
+wp wp_mini make:migration backfill_lead_sources               # scaffolds nothing
+```
+
+Each flag selects its own stub. `--create` scaffolds a `CREATE TABLE` and a
+`down()` that drops the table; `--table` scaffolds an `ALTER` and a `down()` that
+drops only the column the `up()` added. Without either, the generated file has an
+empty body and a comment naming the two calls to reach for — pick one and write it.
+
+**What changed and why.** Earlier versions read the description for a table:
+`create_leads_table` yielded `leads`, and anything matching
+`add_*_to_*`/`drop_*_from_*` yielded the trailing word. That was right often
+enough to be trusted and silent when it was wrong — `create_leads_and_companies`
+guessed nothing, a rename or a data migration guessed from a preposition, and the
+result was a plausible-looking table name in the one line a developer is least
+likely to re-read. A wrong table name in a scaffold is a destructive statement
+waiting to be run, so the guess is gone.
+
+Passing an unusable `--table=`/`--create=` value — anything but letters, digits,
+underscores and dollar signs — is refused before any file is written, rather than
+producing a migration that dies when it runs.
 
 ```php
 namespace App\Database\Migrations;
 
-use Framework\Database\Exceptions\MigrationException;
 use Framework\Database\Migration;
-use wpdb;
+use Framework\Database\Schema\Blueprint;
+use Framework\Database\Schema\Schema;
 
 final class CreateLeadsTable extends Migration
 {
-    /**
-     * Migrations are resolved from the container, so the handle is injected
-     * rather than reached for through `global $wpdb` — which is what lets this
-     * run against a test database without a WordPress install.
-     */
-    public function __construct(private ?wpdb $wpdb = null) {}
-
     public function up(): void
     {
-        $this->execute(sprintf(
-            'CREATE TABLE `%s` (
-                `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
-                `email` varchar(255) NOT NULL,
-                `created_at` datetime NOT NULL,
-                PRIMARY KEY (`id`)
-            ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
-            $this->db()->prefix . 'leads'
-        ), 'create the leads table');
+        Schema::create('leads', static function (Blueprint $table): void {
+            $table->id();
+            $table->string('email')->unique();
+            $table->string('name')->nullable();
+            $table->text('notes')->nullable();
+            $table->foreignId('company_id')->nullable()->constrained()->nullOnDelete();
+            $table->timestamps();
+        });
     }
 
     public function down(): void
     {
-        $this->execute(
-            sprintf('DROP TABLE IF EXISTS `%s`', $this->db()->prefix . 'leads'),
-            'drop the leads table'
+        Schema::dropIfExists('leads');
+    }
+}
+```
+
+Note what is *not* in that snippet: no `$wpdb`, no `$wpdb->prefix`, no
+`CREATE TABLE`, no `last_error` handling. Table names are written bare (`leads`,
+not `wp_leads`) and the prefix is applied by the adapter, so the same migration
+runs unchanged on a site whose `$table_prefix` differs.
+
+### The builder
+
+`Schema::create()` builds and runs a `CREATE TABLE`. `Schema::table()` is handed a
+table that **already exists**, and each column defined in the callback becomes an
+`ALTER TABLE` clause — this is what a migration that adds a column to a shipped
+table uses. `Schema::drop()` and `Schema::dropIfExists()` are the same operation;
+prefer the second in a `down()`, since a `down()` routinely runs against a
+database where its `up()` never completed.
+
+| Columns | Modifiers | Indexes | Foreign keys |
+| --- | --- | --- | --- |
+| `id()`, `string()`, `char()`, `text()`, `mediumText()`, `tinyText()`, `integer()`, `unsignedInteger()`, `unsignedBigInteger()`, `unsignedTinyInteger()`, `boolean()`, `datetime()`, `date()`, `time()`, `year()`, `timestamp()`, `decimal()`, `float()`, `double()`, `binary()`, `json()`, `enum()`, `set()`, `uuid()`, `ulid()`, `ipAddress()`, `macAddress()`, `timestamps()` | `nullable()`, `default()`, `useCurrent()`, `after()`, `first()` | `index()`, `indexColumn()`, `indexWith()`, `unique()`, `dropIndex()`, `dropUnique()` | `foreignId()`, `foreignUuid()`, `foreignUlid()`, `morphs()`, `nullableMorphs()`, `constrained()`, `cascadeOnDelete()`, `nullOnDelete()`, `restrictOnDelete()` |
+
+Three of those are multi-column helpers rather than single types:
+
+| Helper | Emits |
+| --- | --- |
+| `morphs('subject')` | `subject_type` varchar(191) + `subject_id` bigint unsigned, both `NOT NULL`, plus a composite index |
+| `nullableMorphs('subject')` | the same two columns, both nullable — `morphs(…)->nullable()` would reach only the second |
+| `softDeletes()` | a nullable `deleted_at` datetime. Deliberately **not** indexed: the useful index is composite and depends on what the table filters by |
+| `rememberToken()` | a nullable `remember_token` varchar(100) |
+
+**`json()` and `binary()` take no `default()`, and `enum()`/`set()` refuse one
+too.** MySQL rejects a `DEFAULT` clause on a json or blob column outright, and
+accepts one on an enum that is *outside* the member list — storing the empty
+member rather than refusing it, which is a schema that quietly allows a value
+nothing meant to permit. All four are refused at build time with that said.
+
+`enum()` and `set()` also check the things MySQL checks but reports badly: an
+empty list, an empty member (indistinguishable from "nothing selected"), and the
+255-byte ceiling across the whole definition. Values are escaped as SQL literals,
+so a member containing a quote cannot break out of the list.
+
+Changing an existing table — all of these are `Schema::table()`, and all of them
+compile into the one `ALTER TABLE` the callback describes:
+
+| What | Method |
+| --- | --- |
+| Add columns and indexes | `string('slug')`, `index()`, `unique()`, … |
+| Drop a column | `dropColumn('slug')` or `dropColumn(['a', 'b'])` |
+| Rename a column | `renameColumn('body', 'content')` |
+| Change a column's definition | `string('body', 500)->nullable()->change()` |
+| Move a column | `string('title')->after('id')->change()`, or `->first()` |
+| Drop an index | `dropIndex(['name'])`, `dropUnique(['name'])` |
+
+`Schema::rename('notes', 'archive')` renames a *table*, and is the one alteration
+that is not a blueprint method — it takes both names through the prefix and
+throws if the source is absent.
+
+Three behaviours in that table are deliberate and differ from Laravel:
+
+- **`string()` defaults to 191, not 255.** 255 characters × 4 bytes overruns the
+  767-byte limit a single-column index has on utf8mb4 under the row formats
+  WordPress still supports. Ask for `string('x', 255)` if you need it and are not
+  indexing it.
+- **Indexing a `longtext` is refused at the call site**, rather than emitting a
+  `KEY` that MySQL rejects with a message about key length.
+- **`foreignId('company_id')->constrained()`** derives the table (`companies`)
+  from the column name, and the referenced table is prefixed too — so
+  `constrained('users')` correctly points at `wp_users` (or `leadbridge_users`).
+
+### `change()` makes you restate the definition
+
+`change()` is the one place this builder does not read what you mean from what
+you wrote. It has no schema introspection behind it — adding Doctrine DBAL was
+rejected, since the builder describes and the adapter translates and a third
+thing doing both would sit across that seam — so it emits exactly the definition
+the fluent chain produced:
+
+```php
+$table->string('body', 500)->nullable()->change();
+// MODIFY COLUMN `body` varchar(500)      ← nullable, because NOT NULL was stripped
+```
+
+That means **whatever you do not restate is discarded.** A `->change()` without
+`->nullable()` on a column that was nullable makes it `NOT NULL`; a default you
+do not repeat is dropped. The upside is that nothing is inferred and so nothing
+is silently guessed wrong. Contrast `renameColumn()`, which does read the current
+definition back through the adapter — and therefore needs only two names.
+
+`down()` for a `dropColumn()` is a re-`add` that comes back **empty**. There is
+no schema-level undo for dropped data, and a migration that drops a column is
+reversible only in the structural sense.
+
+### Index replacement compiles to one statement
+
+`dropIndex()` and `unique()` over the same columns are emitted as **one**
+`ALTER TABLE` with comma-separated clauses, not two statements. This matters:
+making an already-indexed column unique compiles to a DROP and an ADD naming the
+same index, and split across two statements the ADD creates the unique index and
+the DROP then removes it — leaving the column unindexed and the constraint
+silently absent. Inside one statement MySQL evaluates DROP before ADD regardless
+of source order, which is the only ordering that produces the intended result.
+
+### `dbDelta()` is used for `CREATE TABLE` only
+
+`Schema::create()` is built on WordPress's `dbDelta()`, so a re-run against a
+partly-existing table converges instead of failing on the first duplicate.
+`Schema::table()` deliberately is not — it issues plain `ALTER` statements.
+
+That distinction, the parser rules `dbDelta()` imposes, and why foreign keys are
+lifted out of the `CREATE` and applied separately are all covered in
+**[The `dbDelta()` Boundary](#the-dbdelta-boundary)**. If you are about to add a
+column type or an alteration to the builder, read that section first.
+
+### When you need raw `$wpdb`
+
+The builder covers schema definition. It does **not** cover data migrations, and
+it has no query builder behind it — so a migration that rewrites existing rows
+uses `$wpdb` directly. Migrations are resolved through the container, so the
+handle can be injected rather than reached for through the global:
+
+```php
+namespace App\Database\Migrations;
+
+use Framework\Database\Migration;
+use wpdb;
+
+final class NormalizeActivityTypes extends Migration
+{
+    public function __construct(private ?wpdb $wpdb = null) {}
+
+    public function up(): void
+    {
+        // Runs once per row here; a real data migration should batch its
+        // updates rather than issuing one statement per row.
+        $this->db()->query(
+            "UPDATE `{$this->db()->prefix}activities`
+             SET `trackable_type` = REPLACE(`trackable_type`, 'App\\\\Models\\\\', '')
+             WHERE `trackable_type` LIKE 'App\\\\Models\\\\%'"
         );
     }
 
-    /**
-     * Run one DDL statement, reporting the database's own reason on failure.
-     *
-     * DDL implicitly commits, so there is nothing to roll back and no return
-     * value to interpret beyond success or failure. Without `last_error` the
-     * migrator's own report is "migration failed", which says nothing about why.
-     */
-    private function execute(string $sql, string $operation): void
+    public function down(): void
     {
-        $db = $this->db();
-
-        if ($db->query($sql) === false) {
-            throw new MigrationException(sprintf(
-                'Could not %s: %s',
-                $operation,
-                $db->last_error !== '' ? $db->last_error : 'the database reported no error message'
-            ));
-        }
+        // Deliberately not reversible: the previous fully-qualified names are
+        // not recoverable from the abbreviated ones.
     }
 
-    /**
-     * Resolved on first use. The migrator constructs migrations during a
-     * command's setup, which under WP-CLI can run before `$wpdb` is the global
-     * handle; throwing here beats a null dereference three statements later.
-     */
     private function db(): wpdb
     {
         if ($this->wpdb instanceof wpdb) {
@@ -918,7 +1230,7 @@ final class CreateLeadsTable extends Migration
         }
 
         if (!isset($GLOBALS['wpdb']) || !$GLOBALS['wpdb'] instanceof wpdb) {
-            throw new MigrationException(
+            throw new \RuntimeException(
                 'No $wpdb instance is available. Pass one to the constructor when '
                 . 'running outside a loaded WordPress.'
             );
@@ -929,24 +1241,274 @@ final class CreateLeadsTable extends Migration
 }
 ```
 
-There is deliberately **no schema-builder DSL**. Use raw `$wpdb` DDL.
+A `down()` that genuinely cannot reverse its `up()` is a legitimate choice for a
+data migration — say so in the docblock, as above, rather than writing a `down()`
+that silently does the wrong thing.
 
-**A note on `dbDelta()`.** The shipped example does not use it, and the reason is
-that a migration already has the thing `dbDelta()` exists to substitute for — a
-record of what has been applied — so a plain `CREATE TABLE` runs exactly once and
-a failure is a failure rather than a diff that decided there was nothing to do.
-`stubs/migration.stub`, which `make:migration` renders, **does** use `dbDelta()`
-and `global $wpdb`, because that is WordPress's own idiom and a reasonable default
-for generated code. The two styles are both supported; pick one per project
-rather than per file.
+> **Note on the two examples.** Raw `$wpdb` DDL for *schema* changes is not
+> recommended here — it bypasses the prefix handling and the `dbDelta()`
+> convergence above. Reach for `$wpdb` for **data**, and `Schema::` for
+> **structure**.
 
-Two further details:
+### No-op migrations are supported
+
+A migration whose `up()` and `down()` are both empty is valid and is recorded as
+applied. This is how a project keeps migration history aligned with another
+codebase it was ported from — `2026_10_18_120000_normalize_activities_trackable_type_to_morph_aliases.php`
+is exactly that, kept as a no-op so batch ordering still matches the Laravel
+project of origin.
+
+### Commands
+
+```bash
+wp wp_mini make:migration create_leads_table   # scaffold; derives the class name
+wp wp_mini make:migration add_status_to_leads --table=leads   # scaffold an ALTER
+wp wp_mini make:migration create_leads_table --create=leads   # scaffold a CREATE
+wp wp_mini migrate                             # apply every pending migration, as one batch
+wp wp_mini migrate --pretend                   # print the SQL without running any of it
+wp wp_mini migrate --step                      # one batch per migration, so each is reversible alone
+wp wp_mini migrate:rollback                    # reverse the most recent batch
+wp wp_mini migrate:rollback --batch=2          # reverse a specific batch
+wp wp_mini migrate:status                      # every migration, its batch, and missing files
+wp wp_mini migrate:status --pending            # only the ones that have not run
+wp wp_mini migrate:reset                       # reverse every batch
+wp wp_mini migrate:refresh                     # reverse every batch, then re-run them all
+wp wp_mini migrate:fresh --force               # drop everything and rebuild (destroys data)
+wp wp_mini migrate:dump --output=database/dumps/schema.php   # write the live schema out
+```
+
+`--batch=<n>` is the recovery path for a batch that failed partway: `migrate:status`
+shows the number, and rolling back that batch specifically is what clears it.
+
+`migrate:status --pending` narrows the listing to migrations that have not run, so a
+deploy script can ask "is there anything to apply?" by reading the last line —
+`0 pending` — rather than parsing the table. On an up-to-date database it prints
+`Nothing pending` instead of an empty table, and files recorded as ran whose source
+has been deleted are still reported: those cannot be run, so they are never
+"pending", and a filtered listing is exactly where they would otherwise disappear.
+
+### `migrate --step` gives every migration its own batch
+
+A plain `migrate` stamps every migration it applies with one new batch number, so
+`migrate:rollback` undoes the whole run. `--step` allocates a fresh batch per
+migration instead, which turns rollback into a single-migration undo:
+
+```bash
+wp wp_mini migrate --step          # 3 migrations → batches 1, 2, 3
+wp wp_mini migrate:rollback        # reverses only the last one
+```
+
+Use it when you are iterating on one migration and want to reverse just that one,
+or when you are stepping through a batch you do not fully trust. Batches are still
+numbered oldest-first, so migration order survives and `migrate:status` reads the
+same way it always does.
+
+`--step` composes with `--pretend`, and a pretend run consumes no batch numbers —
+so `migrate --pretend` followed by a real `migrate` starts at batch 1, not batch 4.
+
+### `migrate --pretend` prints the SQL and writes nothing
+
+`--pretend` runs each pending migration's `up()` for real, but every statement
+that reaches the schema layer is recorded instead of executed. The tracking table
+is left untouched, so the next real `migrate` still sees those migrations as
+pending — a pretend run never marks work as done that was not done.
+
+```bash
+wp wp_mini migrate --pretend
+# Pretending: 1 statement(s) would have been issued. Nothing was written.
+#   CREATE TABLE `wp_leads` (`id` bigint(20) unsigned NOT NULL AUTO_INCREMENT, ...)
+```
+
+**Read the output knowing what it cannot see.** The recording seam is the schema
+adapter, which is where every `Schema::` call lands. A migration that also issues
+raw `$wpdb->query()` calls — a data migration rewriting values, say — has those
+calls neither recorded nor run, because the framework does not route them and so
+has nothing to intercept. The command prints that caveat whenever it recorded
+something, so a pretend run is never mistaken for a complete account of the work.
+
+Probes are the other half of the same design. `Schema::hasColumn()` and friends
+still execute while pretending: a migration that guards an `ADD COLUMN` on a probe
+has to take the branch it really would, or the printed statements would describe a
+decision nobody made.
+
+**`migrate:refresh` and `migrate:fresh` are not interchangeable.** `refresh` walks
+every batch newest-first and calls each migration's `down()` — so it is the
+command that finds a broken `down()` — but a `down()` that throws aborts it
+partway and leaves a half-reversed schema. `fresh` first reverses the tracked
+migrations the same way (it also calls `down()`), then drops the tracking table
+outright and re-migrates from empty. Use `refresh` when you want the reverse path
+exercised and reported batch by batch; use `fresh` when you want the tracking
+state itself thrown away — a reset batch counter and no history — rather than
+reversed.
+
+> **Known docblock drift.** `Migrator::dropAllTables()`'s docblock and
+> `MigrateFreshCommand`'s both state that `migrate:fresh` "does not call `down()`
+> at all", and explain why. The code does call it (`Migrator.php:492`). The
+> docblocks describe an earlier implementation and have not been updated; trust
+> the behaviour described above, not those two paragraphs.
+
+### Migration events
+
+Three actions fire around every migration, whether it is running forward or
+being reversed. They are ordinary WordPress hooks, so you attach to them with
+`add_action()` in a service provider or anywhere else that runs before the
+migration command does:
+
+| Action | Fires | Arguments |
+| --- | --- | --- |
+| `{prefix}migration_starting` | immediately before the body runs | `string $identifier`, `string $direction` |
+| `{prefix}migration_finished` | after the body returned, **only on success** | `string $identifier`, `string $direction` |
+| `{prefix}migration_failed` | when the body threw, before the exception propagates | `string $identifier`, `string $direction`, `Throwable $e` |
+
+```php
+add_action('wp_mini_laravel_migration_starting', function (string $identifier, string $direction): void {
+    error_log("{$direction}: {$identifier}");
+}, 10, 2);
+
+add_action('wp_mini_laravel_migration_failed', function (string $identifier, string $direction, Throwable $e): void {
+    // The exception the migration actually threw — not the MigrationException the
+    // migrator wraps it in, which would match every failure equally.
+    notify_ops($identifier, $e);
+}, 10, 3);
+```
+
+**`{prefix}` is your plugin's prefix, read from `app.prefix`** — the same value
+the rebrander rewrites. So a plugin rebranded to `lead_bridge` fires
+`lead_bridge_migration_starting`, and no listener has to be renamed by hand. The
+constants (`Migrator::HOOK_MIGRATION_STARTING` and siblings) hold the suffix; the
+prefix is added at fire time.
+
+Three details that decide whether a listener is useful:
+
+- **`direction` is `'up'` or `'down'`.** One listener serves both paths; the
+  alternative is six actions, three per direction, and a listener that has to
+  subscribe to all of them to know which way the schema is moving.
+- **`finished` does not fire on failure.** "Finished" that also means "failed" is
+  a hook no listener can act on — a listener that cleans up after a successful
+  migration would clean up after a broken one and hide the breakage. Subscribe to
+  `failed` for that case.
+- **`starting` fires before a failing migration too.** A listener that prepared
+  something in `starting` needs to know it has to undo it, which it can only do
+  if `starting` came first.
+
+The events fire once per migration, in execution order, bracketing that
+migration's own body — not once per batch.
+
+### Concurrent runs are locked out
+
+Every command that changes the schema — `migrate`, `migrate --step`,
+`migrate:rollback`, `migrate:reset`, `migrate:refresh`, `migrate:fresh` — takes a
+MySQL advisory lock for the duration of the run, and gives it back when the run
+ends, including when a migration throws.
+
+```bash
+wp wp_mini migrate
+# Timed out after 600 seconds waiting for the migration lock [wp_plugin_migrations_lock],
+# which another process holds. No migration was run — this usually means another deploy
+# or `migrate` is still in progress. Wait for it to finish and try again. ...
+```
+
+**What it prevents.** Two `migrate` runs reading "this migration is pending"
+before either writes. The tracking table cannot stop that — both processes make
+the same read — and there is no schema transaction to fall back on, because MySQL
+DDL implicitly commits. So the second process waits instead of racing.
+
+**Why MySQL's lock and not an option row.** A lock built from WordPress options
+has to decide what to do when the holder dies: the row outlives the process, so
+every later run blocks on a lock nobody holds, and expiring it needs a timeout
+that is either too short (two live runs collide) or too long (a dead run blocks a
+deploy). `GET_LOCK()` has no such problem: MySQL binds it to the *connection*, so
+a process that dies takes its lock with it, immediately and correctly.
+
+**The lock name carries `$wpdb->prefix`** — `wp_plugin_migrations_lock` on a
+default install — so two plugins sharing one database do not serialise against
+each other. They touch different tables and have no reason to wait.
+
+**A `--pretend` run takes no lock.** It writes nothing and creates nothing, so
+there is nothing to race with; locking would make a developer's harmless dry run
+block a real deploy happening at the same time.
+
+If a run reports a lock timeout and nothing is actually running, the holder has a
+hung connection. The error message names the query that identifies it:
+
+```sql
+SELECT IS_USED_LOCK('wp_plugin_migrations_lock');   -- connection id, or NULL
+```
+
+### `migrate:dump` writes the schema you actually have
+
+The migration history cannot tell you what the database looks like — a column
+added by hand, a migration that half-applied, a table someone once created
+through phpMyAdmin. `migrate:dump` reads the catalogue and writes the
+`Schema::create()` calls that would rebuild what is there.
+
+```bash
+wp wp_mini migrate:dump --output=database/dumps/schema.php
+wp wp_mini migrate:dump --output=database/dumps/notes.php --table=notes --table=leads
+```
+
+The destination is `--output`, not `--path`. `--path` is WP-CLI's own global
+flag — `wp --path=/srv/site <command>` selects which WordPress installation to
+run against — and WP-CLI reads it during bootstrap, before the command ever
+sees its arguments. A command cannot shadow it, only lose to it.
+
+```
+Dumped 3 table(s) to database/dumps/schema.php
+This is a snapshot of the schema as it is now, not a record of the migrations that produced it.
+Read it before running it.
+```
+
+**The destination is a flag, never a default.** Writing into
+`database/migrations/` would leave a generated file in every developer's tree the
+first time they ran it — and running that file would apply a second, conflicting
+definition of tables the real migrations already create. The file is refused if
+it already exists, for the same reason: the documented workflow is dump, read,
+adjust, keep, and silently replacing it would destroy the adjusted copy.
+
+**With no `--table`, it dumps the project's tables** — everything carrying
+`$wpdb->prefix`, minus WordPress's core tables and the `plugin_migrations`
+tracking table. `--table` may be repeated; a comma-separated list was
+deliberately not offered, since a caller copying names out of a database listing
+has no reason to expect one argument to be parsed.
+
+**What it will not do:**
+
+- **Reconstruct the migration history.** It emits one `create` per table and has
+  no way to know which migration produced which column.
+- **Dump data.** Schema only.
+- **Approximate.** An unrecognised column type is reported with the type in the
+  message rather than falling back to `string()` — a dump that runs cleanly and
+  creates the wrong column is the worst available outcome, because nothing
+  errors. An auto-increment key that is not the `id` column is refused too,
+  since `id()` hardcodes both the name and the type. And naming the tracking
+  table is an error rather than a silent skip: a dumper that quietly dropped a
+  table it was asked for would return a file that looks complete and is missing
+  schema.
+
+The output carries these limits in its own header comment, so a reader meets
+them where it matters rather than in this file.
+
+### Two details worth knowing before you rename anything
 
 - The tracking table is `{$wpdb->prefix}plugin_migrations` — keyed on the
   **WordPress** table prefix, not the plugin's. Rebranding therefore does not
   orphan applied migrations.
 - Tables your migrations create still carry `$wpdb->prefix`. Those names are only
   yours to choose, never to rename after the fact.
+
+### Naming the class
+
+`make:migration` derives the class from the filename: the timestamp is stripped
+and the description becomes StudlyCase, so
+`2026_11_05_120000_create_leads_table.php` declares `CreateLeadsTable`. Because
+the name is derived, the file cannot be autoloaded by class name — the migrator
+`require`s it by path and then checks the class exists.
+
+The generator writes migrations into `App\Database\Migrations`. Two files in this
+project (`..._create_notes_table.php` and `..._create_note_audit_table.php`)
+declare `Database\Migrations` instead — a real inconsistency rather than a
+supported variation, since the migrator itself is indifferent to the namespace but
+the autoloader is not. If you write migrations by hand, match the generator.
 
 ---
 

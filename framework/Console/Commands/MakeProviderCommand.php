@@ -43,7 +43,9 @@ class MakeProviderCommand extends GeneratorCommand
 
     protected function getTargetPath(string $className): string
     {
-        return app_path('Providers/' . $className . '.php');
+        // `Admin/BlogProvider` lands in app/Providers/Admin/, matching the
+        // namespace the base class appends. See subDirectoryPath().
+        return app_path('Providers/' . $this->subDirectoryPath() . $className . '.php');
     }
 
     protected function getPostWriteHint(): ?string

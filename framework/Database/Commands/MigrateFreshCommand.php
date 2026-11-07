@@ -149,17 +149,15 @@ class MigrateFreshCommand extends Command
      * refused, because a flag that destroys data must not be enabled by a value
      * the operator meant as "no".
      *
+     * The falsy list is the base class's, shared with `--pretend` and `--step`.
+     * It used to be a private copy here, which is how it came to accept `off`
+     * while `migrate`'s copy did not.
+     *
      * @param array<string, string> $assocArgs
      */
     private function isForced(array $assocArgs): bool
     {
-        if (!array_key_exists(self::FORCE_FLAG, $assocArgs)) {
-            return false;
-        }
-
-        $value = strtolower(trim((string) $assocArgs[self::FORCE_FLAG]));
-
-        return !in_array($value, ['', '0', 'false', 'no', 'off'], true);
+        return $this->flagIsTrue($assocArgs, self::FORCE_FLAG);
     }
 
     private function refuse(): void

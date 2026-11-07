@@ -51,8 +51,29 @@ class MigrateStatusCommand extends Command
             return;
         }
 
+        if ($this->wantsPendingOnly($assocArgs)) {
+            $status = array_filter($status, static fn (array $m): bool => !$m['ran']);
+        }
+
         if ($status === [] && $missing === []) {
-            $this->info(sprintf('No migrations found in %s.', $this->migrator->getMigrationPath()));
+            // Two different situations reach this line and they must not be
+            // reported the same way. With `--pending` the directory may be full of
+            // migrations that have all run — the files are right there, so "no
+            // migrations found" is false. Only a genuinely empty directory means
+            // that.
+            $this->info($this->wantsPendingOnly($assocArgs)
+                ? 'Nothing pending. Every migration on disk has been applied.'
+                : sprintf('No migrations found in %s.', $this->migrator->getMigrationPath()));
+
+            return;
+        }
+
+        // Nothing left to show, but rows are missing files. The table would be
+        // empty under a header, which reads as a rendering fault rather than as
+        // the answer — so the answer is stated, and the missing files with it.
+        if ($status === []) {
+            $this->success('Nothing pending. Every migration on disk has been applied.');
+            $this->reportMissing($missing);
 
             return;
         }
@@ -69,16 +90,7 @@ class MigrateStatusCommand extends Command
             ));
         }
 
-        if ($missing !== []) {
-            // Reported separately and loudly: this is the one state the migrator
-            // cannot repair on its own, and it blocks a rollback of any batch
-            // those rows belong to.
-            $this->warning(sprintf(
-                '%d migration(s) are recorded as ran but their files are missing: %s',
-                count($missing),
-                implode(', ', $missing)
-            ));
-        }
+        $this->reportMissing($missing);
 
         $pending = count(array_filter($status, static fn (array $m): bool => !$m['ran']));
 
@@ -87,6 +99,47 @@ class MigrateStatusCommand extends Command
             '%d migration(s) total, %d pending.',
             count($status),
             $pending
+        ));
+    }
+
+    /**
+     * Whether `--pending` was passed, reading an explicit false as no.
+     *
+     * The flag exists so a deployment script can ask "is there anything to run?"
+     * without parsing a table: it narrows the listing to migrations that have not
+     * run, so the count on the last line — and an empty listing — both answer that
+     * question directly.
+     *
+     * Reads the shared falsy list on the base class, so `--pending=off` and
+     * `--pending=false` mean the same thing here as they do on `--pretend`.
+     */
+    private function wantsPendingOnly(array $assocArgs): bool
+    {
+        return $this->flagIsTrue($assocArgs, 'pending');
+    }
+
+    /**
+     * Report rows whose files have been deleted.
+     *
+     * Kept out of {@see handle()}'s flow because it is printed on every exit path
+     * that reaches it, including `--pending`: a missing file is *not* pending and
+     * is exactly the thing a filtered listing would otherwise hide.
+     *
+     * @param list<string> $missing
+     */
+    private function reportMissing(array $missing): void
+    {
+        if ($missing === []) {
+            return;
+        }
+
+        // Reported separately and loudly: this is the one state the migrator
+        // cannot repair on its own, and it blocks a rollback of any batch
+        // those rows belong to.
+        $this->warning(sprintf(
+            '%d migration(s) are recorded as ran but their files are missing: %s',
+            count($missing),
+            implode(', ', $missing)
         ));
     }
 

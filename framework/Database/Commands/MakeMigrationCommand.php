@@ -36,6 +36,15 @@ class MakeMigrationCommand extends GeneratorCommand
      */
     private string $description = '';
 
+    /**
+     * The stub this run resolved to, remembered for the post-write hint.
+     *
+     * Set as a side effect of {@see getStubPath()}, which the base class calls
+     * once during rendering; read afterwards to tailor the hint to the shape of
+     * migration that was actually generated.
+     */
+    private string $stubName = 'migration.stub';
+
     public function getName(): string
     {
         return config('app.cli_prefix', Config::DEFAULT_CLI_PREFIX) . ' make:migration';
@@ -67,9 +76,112 @@ class MakeMigrationCommand extends GeneratorCommand
 
     protected function getStubPath(): string
     {
-        // Bare name: StubLocator prefers the project's stubs/migration.stub and
-        // falls back to the framework's copy, so this works from vendor/ too.
-        return 'migration.stub';
+        // Chosen by what the caller told us, never inferred from the description.
+        // A `--table=`/`--create=` flag names the table outright, and the stub
+        // that follows scaffolds against it; without one there is no table to
+        // scaffold against, so the bare stub that scaffolds nothing is used.
+        //
+        // Bare names: StubLocator prefers the project's stubs/ copy and falls back
+        // to the framework's, so a project can override any of the three and this
+        // works from vendor/ too.
+        if ($this->isCreating()) {
+            $this->stubName = 'migration.create.stub';
+
+            return $this->stubName;
+        }
+
+        if ($this->targetTable() !== null) {
+            $this->stubName = 'migration.table.stub';
+
+            return $this->stubName;
+        }
+
+        $this->stubName = 'migration.stub';
+
+        return $this->stubName;
+    }
+
+    /**
+     * Whether `--create` was given, meaning the migration makes a new table.
+     *
+     * The explicit counterpart to `--table`, and the one that decides between
+     * `Schema::create()` and `Schema::table()`. Both flags may be given together
+     * and should agree; when they do not, `--create` wins because it is the flag
+     * that states an intent rather than naming a target, and a `CREATE` against a
+     * table that already exists is the failure that announces itself immediately.
+     */
+    private function isCreating(): bool
+    {
+        return $this->flagValue('create') !== null;
+    }
+
+    /**
+     * The table this migration targets, spelled by the caller or not at all.
+     *
+     * **Not guessed from the description.** A `create_leads_table` name used to be
+     * read as naming `leads`, which produced a scaffold that looked right and was
+     * right often enough to be trusted — and wrong the rest of the time, silently.
+     * `create_leads_and_companies` guessed nothing, `add_status_to_orders` guessed
+     * `orders` whether or not that was the intent, and a rename or a data migration
+     * guessed from a preposition. A wrong table name in a scaffold is worse than an
+     * empty one: it is the line a developer is least likely to re-read, and it is
+     * a destructive statement waiting to be run.
+     *
+     * So the table comes from `--create=` or `--table=`, and from nowhere else.
+     * Without either, the generated file scaffolds nothing and says so.
+     */
+    private function targetTable(): ?string
+    {
+        return $this->flagValue('table') ?? $this->flagValue('create');
+    }
+
+    /**
+     * `--table=`/`--create=` name a table, so they have to be usable as one.
+     *
+     * Checked here rather than left to the database, because the failure it
+     * prevents is not a crash: an invalid table name renders a valid-looking
+     * migration that dies when it runs, long after the developer has stopped
+     * looking at the generated file.
+     */
+    private function assertTableFlagIsUsable(): void
+    {
+        foreach (['table', 'create'] as $flag) {
+            $value = $this->flagValue($flag);
+
+            if ($value === null) {
+                continue;
+            }
+
+            if (preg_match('/^[A-Za-z0-9_$]+$/', $value) !== 1) {
+                throw new RuntimeException(sprintf(
+                    'The --%s value [%s] is not a usable table name. A table name may only '
+                    . 'contain letters, digits, underscores and dollar signs.',
+                    $flag,
+                    $value
+                ));
+            }
+        }
+    }
+
+    /**
+     * `migration.stub` uses only `{{ table }}` alongside the `{{ class }}` and
+     * `{{ namespace }}` the base class supplies. `{{ cli_prefix }}` is a
+     * `command.stub` placeholder — it is replaced by {@see MakeCommandCommand},
+     * which renders a stub that names the command in its docblock. This command
+     * renders no such stub, so the key was never read.
+     *
+     * `{{ table }}` is replaced in every stub, including the one that does not
+     * mention it: `str_replace` over a key the stub lacks is a no-op, and emitting
+     * an empty string for a stub that *does* mention it is what makes the
+     * no-table case scaffold nothing rather than scaffold something wrong.
+     *
+     * @return array<string, string>
+     */
+    protected function getReplacements(string $className): array
+    {
+        return [
+            '{{ table }}' => $this->targetTable() ?? '',
+        ];
     }
 
     /**
@@ -82,6 +194,11 @@ class MakeMigrationCommand extends GeneratorCommand
         if ($name === null || trim($name) === '') {
             return null;
         }
+
+        // Refused before anything is written, and refusals are checked before the
+        // name is even normalized: a bad `--table` is a mistake in the invocation,
+        // not something to report against a file that was about to be created.
+        $this->assertTableFlagIsUsable();
 
         // `parseName()` rejects a segment that is not a label at all, which is
         // correct but is not what a caller typing a *description* expects to hear
@@ -166,25 +283,6 @@ class MakeMigrationCommand extends GeneratorCommand
         return (string) config('app.namespace', Config::DEFAULT_NAMESPACE) . '\\Database\\Migrations';
     }
 
-    /**
-     * `migration.stub` uses only `{{ table }}` alongside the `{{ class }}` and
-     * `{{ namespace }}` the base class supplies. `{{ cli_prefix }}` is a
-     * `command.stub` placeholder — it is replaced by {@see MakeCommandCommand},
-     * which renders a stub that names the command in its docblock. This command
-     * renders no such stub, so the key was never read.
-     *
-     * @return array<string, string>
-     */
-    protected function getReplacements(string $className): array
-    {
-        return [
-            // `table` is the conventional guess at what the migration is for: a
-            // create_*_table name yields that table, anything else yields an
-            // empty string so the stub does not invent a wrong one.
-            '{{ table }}' => $this->guessTable(),
-        ];
-    }
-
     protected function getPostWriteHint(): ?string
     {
         return 'Implement up() and down(), then run: wp ' . config('app.cli_prefix', Config::DEFAULT_CLI_PREFIX) . ' migrate';
@@ -238,21 +336,5 @@ class MakeMigrationCommand extends GeneratorCommand
         $value = (string) preg_replace('/_+/', '_', $value);
 
         return strtolower(trim($value, '_'));
-    }
-
-    /**
-     * The table a `create_*_table` / `add_*_to_*` migration is about.
-     */
-    private function guessTable(): string
-    {
-        if (preg_match('/^create_(.+)_table$/', $this->description, $m) === 1) {
-            return $m[1];
-        }
-
-        if (preg_match('/^(?:add|drop|remove)_.+_(?:to|from)_(.+)$/', $this->description, $m) === 1) {
-            return $m[1];
-        }
-
-        return '';
     }
 }

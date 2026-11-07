@@ -13,7 +13,9 @@ declare(strict_types=1);
 require dirname(__DIR__, 2) . '/vendor/autoload.php';
 require dirname(__DIR__, 2) . '/tests/bootstrap.php';
 
+use Framework\Database\Adapters\WpDatabaseAdapter;
 use Framework\Database\Migrator;
+use Framework\Database\Storage\WpMigrationStorage;
 use Tests\Support\FakeWpdb;
 use Tests\Support\MigrationWorkspace;
 use Tests\Support\RecordingMigration;
@@ -37,7 +39,7 @@ $ws->write('2026_11_05_100000_create_alpha_table', RecordingMigration::class);
 $ws->write('2026_11_05_110000_create_beta_table', ThrowingMigration::class);
 $ws->write('2026_11_05_120000_create_gamma_table', RecordingMigration::class);
 
-$migrator = new Migrator($ws->path(), $db);
+$migrator = new Migrator($ws->path(), new WpDatabaseAdapter($db), new WpMigrationStorage($db));
 
 try {
     $migrator->runPending();
@@ -70,7 +72,7 @@ $ws2 = new MigrationWorkspace();
 $db2 = new FakeWpdb();
 
 $ws2->write('2026_11_05_100000_create_alpha_table', RecordingMigration::class);
-$migrator2 = new Migrator($ws2->path(), $db2);
+$migrator2 = new Migrator($ws2->path(), new WpDatabaseAdapter($db2), new WpMigrationStorage($db2));
 $migrator2->runPending();
 
 $ws2->write('2026_11_05_110000_create_beta_table', ThrowingMigration::class);

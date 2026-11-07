@@ -68,4 +68,84 @@ abstract class Command
             \WP_CLI::warning($message);
         }
     }
+
+    /**
+     * The spellings of "no" a boolean flag may arrive as.
+     *
+     * WP-CLI hands `--flag=value` through as a raw string and leaves a bare
+     * `--flag` as boolean `true`, so a command has to decide what the string
+     * means. Anything in this list is false; anything else non-empty ("1",
+     * "true", "yes", "on", or any other word) is true.
+     *
+     * The list is a single constant because it was previously copied into four
+     * commands, and they drifted: `migrate` refused `false`/`no`/`0` but read
+     * `off` as *yes*, while `migrate:fresh`'s `--force` check accepted `off` as
+     * *no*. The same spelling therefore meant opposite things in two commands,
+     * and in `--pretend`'s case the wrong reading is the dangerous one — a CI
+     * variable spelled `PRETEND=off` silently turned a real migration into a dry
+     * run that reported success.
+     *
+     * A flag that destroys data must not be enabled by a value its operator meant
+     * as "no", so this list errs toward refusing rather than assuming.
+     */
+    protected const FALSY_FLAG_VALUES = ['', '0', 'false', 'no', 'off', 'null', 'nil', 'none'];
+
+    /**
+     * Whether an associative WP-CLI argument was passed as a true flag.
+     *
+     * Returns false when the key is absent. A bare `--flag` arrives as boolean
+     * `true` and is returned as-is, because casting it to a string would produce
+     * `"1"` — which happens to be correct, but only by accident. A string is
+     * trimmed, lowercased and compared against {@see self::FALSY_FLAG_VALUES}.
+     *
+     * @param array<string, mixed> $assocArgs
+     */
+    protected function flagIsTrue(array $assocArgs, string $name): bool
+    {
+        if (!array_key_exists($name, $assocArgs)) {
+            return false;
+        }
+
+        $value = $assocArgs[$name];
+
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_array($value)) {
+            return $value !== [];
+        }
+
+        return !in_array(strtolower(trim((string) $value)), self::FALSY_FLAG_VALUES, true);
+    }
+
+    /**
+     * Whether a keyed option carries a usable value, as opposed to a bare flag.
+     *
+     * `--batch=all` is an option with a value; a bare `--batch` arrives as boolean
+     * `true` and carries none. Callers use this to fall back to a default rather
+     * than reading `"1"` out of a boolean.
+     *
+     * Named `optionValue` rather than `flagValue` because {@see GeneratorCommand}
+     * already has a `flagValue()` reading a single flag name off `$this->assocArgs`,
+     * and a base-class method of that name would collide with it.
+     *
+     * @param array<string, mixed> $assocArgs
+     */
+    protected function optionValue(array $assocArgs, string $name): ?string
+    {
+        if (!array_key_exists($name, $assocArgs)) {
+            return null;
+        }
+
+        $value = $assocArgs[$name];
+
+        if (is_bool($value) || is_array($value) || $value === null) {
+            return null;
+        }
+
+        $value = trim((string) $value);
+
+        return $value === '' ? null : $value;
+    }
 }
