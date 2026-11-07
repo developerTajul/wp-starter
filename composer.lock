@@ -8,7 +8,7 @@
     "packages": [
         {
             "name": "devlinkstudios/wp-mini-laravel-framework",
-            "version": "dev-phase-7-hexagonal-core",
+            "version": "dev-main",
             "dist": {
                 "type": "path",
                 "url": "./framework",
@@ -38,16 +38,16 @@
         },
         {
             "name": "devlinkstudios/wp-service-container",
-            "version": "v1.0.0",
+            "version": "v1.0.1",
             "source": {
                 "type": "git",
                 "url": "https://github.com/developerTajul/wp-service-container.git",
-                "reference": "e61c1f364e8d0be89637df9107d7fefaf33abfa9"
+                "reference": "d5bbe99ee149bcbe87c08a9dde37b04f91d25167"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/developerTajul/wp-service-container/zipball/e61c1f364e8d0be89637df9107d7fefaf33abfa9",
-                "reference": "e61c1f364e8d0be89637df9107d7fefaf33abfa9",
+                "url": "https://api.github.com/repos/developerTajul/wp-service-container/zipball/d5bbe99ee149bcbe87c08a9dde37b04f91d25167",
+                "reference": "d5bbe99ee149bcbe87c08a9dde37b04f91d25167",
                 "shasum": ""
             },
             "require": {
@@ -88,9 +88,9 @@
             ],
             "support": {
                 "issues": "https://github.com/developerTajul/wp-service-container/issues",
-                "source": "https://github.com/developerTajul/wp-service-container/tree/v1.0.0"
+                "source": "https://github.com/developerTajul/wp-service-container/tree/v1.0.1"
             },
-            "time": "2026-08-10T08:24:13+00:00"
+            "time": "2026-11-07T15:09:41+00:00"
         },
         {
             "name": "graham-campbell/result-type",
