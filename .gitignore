@@ -20,6 +20,13 @@ node_modules/
 .phpunit.cache/
 .phpunit.result.cache
 
+# Local audit reports. Regenerated per audit run, addressed to whoever ran
+# it, and stale the moment the next one lands — a committed copy is a
+# record of findings that have since been fixed. Kept out of the tree so
+# the report stays a working document rather than becoming a claim about
+# the current state of the code.
+/.audit/
+
 # PHP CS Fixer / PHPStan / Psalm / Rector
 .php-cs-fixer.cache
 .php-cs-fixer.php
