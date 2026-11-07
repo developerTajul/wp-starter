@@ -45,6 +45,7 @@ final class MakeControllerCommandTest extends TestCase
      * the *other* spellings stand out as deliberate rather than as typos.
      */
     private const FLAG_RESOURCE = 'resource';
+    private const FLAG_API = 'api';
     private const FLAG_INVOKABLE = 'invokable';
 
     private string $workspace;
@@ -156,7 +157,7 @@ final class MakeControllerCommandTest extends TestCase
      */
     public function test_the_stub_route_paths_use_the_class_name_not_the_argument(): void
     {
-        $this->command()->handle(['Api/CompanyController'], [self::FLAG_RESOURCE => true]);
+        $this->command()->handle(['Api/CompanyController'], [self::FLAG_API => true]);
 
         $contents = $this->read('Api/CompanyController.php');
 
@@ -310,15 +311,16 @@ final class MakeControllerCommandTest extends TestCase
     }
 
     /**
-     * `--resource` populates all seven conventional actions.
+     * `--resource` populates all seven conventional web actions.
      *
      * Asserted as *seven specific method names* rather than a count: a stub that
      * emitted `index` seven times would satisfy a count, and the conventional
      * names are the whole point of the flag.
      *
-     * The REST spelling is used here because that is what `--resource` produces
-     * outside `Admin/`. The web spelling is covered separately — see
-     * {@see test_the_admin_resource_stub_is_a_web_controller()}.
+     * Seven, not five, because `--resource` is the *web* shape: it carries
+     * `create` and `edit` as well, the two screens that render a form. The REST
+     * shape drops those two and is reached with `--api` — see
+     * {@see test_the_api_flag_generates_all_five_rest_actions()}.
      */
     public function test_the_resource_flag_generates_all_seven_actions(): void
     {
@@ -326,7 +328,7 @@ final class MakeControllerCommandTest extends TestCase
 
         $contents = $this->read('CompanyController.php');
 
-        foreach (['index', 'store', 'show', 'update', 'destroy'] as $action) {
+        foreach (['index', 'create', 'store', 'show', 'edit', 'update', 'destroy'] as $action) {
             $this->assertMatchesRegularExpression(
                 '/public function ' . $action . '\(/',
                 $contents,
@@ -338,15 +340,46 @@ final class MakeControllerCommandTest extends TestCase
     }
 
     /**
-     * The REST resource stub returns REST responses and extends the REST base.
+     * `--api` populates the five REST actions and only those.
      *
-     * The whole point of the split: a resource controller outside `Admin/` is
-     * mounted on `routes/api.php` and answered by WordPress's REST server, so it
-     * returns `WP_REST_Response` and takes the WordPress request.
+     * The complement of the seven-action test above, and asserted the same way:
+     * the five by name, and the two web-only screens by *absence*. A stub that
+     * kept `create`/`edit` would mount them as REST routes — endpoints that
+     * render a form to a REST client that cannot see one.
+     */
+    public function test_the_api_flag_generates_all_five_rest_actions(): void
+    {
+        $this->command()->handle(['CompanyController'], [self::FLAG_API => true]);
+
+        $contents = $this->read('CompanyController.php');
+
+        foreach (['index', 'store', 'show', 'update', 'destroy'] as $action) {
+            $this->assertMatchesRegularExpression(
+                '/public function ' . $action . '\(/',
+                $contents,
+                "The --api stub must declare a [{$action}] action."
+            );
+        }
+
+        foreach (['create', 'edit', '__invoke'] as $absent) {
+            $this->assertStringNotContainsString(
+                'public function ' . $absent . '(',
+                $contents,
+                "The --api stub must not declare [{$absent}]; it is a web-only screen."
+            );
+        }
+    }
+
+    /**
+     * The REST stub returns REST responses and extends the REST base.
+     *
+     * The whole point of the split: an `--api` controller is mounted on
+     * `routes/api.php` and answered by WordPress's REST server, so it returns
+     * `WP_REST_Response` and takes the WordPress request.
      */
     public function test_the_rest_resource_stub_is_a_rest_controller(): void
     {
-        $this->command()->handle(['CompanyController'], [self::FLAG_RESOURCE => true]);
+        $this->command()->handle(['CompanyController'], [self::FLAG_API => true]);
 
         $contents = $this->read('CompanyController.php');
 
@@ -366,7 +399,7 @@ final class MakeControllerCommandTest extends TestCase
      */
     public function test_the_rest_resource_routes_use_the_conventional_verbs(): void
     {
-        $this->command()->handle(['CompanyController'], [self::FLAG_RESOURCE => true]);
+        $this->command()->handle(['CompanyController'], [self::FLAG_API => true]);
 
         $contents = $this->read('CompanyController.php');
 
@@ -476,6 +509,13 @@ final class MakeControllerCommandTest extends TestCase
      * that split is the whole reason `create`/`edit` are separate from
      * `store`/`update`. A stub that returned a view from `store` would re-render
      * the form on submit and leave the browser's URL on the handler.
+     *
+     * The two helpers are the *global* `view()` and `redirect()`, not an injected
+     * `$this->views`: the generated class is `final` with no constructor, so
+     * there is nothing to inject into, and both helpers resolve their collaborator
+     * through the container at call time. That is what lets a scaffold with no
+     * dependencies stay honest — the response the action returns is the same one
+     * an injected renderer would have produced.
      */
     public function test_the_admin_form_handlers_redirect_and_the_screens_render(): void
     {
@@ -486,18 +526,17 @@ final class MakeControllerCommandTest extends TestCase
         // Screens render a view — four of them: index, create, show, edit. The
         // count is the assertion: a five would mean a form handler returned a page
         // instead of a redirect.
-        $this->assertStringContainsString('$this->views->make(', $contents);
         $this->assertSame(
             ['index', 'create', 'show', 'edit'],
-            $this->methodsReturning($contents, 'views->make')
+            $this->methodsReturning($contents, 'return view(')
         );
 
-        // Handlers redirect, and say something on arrival. Read as the *live*
-        // statements they are: the stub also carries commented `to_route(...)`
-        // lines showing the Result branch a completed handler will use, and a
-        // scan that counted those would call this stub finished.
-        $redirects = $this->methodsReturning($contents, 'return to_route(');
-        $this->assertSame(['store', 'update', 'destroy'], $redirects);
+        // Handlers redirect, and say something on arrival.
+        $this->assertSame(
+            ['store', 'update', 'destroy'],
+            $this->methodsReturning($contents, 'return redirect()->route(')
+        );
+
         $this->assertStringContainsString("->with('success'", $contents);
     }
 
@@ -705,7 +744,7 @@ final class MakeControllerCommandTest extends TestCase
      */
     public function test_the_route_path_drops_the_controller_suffix(): void
     {
-        $this->command()->handle(['CompanyController'], [self::FLAG_RESOURCE => true]);
+        $this->command()->handle(['CompanyController'], [self::FLAG_API => true]);
 
         $paths = $this->routesFrom($this->read('CompanyController.php'));
 
@@ -729,7 +768,7 @@ final class MakeControllerCommandTest extends TestCase
      */
     public function test_a_class_named_controller_does_not_get_an_empty_route_path(): void
     {
-        $this->command()->handle(['Controller'], [self::FLAG_RESOURCE => true]);
+        $this->command()->handle(['Controller'], [self::FLAG_API => true]);
 
         $contents = $this->read('Controller.php');
 
@@ -741,14 +780,14 @@ final class MakeControllerCommandTest extends TestCase
      * The sub-namespace still lands in the directory and the namespace, and the
      * route path does not inherit it.
      *
-     * `Admin/CompanyController` routes at `Company`, not `Admin/Company`: the
+     * `APi/CompanyController` routes at `Company`, not `Api/Company`: the
      * directory is organization inside the project, and the route path is a URL
      * segment. A generator that fed the raw argument to the stub would produce
      * the latter, which is a path nested under a word that is a folder name.
      */
     public function test_the_flags_still_honour_the_sub_namespace(): void
     {
-        $this->command()->handle(['Api/CompanyController'], [self::FLAG_RESOURCE => true]);
+        $this->command()->handle(['Api/CompanyController'], [self::FLAG_API => true]);
 
         $contents = $this->read('Api/CompanyController.php');
 
@@ -758,19 +797,19 @@ final class MakeControllerCommandTest extends TestCase
     }
 
     /**
-     * Only `Admin/` selects the web stubs; any other namespace is REST.
+     * The sub-namespace is organization, not surface: `--api` wins under `Admin/`.
      *
-     * The rule is deliberately narrow. `Api/CompanyController` is REST, and so is
-     * a bare `CompanyController` — but so is `Reports/CompanyController`, which is
-     * the case worth stating: there is no rule that says a namespace called
-     * `Reports` is a screen, and inventing one would put a web controller at a
-     * namespace this command never promised to treat as web.
+     * Under the previous design the namespace decided the surface, so
+     * `Admin/CompanyController --resource` was a web controller and there was no
+     * way to put a REST controller under `Admin/`. The flag decides now, and this
+     * is the case that pins it: the namespace still places the file, and the
+     * flag still chooses the shape, and the two no longer interfere.
      *
-     * @dataProvider nonAdminNamespaces
+     * @dataProvider namespacesForApi
      */
-    public function test_only_the_admin_namespace_selects_the_web_stubs(string $name): void
+    public function test_the_api_flag_wins_regardless_of_the_namespace(string $name): void
     {
-        $this->command()->handle([$name], [self::FLAG_RESOURCE => true]);
+        $this->command()->handle([$name], [self::FLAG_API => true]);
 
         $contents = $this->read($name . '.php');
 
@@ -781,14 +820,14 @@ final class MakeControllerCommandTest extends TestCase
     /**
      * @return array<string, array{string}>
      */
-    public static function nonAdminNamespaces(): array
+    public static function namespacesForApi(): array
     {
         return [
             'flat' => ['CompanyController'],
             'api' => ['Api/CompanyController'],
-            // The case worth stating: there is no rule that says a namespace
-            // called `Reports` is a screen, and inventing one would put a web
-            // controller somewhere this command never promised to treat as web.
+            // The case that changed: the flag decides, so `Admin/` no longer
+            // forces the web shape.
+            'admin' => ['Admin/CompanyController'],
             'unrelated namespace' => ['Reports/CompanyController'],
             // A namespace that merely *starts* with the same letters is not
             // `Admin`: the match is on the whole first segment, so this stays
@@ -799,14 +838,31 @@ final class MakeControllerCommandTest extends TestCase
     }
 
     /**
-     * A deeper `Admin/` namespace is still the web surface.
+     * And the web flag wins under any namespace too, which is the other half.
      *
-     * The nesting does not change the surface — `Admin/Reports/CompanyController`
-     * is an admin screen one section down, not a REST controller — which is why
-     * the check reads the *first* segment rather than requiring `Admin` to be the
-     * only one.
+     * `Api/CompanyController --resource` is a web controller: the flag says so,
+     * and the namespace only decides where the file goes.
      */
-    public function test_a_nested_admin_namespace_is_still_the_web_surface(): void
+    public function test_the_resource_flag_wins_regardless_of_the_namespace(): void
+    {
+        $this->command()->handle(['Api/CompanyController'], [self::FLAG_RESOURCE => true]);
+
+        $contents = $this->read('Api/CompanyController.php');
+
+        $this->assertStringContainsString('ResponseInterface', $contents);
+        $this->assertStringNotContainsString('WP_REST_Response', $contents);
+    }
+
+    /**
+     * A deeper namespace still lands in the right directory, and the flag still
+     * decides the shape.
+     *
+     * Nesting is organization: `Admin/Reports/CompanyController --resource` is a
+     * web controller two levels down, with the namespace and the directory both
+     * carrying the full sub-namespace. Nothing about the depth changes which stub
+     * is rendered — only the flag does that.
+     */
+    public function test_a_nested_namespace_is_still_the_web_surface_under_resource(): void
     {
         $this->command()->handle(['Admin/Reports/CompanyController'], [self::FLAG_RESOURCE => true]);
 
@@ -902,7 +958,7 @@ final class MakeControllerCommandTest extends TestCase
     }
 
     /**
-     * The generated resource controller extends the framework's REST base class.
+     * The generated API controller extends the framework's REST base class.
      *
      * The helpers the stub calls — `respond()`, `created()` — are inherited, so a
      * stub that dropped the `use` or the `extends` would fail at run time on the
@@ -911,7 +967,7 @@ final class MakeControllerCommandTest extends TestCase
      */
     public function test_the_generated_controller_extends_the_framework_controller(): void
     {
-        $this->command()->handle(['CompanyController'], [self::FLAG_RESOURCE => true]);
+        $this->command()->handle(['CompanyController'], [self::FLAG_API => true]);
 
         $this->assertSame(
             Controller::class,
@@ -922,7 +978,7 @@ final class MakeControllerCommandTest extends TestCase
     // --------------------------------------------- the attribute round trip
 
     /**
-     * Every `#[Route]` the resource stub writes is a route the registrar accepts.
+     * Every `#[Route]` the API stub writes is a route the registrar accepts.
      *
      * ## Why this is driven through the real registrar
      *
@@ -933,7 +989,7 @@ final class MakeControllerCommandTest extends TestCase
      * does not parse. None of those is visible in the generated text — the file
      * still parses and the attribute still *looks* right — so the generated
      * controller is loaded, reflected and registered for real, and the resulting
-     * routes compared against the seven the stub documents.
+     * routes compared against the five the stub documents.
      *
      * This is also what makes {@see Controller::registerRoutes()} a tested code
      * path rather than a documented one: it has no production caller today, so a
@@ -942,7 +998,7 @@ final class MakeControllerCommandTest extends TestCase
      */
     public function test_the_resource_stub_registers_real_routes(): void
     {
-        $this->command()->handle(['CompanyController'], [self::FLAG_RESOURCE => true]);
+        $this->command()->handle(['CompanyController'], [self::FLAG_API => true]);
 
         $routes = $this->routesFrom($this->read('CompanyController.php'));
 
@@ -952,26 +1008,45 @@ final class MakeControllerCommandTest extends TestCase
     }
 
     /**
-     * The invokable controller declares no routes of its own to read.
+     * A *web* invokable controller declares no routes of its own to read.
      *
-     * `--invokable` produces a web controller on both surfaces, and a web
-     * controller is mounted by `routes/web.php`, not by `#[Route]` — so there is
-     * nothing here for a route list to collect. Asserting that is the point:
-     * the failure mode is an invokable stub that keeps one REST-shaped attribute
-     * from an earlier revision, which registers a second, differently-typed
-     * route for the same class and only shows up as a duplicate at dispatch.
+     * `--invokable` is the one shape whose surface comes from the namespace, so
+     * `Admin/…` is the web one. A web controller is mounted by `routes/web.php`,
+     * not by `#[Route]` — so there is nothing here for a route list to collect.
+     * Asserting that is the point: the failure mode is a web invokable stub that
+     * keeps one REST-shaped attribute, which registers a second,
+     * differently-typed route for the same class and only shows up as a
+     * duplicate at dispatch.
      *
      * Reflection rather than a string scan, so this fails on an attribute the
      * stub could express in more than one spelling.
      */
-    public function test_the_invokable_controller_registers_no_route_of_its_own(): void
+    public function test_the_web_invokable_controller_registers_no_route_of_its_own(): void
+    {
+        $this->command()->handle(['Admin/CompanyController'], [self::FLAG_INVOKABLE => true]);
+
+        $list = new GeneratedRouteList();
+        $list->register($this->loadGenerated($this->read('Admin/CompanyController.php'))->getName());
+
+        $this->assertSame([], $list->paths());
+    }
+
+    /**
+     * And a *REST* invokable controller does declare one.
+     *
+     * The complement of the test above, and the reason `--invokable` cannot be a
+     * single stub: outside `Admin/` the controller is mounted by the REST server,
+     * so it carries a `#[Route]` — exactly the attribute the web stub must not
+     * have. One stub cannot satisfy both.
+     */
+    public function test_the_rest_invokable_controller_registers_its_own_route(): void
     {
         $this->command()->handle(['CompanyController'], [self::FLAG_INVOKABLE => true]);
 
         $list = new GeneratedRouteList();
         $list->register($this->loadGenerated($this->read('CompanyController.php'))->getName());
 
-        $this->assertSame([], $list->paths());
+        $this->assertSame(['POST Company'], $list->paths());
     }
 
     // -------------------------------------------------------------- helpers
@@ -1225,22 +1300,35 @@ final class GeneratedRouteList
      * ## Why the constructor arguments are resolved by reflection
      *
      * `registerRoutes()` is an instance method, so the controller has to be
-     * built — and a generated *web* controller (what `--invokable` and an
-     * `Admin/` `--resource` both produce) declares a `ViewRenderer` dependency
-     * that has nothing to do with the question being asked here. That class has
-     * no constructor arguments of its own, so satisfying any parameter whose
-     * type is instantiable with a bare `new` keeps this helper working for both
-     * surfaces without the test having to know which one it is looking at.
+     * built — and a generated controller may declare a dependency that has
+     * nothing to do with the question being asked here. That class has no
+     * constructor arguments of its own, so satisfying any parameter whose type is
+     * instantiable with a bare `new` keeps this helper working for both surfaces
+     * without the test having to know which one it is looking at.
      *
      * Note what this deliberately does *not* do: fall back to a mock. A web
      * controller that registered routes would still register them here, so the
      * "does this declare routes" assertions stay honest.
+     *
+     * ## A controller with no `registerRoutes()` collects nothing
+     *
+     * That is not a gap in the helper — it is the answer. `registerRoutes()` is
+     * inherited from `Framework\Routing\Controller`, and the *web* stubs extend
+     * nothing, so a web controller has no method to call and therefore declares
+     * no routes. Detecting the method's absence and returning is what lets the
+     * same helper serve both the REST assertion ("these paths") and the web one
+     * ("no paths"), instead of the web case erroring on a missing method — which
+     * would read as a broken test rather than as the property being checked.
      *
      * @param class-string $controller
      */
     public function register(string $controller): void
     {
         $reflection = new \ReflectionClass($controller);
+
+        if (!$reflection->hasMethod('registerRoutes')) {
+            return;
+        }
 
         $instance = $reflection->newInstanceArgs(array_map(
             static fn (\ReflectionParameter $p) => new ($p->getType()->getName()),

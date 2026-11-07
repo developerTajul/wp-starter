@@ -65,14 +65,58 @@ final class GeneratedCodeTest extends TestCase
     }
 
     /**
-     * The controller stub must produce a loadable class whose #[Route]
+     * The bare controller stub must produce a loadable class and nothing more.
+     *
+     * `make:controller Foo` produces an empty subclass — no actions, no routes —
+     * and that is the assertion: the failure mode is a default stub that grew a
+     * set of working-looking actions back, which would ship live routes for every
+     * bare `make:controller` in the wild. The class still has to load and extend
+     * the base, because a bare stub that failed to resolve its namespace or its
+     * parent would break the project the moment it was written.
+     */
+    public function test_the_controller_stub_produces_a_bare_loadable_class(): void
+    {
+        $class = 'GeneratedBare';
+        $path = $this->generateFixture($class, 'controller.stub');
+
+        $this->assertFileExists($path);
+
+        /** @var class-string<Controller> $fqcn */
+        $fqcn = self::NAMESPACE . '\\' . $class;
+        $this->assertTrue(class_exists($fqcn), "The generated class [{$fqcn}] did not autoload.");
+
+        $controller = new $fqcn();
+        $this->assertInstanceOf(Controller::class, $controller);
+
+        // No actions at all — the whole point of the bare shape. The methods
+        // inherited from the base are excluded by asking which ones the subclass
+        // itself declares.
+        $declared = array_map(
+            static fn (\ReflectionMethod $method): string => $method->getName(),
+            (new \ReflectionClass($fqcn))->getMethods(\ReflectionMethod::IS_PUBLIC)
+        );
+
+        $inherited = array_map(
+            static fn (\ReflectionMethod $method): string => $method->getName(),
+            (new \ReflectionClass(Controller::class))->getMethods(\ReflectionMethod::IS_PUBLIC)
+        );
+
+        $this->assertSame(
+            [],
+            array_values(array_diff($declared, $inherited)),
+            'A bare controller must declare no actions of its own.'
+        );
+    }
+
+    /**
+     * The API controller stub must produce a loadable class whose #[Route]
      * attributes register routes — proving the stub's namespace, imports and
      * attribute usage all match the framework.
      */
-    public function test_the_controller_stub_produces_a_working_controller(): void
+    public function test_the_api_controller_stub_produces_a_working_controller(): void
     {
         $class = 'GeneratedPosts';
-        $path = $this->generateController($class);
+        $path = $this->generateFixture($class, 'controller.api.stub');
 
         $this->assertFileExists($path);
 
@@ -102,13 +146,13 @@ final class GeneratedCodeTest extends TestCase
     }
 
     /**
-     * The generated controller's declared return type must match what its own
+     * The generated API controller's declared return type must match what its own
      * inherited helpers return, or every endpoint in it would be a TypeError.
      */
     public function test_the_generated_controller_returns_response_objects(): void
     {
         $class = 'GeneratedResponses';
-        $this->generateController($class);
+        $this->generateFixture($class, 'controller.api.stub');
 
         /** @var class-string<Controller> $fqcn */
         $fqcn = self::NAMESPACE . '\\' . $class;
@@ -178,14 +222,33 @@ final class GeneratedCodeTest extends TestCase
         $this->assertTrue(true);
     }
 
-    private function generateController(string $class): string
+    /**
+     * Render a shipped controller stub into the fixture namespace and load it.
+     *
+     * The stub is named by the caller rather than fixed, because the four
+     * controller shapes are four different files and the questions asked of them
+     * differ: the bare stub is checked for having no actions, the API stub for
+     * registering REST routes. Rendering "the controller stub" generically would
+     * make every assertion here a claim about whichever file that happened to be.
+     *
+     * @param string $stub A stub filename, e.g. `controller.api.stub`.
+     */
+    private function generateFixture(string $class, string $stub): string
     {
-        $stub = (string) file_get_contents($this->stubPath('controller.stub'));
-
         $contents = str_replace(
             ['{{ namespace }}', '{{ class }}'],
             [self::NAMESPACE, $class],
-            $stub
+            (string) file_get_contents($this->stubPath($stub))
+        );
+
+        // The route/view placeholders the API and web stubs carry, so the
+        // rendered file is valid source. The values are never asserted on here —
+        // the route *paths* are asserted in `MakeControllerCommandTest`, which
+        // goes through the command that actually substitutes them.
+        $contents = str_replace(
+            ['{{ route }}', '{{ name }}', '{{ view }}', '{{ items }}', '{{ item }}'],
+            [$class, lcfirst($class), strtolower($class), strtolower($class) . 's', lcfirst($class)],
+            $contents
         );
 
         $path = $this->targetDirectory . '/' . $class . '.php';

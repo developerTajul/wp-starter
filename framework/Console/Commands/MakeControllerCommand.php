@@ -8,34 +8,29 @@ use Framework\Console\GeneratorCommand;
 use RuntimeException;
 
 /**
- * `make:controller` — scaffold a web, admin or REST controller.
+ * `make:controller` — scaffold a controller in one of four shapes.
  *
  * The shape is chosen by flag, exactly as Laravel spells them:
  *
  *     wp wp_mini make:controller CompanyController               bare, no actions
- *     wp wp_mini make:controller CompanyController --resource    the RESTful actions
+ *     wp wp_mini make:controller CompanyController --resource    seven web actions
+ *     wp wp_mini make:controller CompanyController --api         five REST actions
  *     wp wp_mini make:controller CompanyController --invokable   a single __invoke()
  *
- * A fourth spelling composes with those — the namespace — and it decides which
- * *surface* the controller is generated for. See below.
+ * ## The flag picks the stub, and the flag is the only thing that does
  *
- * ## The surface decides the stub, and the surface is the namespace
- *
- * A controller under `Admin/` is a **web** controller: it is reached from an
- * admin screen or a form post, renders a view or redirects, and never sees a
- * `WP_REST_Request`. A controller anywhere else is a **REST** controller: it
+ * `--resource` is a **web** controller: it renders views, redirects form posts,
+ * and never sees a `WP_REST_Request`. `--api` is a **REST** controller: it
  * returns a `WP_REST_Response` and WordPress's REST server renders it.
  *
  * Those two are not the same file with different names in it — they do not share
- * a base class, a request type or a return type. A resource controller generated
- * into `Admin/` that returned `WP_REST_Response` and told the reader to mount
- * itself in `routes/api.php` would be wrong in three ways at once, and the
- * mistake is invisible until the screen renders nothing at all.
+ * a base class, a request type or a return type — so they are two different
+ * stubs. `--api` and `--invokable` (REST) extend `Framework\Routing\Controller`
+ * and take a `WP_REST_Request`; `--resource` and a bare `--invokable` are web
+ * controllers with no base class.
  *
- * So the namespace the caller chose selects the stub pair: `Admin/…` renders the
- * web stubs, anything else the REST ones. There is no flag for this — the path
- * already says which surface the controller belongs to, and a second way to say
- * it is a second way to disagree with the first.
+ * The flags are therefore mutually exclusive rather than composable: asking for
+ * two shapes at once is ambiguous, and it is refused rather than resolved.
  *
  * ## The web resource stub reads like Laravel
  *
@@ -70,7 +65,7 @@ use RuntimeException;
  *
  * ## The flags are mutually exclusive, and a conflict is refused
  *
- * `--resource --invokable` names two different file shapes. Picking one silently
+ * `--resource --api` names two different file shapes. Picking one silently
  * would generate a controller that does not match what was asked for, and the
  * report would say it succeeded — so it is reported instead. The refusal happens
  * before anything is written, so a rejected run leaves no file behind.
@@ -78,7 +73,7 @@ use RuntimeException;
 class MakeControllerCommand extends GeneratorCommand
 {
     /**
-     * The stub rendered when neither flag is given: a bare controller.
+     * The stub rendered when no flag is given: a bare controller.
      *
      * No actions at all, which is what `make:controller Foo` produces in Laravel
      * too. The three scaffolded REST actions this used to emit were the one thing
@@ -87,33 +82,42 @@ class MakeControllerCommand extends GeneratorCommand
      * routes they declare are live and wrong.
      *
      * It also collapses a duplicate. An earlier revision shipped this and
-     * {@see STUB_API_RESOURCE} as two files differing only in action count, which
+     * {@see STUB_API} as two files differing only in action count, which
      * is two files to keep in step and no reason for the second to exist.
      */
     private const STUB_DEFAULT = 'controller.stub';
 
     /**
-     * The REST stub rendered for `--resource` on a non-admin namespace.
+     * The REST stub rendered for `--api`.
+     *
+     * Five actions — `index`, `store`, `show`, `update`, `destroy` — which is the
+     * RESTful set for a resource that has no separate create/edit *forms*. Those
+     * two are web-only screens, so an API controller has no use for them.
      */
-    private const STUB_API_RESOURCE = 'controller.api.stub';
+    private const STUB_API = 'controller.api.stub';
 
     /**
-     * The web stub rendered for `--resource` under `Admin/`.
+     * The web stub rendered for `--resource`.
+     *
+     * Seven actions, the two the API stub omits being `create` and `edit` — the
+     * screens that render a form. `store` and `update` handle the submits those
+     * forms post to, which is why a web resource has both halves and a REST one
+     * has only the handlers.
      */
     private const STUB_WEB_RESOURCE = 'controller.resource.stub';
 
     /**
-     * The REST stub rendered for `--invokable` outside `Admin/`.
+     * The REST stub rendered for `--invokable`.
      *
      * A different file from {@see STUB_WEB_INVOKABLE}, not the same one reached
      * by two names: the two surfaces share no base class, no request type and no
      * return type, so an invokable controller mounted by the REST server and one
-     * mounted as an admin screen cannot be one file with a namespace changed.
+     * mounted as a web screen cannot be one file with a namespace changed.
      */
     private const STUB_INVOKABLE = 'controller.api.invokable.stub';
 
     /**
-     * The web stub rendered for `--invokable` under `Admin/`.
+     * The web stub rendered for `--invokable`.
      */
     private const STUB_WEB_INVOKABLE = 'controller.invokable.stub';
 
@@ -125,6 +129,9 @@ class MakeControllerCommand extends GeneratorCommand
      * enforces upper-case). `Admin/Reports/CompanyController` is an admin
      * controller; `Reports/CompanyController` is not, because there is no rule
      * that says a namespace called `Reports` is a screen.
+     *
+     * Read only by `--invokable`, which is the one shape with no surface flag of
+     * its own — see {@see resolveShape()}.
      */
     private const ADMIN_SEGMENT = 'Admin';
 
@@ -139,8 +146,8 @@ class MakeControllerCommand extends GeneratorCommand
      * timestamp: one run, one decision, two readers, which is what stops the hint
      * describing a different shape than the file that was written.
      *
-     * There is no third state to represent, because the two flags that would
-     * create one are refused rather than resolved — see {@see getStubPath()}.
+     * There is no third state to represent, because the flags that would create
+     * one are refused rather than resolved — see {@see getStubPath()}.
      */
     private string $shape = self::STUB_DEFAULT;
 
@@ -151,7 +158,7 @@ class MakeControllerCommand extends GeneratorCommand
 
     public function getDescription(): string
     {
-        return 'Create a new controller class (--resource, --invokable).';
+        return 'Create a new controller class (--resource, --api, --invokable).';
     }
 
     protected function getType(): string
@@ -173,68 +180,79 @@ class MakeControllerCommand extends GeneratorCommand
      * different resource controller copies `controller.resource.stub` into its
      * own `stubs/` directory and edits that.
      *
-     * @throws RuntimeException When both flags were given.
+     * @throws RuntimeException When more than one shape flag was given.
      */
     protected function getStubPath(): string
     {
-        $resource = $this->hasFlag('resource');
-        $invokable = $this->hasFlag('invokable');
+        $shape = $this->resolveShape();
 
-        if ($resource && $invokable) {
-            // Thrown rather than returned, because the base class catches a
-            // RuntimeException from anywhere in its handle() and reports it as
-            // the command's own error — and because it is thrown before the
-            // target path is even computed, so nothing is written.
-            throw new RuntimeException(
-                '--resource and --invokable ask for two different controllers. Pass one.'
-            );
-        }
+        $this->shape = $shape;
 
-        $this->shape = $this->resolveStub($resource, $invokable);
-
-        return $this->shape;
+        return $shape;
     }
 
     /**
-     * Pick the stub for the requested surface and shape.
+     * Read the three shape flags and refuse a request for more than one.
      *
-     * ## Two axes, answered in order
+     * ## Why this is a count and not a match
      *
-     * The flag answers "which actions"; the namespace answers "which surface".
-     * Both have to be answered before a file can be named, which is why this is
-     * a lookup over the pair rather than a match on the flag alone — and why the
-     * web branch is taken first. On the web surface a `--resource` controller
-     * renders the seven web actions with views and redirects, and a controller
-     * that got the flag's REST reading instead would return a `WP_REST_Response`
-     * to a dispatcher that has no idea what to do with one.
+     * Three flags name three different files, and any two of them together name
+     * a file that does not exist. Counting the requests and rejecting a count
+     * above one is what keeps the refusal total: a `match` over the pair would
+     * have to enumerate every combination, and the one it forgot would fall
+     * through to the default stub — a controller of the wrong shape reported as
+     * success.
      *
-     * The two surfaces have their own `--invokable` files as well, for the same
-     * reason: an invokable mounted by the REST server and one mounted as an admin
-     * screen differ in their imports, their request type and their return type.
+     * The refusal is thrown, not returned, and thrown before the target path is
+     * computed, so a rejected run leaves nothing on disk. The base class catches
+     * a RuntimeException from anywhere in its `handle()` and reports it as the
+     * command's own error.
+     *
+     * @throws RuntimeException When more than one shape flag was given.
      */
-    private function resolveStub(bool $resource, bool $invokable): string
+    private function resolveShape(): string
     {
-        // Two axes, and both have to be read on every path. An earlier cut asked
-        // only about the surface on the non-invokable branch and silently ignored
-        // `--invokable` outside `Admin/`, generating the default stub and
-        // reporting success — the flag was accepted and had no effect.
-        if ($this->isWebSurface()) {
-            return $resource ? self::STUB_WEB_RESOURCE : self::STUB_WEB_INVOKABLE;
+        $wanted = [];
+
+        if ($this->hasFlag('resource')) {
+            $wanted['--resource'] = self::STUB_WEB_RESOURCE;
         }
 
-        return match (true) {
-            $resource => self::STUB_API_RESOURCE,
-            $invokable => self::STUB_INVOKABLE,
-            default => self::STUB_DEFAULT,
-        };
+        if ($this->hasFlag('api')) {
+            $wanted['--api'] = self::STUB_API;
+        }
+
+        if ($this->hasFlag('invokable')) {
+            // The invokable stub depends on the surface, and with no surface flag
+            // left to read it comes from the namespace: `Admin/…` is a screen and
+            // anything else is REST. That is the one place the namespace still
+            // decides anything, and it is deliberate — there is no `--web` flag
+            // for `--invokable` to pair with, and inventing one would be a second
+            // way to say what the path already says.
+            $wanted['--invokable'] = $this->isWebSurface()
+                ? self::STUB_WEB_INVOKABLE
+                : self::STUB_INVOKABLE;
+        }
+
+        if (count($wanted) > 1) {
+            throw new RuntimeException(sprintf(
+                '%s ask for %d different controllers. Pass one.',
+                implode(' and ', array_keys($wanted)),
+                count($wanted)
+            ));
+        }
+
+        return $wanted === [] ? self::STUB_DEFAULT : reset($wanted);
     }
 
     /**
      * Whether this run generates into the web surface.
      *
-     * The first sub-namespace segment only — see {@see ADMIN_SEGMENT} — because
-     * the choice is about the top-level namespace the caller typed, not about
-     * anything nested beneath it.
+     * The first sub-namespace segment only — {@see ADMIN_SEGMENT} — because the
+     * choice is about the top-level namespace the caller typed, not about
+     * anything nested beneath it. Read only by `--invokable`, which has no
+     * surface flag of its own; `--resource` and `--api` name their surface
+     * directly.
      */
     private function isWebSurface(): bool
     {
@@ -304,7 +322,7 @@ class MakeControllerCommand extends GeneratorCommand
     protected function getPostWriteHint(): ?string
     {
         return match ($this->shape) {
-            self::STUB_API_RESOURCE => 'Mount it with Route::controller(' . $this->parsed->class
+            self::STUB_API => 'Mount it with Route::controller(' . $this->parsed->class
                 . '::class, [...], \'' . $this->routePath($this->parsed->class) . '\') in routes/api.php.',
             self::STUB_INVOKABLE => 'Mount it with Route::post(\'' . $this->routePath($this->parsed->class)
                 . '\', ' . $this->parsed->class . '::class) in routes/api.php.',

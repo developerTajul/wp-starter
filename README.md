@@ -716,38 +716,44 @@ generates the attribute form.
 
 ### Controller shapes
 
-`make:controller` generates a controller in one of two **surfaces** and one of
-three **shapes**. The flag picks the shape, the namespace picks the surface:
+`make:controller` generates a controller in one of four **shapes**. The flag
+picks the shape, exactly as Laravel spells them:
 
 ```bash
 wp wp_mini make:controller CompanyController               # bare, no actions
-wp wp_mini make:controller CompanyController --resource    # five RESTful actions
-wp wp_mini make:controller CompanyController --invokable   # a single __invoke()
-
-wp wp_mini make:controller Admin/CompanyController --resource    # seven web actions
-wp wp_mini make:controller Admin/CompanyController --invokable   # a single __invoke()
+wp wp_mini make:controller CompanyController --resource    # seven web actions
+wp wp_mini make:controller CompanyController --api         # five REST actions
+wp wp_mini make:controller CompanyController --invokable   # a single __invoke()  (one action)
 ```
 
-**A controller under `Admin/` is a web controller. Anything else is a REST
-controller.** There is no flag for this, because the path already says it and a
-second way to say it is a second way to disagree with the first.
+**The flag picks the surface.** `--resource` is a web controller — it renders
+views and redirects form posts. `--api` is a REST controller — it returns
+`WP_REST_Response` and is answered by WordPress's REST server. The namespace no
+longer decides this: `Admin/CompanyController --api` is a REST controller
+placed under `Admin/`, and `Api/CompanyController --resource` is a web one. The
+path says *where the file goes*; the flag says *what it is*.
 
 The two surfaces share no base class, no request type and no return type, so
 they are different stubs rather than one file with a namespace swapped in:
 
-| Into | Flag | Stub | Extends | Takes | Returns |
+| Flag | Stub | Extends | Takes | Returns | Actions |
 |---|---|---|---|---|---|
-| anywhere | *(none)* | `controller.stub` | `Controller` | — | — |
-| `Admin/` | `--resource` | `controller.resource.stub` | *(nothing)* | `Request` | `ResponseInterface` |
-| `Admin/` | `--invokable` | `controller.invokable.stub` | *(nothing)* | `Request` | `ResponseInterface` |
-| elsewhere | `--resource` | `controller.api.stub` | `Controller` | `WP_REST_Request` | `WP_REST_Response` |
-| elsewhere | `--invokable` | `controller.api.invokable.stub` | `Controller` | `WP_REST_Request` | `WP_REST_Response` |
+| *(none)* | `controller.stub` | `Controller` | — | — | *(none)* |
+| `--resource` | `controller.resource.stub` | *(nothing)* | `Request` | `ResponseInterface` | `index`, `create`, `store`, `show`, `edit`, `update`, `destroy` |
+| `--api` | `controller.api.stub` | `Controller` | `WP_REST_Request` | `WP_REST_Response` | `index`, `store`, `show`, `update`, `destroy` |
+| `--invokable` | `controller.api.invokable.stub` | `Controller` | `WP_REST_Request` | `WP_REST_Response` | `__invoke` |
+| `--invokable` under `Admin/` | `controller.invokable.stub` | *(nothing)* | `Request` | `ResponseInterface` | `__invoke` |
 
-A `--resource` controller under `Admin/` renders views and redirects with a
-flash message, and is mounted with `Route::adminPage(...)` /
-`Route::adminAction(...)` in `routes/web.php`. It is generated as a `final` class
-with no constructor — the screens call the global `view()` helper and the form
-handlers answer with `success` flashes:
+The three shape flags are mutually exclusive; asking for two at once is refused
+before anything is written. `--invokable` is the one shape with no surface flag
+of its own, so its surface comes from the namespace: under `Admin/` it is a web
+controller, anywhere else a REST one.
+
+A `--resource` controller renders views and redirects with a flash message, and
+is mounted with `Route::adminPage(...)` / `Route::adminAction(...)` in
+`routes/web.php`. It is generated as a `final` class with no constructor — the
+screens call the global `view()` helper and the form handlers answer with
+`redirect()->route(...)` and a `success` flash:
 
 ```php
 final class CompanyController
@@ -759,14 +765,14 @@ final class CompanyController
 
     public function store(Request $request): ResponseInterface
     {
-        return to_route('company.index')->with('success', 'Created.');
+        return redirect()->route('company.index')->with('success', 'Created.');
     }
 }
 ```
 
-Everywhere else a `--resource` controller declares `#[Route]` attributes and is
-mounted with `Route::controller(...)` in `routes/api.php`. The command prints the
-correct mount for whichever it generated.
+An `--api` controller declares `#[Route]` attributes and is mounted with
+`Route::controller(...)` in `routes/api.php`. The command prints the correct
+mount for whichever shape it generated.
 
 The web stubs name their redirect target `<name>.index` — `company.index` for
 `CompanyController` — so a generated `store()` only works once you have given the
@@ -778,9 +784,9 @@ one without touching the others by copying it into its own `stubs/` directory.
 They are resolved through `StubLocator`, which prefers the project's copy and
 falls back to the framework's.
 
-`--resource` and `--invokable` together are refused rather than resolved: they
-name two different files, and silently picking one would report success for a
-controller nobody asked for.
+`--resource`, `--api` and `--invokable` together are refused rather than
+resolved: they name different files, and silently picking one would report
+success for a controller nobody asked for.
 
 > **The attributes are declarative; the mount is what publishes them.**
 > `#[Route]` attributes describe each action in place, but they do not put the
