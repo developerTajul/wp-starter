@@ -87,6 +87,11 @@ abstract class Command
      *
      * A flag that destroys data must not be enabled by a value its operator meant
      * as "no", so this list errs toward refusing rather than assuming.
+     *
+     * The list is not the whole story: it holds the spellings that are *words*,
+     * and `zeroIsFalse()` below catches the numeric ones. `'0'` appears in both
+     * by way of documentation, but `'0.0'`, `'00'`, `'-0'` and `'0e1'` are
+     * matched only by the numeric check.
      */
     protected const FALSY_FLAG_VALUES = ['', '0', 'false', 'no', 'off', 'null', 'nil', 'none'];
 
@@ -96,7 +101,8 @@ abstract class Command
      * Returns false when the key is absent. A bare `--flag` arrives as boolean
      * `true` and is returned as-is, because casting it to a string would produce
      * `"1"` — which happens to be correct, but only by accident. A string is
-     * trimmed, lowercased and compared against {@see self::FALSY_FLAG_VALUES}.
+     * trimmed, lowercased, and then refused if it is either a word in
+     * {@see self::FALSY_FLAG_VALUES} or numerically zero.
      *
      * @param array<string, mixed> $assocArgs
      */
@@ -116,7 +122,46 @@ abstract class Command
             return $value !== [];
         }
 
-        return !in_array(strtolower(trim((string) $value)), self::FALSY_FLAG_VALUES, true);
+        $trimmed = strtolower(trim((string) $value));
+
+        if (in_array($trimmed, self::FALSY_FLAG_VALUES, true)) {
+            return false;
+        }
+
+        return !self::zeroIsFalse($trimmed);
+    }
+
+    /**
+     * Whether a flag value is a numeric spelling of zero.
+     *
+     * ## Why the word list is not enough
+     *
+     * `FALSY_FLAG_VALUES` holds `'0'` and seven words, and every one of them was
+     * written by whoever read the migration docs last. But WP-CLI passes
+     * `--flag=value` through as a raw string, and an operator writes zero the way
+     * the surrounding tooling writes it: `--force=0.0` from a float-valued CI
+     * variable, `--batch=00` from a zero-padded id, `--force=-0` from a computed
+     * expression, `--pretend=0e1` from a scientific-notation round trip. Every one
+     * of those reaches this method as a string the old `in_array()` did not
+     * recognise, so it fell through to `true`.
+     *
+     * That is the dangerous direction. These flags guard destructive work —
+     * `migrate:fresh` drops every table — and a value whose numeric meaning is
+     * zero being read as "yes, proceed" inverts the operator's intent. Comparing
+     * the *value* rather than the spelling is what makes the check complete:
+     * `is_numeric()` accepts every one of those forms, and a float comparison
+     * against `0.0` collapses them, including the exponent spelling PHP parses as
+     * `0.0` and the negative zero it parses as `-0.0`.
+     *
+     * Deliberately numeric-only rather than a general truthiness test: `'0.5'`,
+     * `'1e0'` and `'0x0'` all stay true, because a caller who writes a non-zero
+     * number or a non-decimal literal has not written "no". `is_numeric()`
+     * rejecting `'0x0'` is correct here, not a gap — PHP does not parse hex in
+     * numeric strings, and treating it as zero would be guessing.
+     */
+    private static function zeroIsFalse(string $value): bool
+    {
+        return is_numeric($value) && (float) $value === 0.0;
     }
 
     /**

@@ -512,6 +512,76 @@ final class MigrationCommandsTest extends TestCase
     }
 
     /**
+     * A numeric spelling of zero means "no" even when it is not the string `'0'`.
+     *
+     * ## Why the word list could not cover this
+     *
+     * `FALSY_FLAG_VALUES` matches spellings, and the list can only hold the ones
+     * somebody thought to write down. Zero has more spellings than `'0'`, and the
+     * ones that actually reach WP-CLI come from whatever produced the value:
+     * `--force=0.0` from a float-valued CI variable, `--pretend=00` from a
+     * zero-padded id, `--force=-0` from a computed expression, `--pretend=0e1`
+     * from a scientific-notation round trip. Each arrived as a string the list did
+     * not know, fell through to the final truthiness test, and read as "yes".
+     *
+     * The direction of that mistake is what makes it worth a test rather than a
+     * note: these flags guard destructive work, so a value whose numeric meaning
+     * is zero being read as "proceed" does the opposite of what its author asked.
+     * Reading it as a *number* rather than a string is what closes the set —
+     * `'0.00'`, `'0.0e0'` and anything else PHP parses to `0.0` is covered by the
+     * same comparison, so the check cannot drift the way the list did.
+     */
+    public function test_pretend_ignores_numeric_spellings_of_zero(): void
+    {
+        foreach (['0.0', '00', '-0', '0e1', '-0.0', '0.000', '00000'] as $spelling) {
+            $this->setUp();
+
+            $this->workspace->write('2026_11_05_100000_create_users_table', SchemaMigration::class);
+
+            $command = $this->migrateCommand();
+            $command->handle([], ['pretend' => $spelling]);
+
+            $this->assertStringNotContainsString(
+                'Pretending',
+                implode("\n", $command->messages),
+                sprintf('--pretend=%s was read as a dry run; it is numerically zero and means "no".', $spelling)
+            );
+            $this->assertCount(
+                1,
+                $this->db->rows('wp_plugin_migrations'),
+                sprintf('--pretend=%s recorded nothing; it should have run for real.', $spelling)
+            );
+        }
+    }
+
+    /**
+     * A *non-zero* number is still a yes.
+     *
+     * The mirror of the test above, and the reason the check is "parses to zero"
+     * rather than "looks like a number". A rule that refused anything numeric
+     * would silently disable `--batch=2`-style flags, and the remedy for a
+     * too-narrow falsy list must not be a too-wide one.
+     */
+    public function test_pretend_still_accepts_a_non_zero_number(): void
+    {
+        $this->workspace->write('2026_11_05_100000_create_users_table', SchemaMigration::class);
+
+        $command = $this->migrateCommand();
+        $command->handle([], ['pretend' => '1']);
+
+        $this->assertStringContainsString(
+            'Pretending',
+            implode("\n", $command->messages),
+            '--pretend=1 is a non-zero number and means "yes".'
+        );
+        $this->assertCount(
+            0,
+            $this->db->rows('wp_plugin_migrations'),
+            'A dry run must not record a migration.'
+        );
+    }
+
+    /**
      * The real run afterwards must still be a real run.
      *
      * `Schema::pretend()` pins the adapter into a static slot and
