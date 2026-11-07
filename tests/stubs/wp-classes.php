@@ -404,3 +404,34 @@ if (!class_exists('WP_REST_Request')) {    /**
         }
     }
 }
+
+if (!class_exists('WP_Rewrite')) {
+    /**
+     * The rewrite engine, as the one method the lifecycle hooks call.
+     *
+     * `flush_rules()` records its call rather than rebuilding anything, because
+     * there is no rule table in this process to rebuild. What a test needs to
+     * assert is that deactivation *asked* for a flush — the expensive half, and
+     * the half WordPress will not do on its own — and that activation did not
+     * also drop a table while it was there.
+     *
+     * `$hard` is recorded rather than ignored: the framework passes `false`
+     * deliberately (rewriting `.htaccess` is pointless in a request that is
+     * about to end), and a stub that dropped the argument could not tell that
+     * from the default `true`.
+     */
+    class WP_Rewrite
+    {
+        /**
+         * Every `flush_rules()` call, in order.
+         *
+         * @var list<bool>
+         */
+        public array $flushes = [];
+
+        public function flush_rules(bool $hard = true): void
+        {
+            $this->flushes[] = $hard;
+        }
+    }
+}

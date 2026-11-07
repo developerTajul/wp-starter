@@ -23,6 +23,16 @@ return [
     // do not register commands under the same name.
     'cli_prefix' => env('CLI_PREFIX', 'wp_mini'),
 
+    // Whether an uninstall is allowed to delete the plugin's data, keyed as
+    // `prefix . 'delete_data_on_uninstall'`. The default is false, which is the
+    // only safe default for a destructive action: a site that never touched the
+    // setting keeps every table when the plugin is deleted.
+    //
+    // Note this is the *default*; the setting itself is a WordPress option, so a
+    // site owner can flip it at any time and the value read at uninstall is the
+    // one that counts. See `App\Lifecycle\PluginLifecycle`.
+    'delete_data_on_uninstall' => env('DELETE_DATA_ON_UNINSTALL', false),
+
     // The REST namespace every route is published under. WordPress exposes it
     // at /wp-json/{rest_namespace}/ and uses it to scope route discovery, so it
     // must be unique per plugin — two plugins sharing one would have their
@@ -40,6 +50,12 @@ return [
 
         \App\Providers\RouteServiceProvider::class,
         \Framework\Database\MigrationServiceProvider::class,
+
+        // After the migration provider, whose `Migrator` and
+        // `MigrationStorageInterface` bindings it composes. Listed here rather
+        // than before it so the file reads in dependency order; the bindings are
+        // lazy, so the order is not load-bearing.
+        \App\Providers\LifecycleServiceProvider::class,
 
         // Binds Framework\Http\Request (captured from the superglobals) and the
         // middleware Pipeline, so both can be type-hinted anywhere a service is

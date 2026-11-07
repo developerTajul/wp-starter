@@ -85,6 +85,20 @@ final class WpStub
     public static array $options = [];
 
     /**
+     * The `$autoload` flag each option was last written with, as option name =>
+     * bool.
+     *
+     * Kept beside {@see $options} rather than folded into it because the two
+     * answer different questions: the value is what the option *is*, and this is
+     * how it was *stored*. Several options here are deliberately written with
+     * autoload off — the migration high-water mark, the uninstall toggle — and
+     * that is a decision a test should be able to assert rather than infer.
+     *
+     * @var array<string, bool>
+     */
+    public static array $optionAutoload = [];
+
+    /**
      * Transients, as name => value. A transient is an option with an expiry, and
      * nothing the framework does depends on the expiry, so the two stores are
      * kept apart only so a test can tell which one was written.
@@ -190,6 +204,63 @@ final class WpStub
      */
     public static bool $isAdmin = false;
 
+    // -------------------------------------------------------- plugin lifecycle
+
+    /**
+     * Callbacks registered through `register_activation_hook()`, as plugin
+     * basename => callable.
+     *
+     * Keyed by basename because that is how WordPress identifies a plugin, and
+     * it is the key that decides whether the hook fires at all: the stub refuses
+     * a path with no directory separator, exactly as core's `plugin_basename()`
+     * check does. A test asserting on the key therefore also asserts the hook
+     * would really be registered.
+     *
+     * @var array<string, callable>
+     */
+    public static array $activationHooks = [];
+
+    /**
+     * Callbacks registered through `register_deactivation_hook()`, as basename
+     * => callable.
+     *
+     * @var array<string, callable>
+     */
+    public static array $deactivationHooks = [];
+
+    /**
+     * Callbacks registered through `register_uninstall_hook()`, as basename =>
+     * callable.
+     *
+     * Expected to stay empty. The plugin uses `uninstall.php` instead, because
+     * this function keeps its registration in the `uninstall_plugins` option —
+     * a callback stored in the database being deleted. A test asserts the empty
+     * case, which it could not do against an undefined function.
+     *
+     * @var array<string, callable>
+     */
+    public static array $uninstallHooks = [];
+
+    /**
+     * Fields added through `add_settings_field()`, in order.
+     *
+     * @var list<array<string, mixed>>
+     */
+    public static array $settingsFields = [];
+
+    /**
+     * Settings registered through `register_setting()`, in order.
+     *
+     * Expected to stay empty for the uninstall toggle: the Settings API only
+     * writes an option that is *present* in the submission, and an unchecked
+     * checkbox is not submitted — so registering it would leave a previous
+     * `true` in place when the user unchecks the box. See
+     * {@see \App\Lifecycle\UninstallSettings}.
+     *
+     * @var list<array<string, mixed>>
+     */
+    public static array $registeredSettings = [];
+
     /**
      * Statements handed to `dbDelta()`, in order.
      *
@@ -228,6 +299,7 @@ final class WpStub
         self::$capabilitiesAsked = [];
         self::$userLoggedIn = false;
         self::$options = [];
+        self::$optionAutoload = [];
         self::$transients = [];
         self::$currentUserId = 0;
         self::$nonces = [];
@@ -245,6 +317,40 @@ final class WpStub
         self::$isAdmin = false;
         self::$dbDeltaStatements = [];
         self::$dbDeltaResult = [];
+        self::$activationHooks = [];
+        self::$deactivationHooks = [];
+        self::$uninstallHooks = [];
+        self::$settingsFields = [];
+        self::$registeredSettings = [];
+    }
+
+    /**
+     * Fire a plugin's activation hook, as WordPress does.
+     *
+     * The counterpart to {@see doAction()} for the lifecycle hooks, which are
+     * not actions: `register_activation_hook()` stores a single callback under
+     * the plugin's basename key, and WordPress invokes it once, with no
+     * arguments, from `activate_plugin()`.
+     */
+    public static function activatePlugin(string $basename): void
+    {
+        $callback = self::$activationHooks[$basename] ?? null;
+
+        if ($callback !== null) {
+            $callback();
+        }
+    }
+
+    /**
+     * Fire a plugin's deactivation hook. See {@see activatePlugin()}.
+     */
+    public static function deactivatePlugin(string $basename): void
+    {
+        $callback = self::$deactivationHooks[$basename] ?? null;
+
+        if ($callback !== null) {
+            $callback();
+        }
     }
 
     /**

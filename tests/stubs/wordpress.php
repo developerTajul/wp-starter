@@ -152,6 +152,198 @@ if (!function_exists('register_rest_route')) {
     }
 }
 
+// -------------------------------------------------------------- plugin lifecycle
+
+if (!function_exists('register_activation_hook')) {
+    /**
+     * Record the activation callback, as WordPress does.
+     *
+     * **The basename rule is modelled, not skipped.** WordPress's real
+     * `register_activation_hook()` computes `plugin_basename( $file )` and
+     * silently returns — registering nothing — when the result contains no
+     * directory separator, which is how it rejects a path outside
+     * `WP_PLUGIN_DIR`. A stub that recorded unconditionally would let an entry
+     * file pass `__DIR__ . '/wp-mini-laravel.php'` (no separator after
+     * basename-ing) and look correct here while registering no hook at all in
+     * production. The one rule this stub enforces is the one that fails quietly.
+     *
+     * @param string $file Absolute path to the plugin's entry file.
+     */
+    function register_activation_hook(string $file, $callback): void
+    {
+        $basename = plugin_basename($file);
+
+        if (!str_contains($basename, '/')) {
+            return;
+        }
+
+        WpStub::$activationHooks[$basename] = $callback;
+    }
+}
+
+if (!function_exists('register_deactivation_hook')) {
+    /**
+     * Record the deactivation callback. Same basename rule as activation.
+     *
+     * @param string $file Absolute path to the plugin's entry file.
+     */
+    function register_deactivation_hook(string $file, $callback): void
+    {
+        $basename = plugin_basename($file);
+
+        if (!str_contains($basename, '/')) {
+            return;
+        }
+
+        WpStub::$deactivationHooks[$basename] = $callback;
+    }
+}
+
+if (!function_exists('register_uninstall_hook')) {
+    /**
+     * Record the uninstall callback.
+     *
+     * Stubbed even though the plugin does not call it, and that is the point:
+     * the plugin deliberately uses `uninstall.php` instead, because this
+     * function stores its callback in the `uninstall_plugins` option — a
+     * registration kept in the database being deleted. A test asserts it is
+     * *not* called, and it cannot assert that against an undefined function.
+     *
+     * @param string $file Absolute path to the plugin's entry file.
+     */
+    function register_uninstall_hook(string $file, $callback): void
+    {
+        WpStub::$uninstallHooks[plugin_basename($file)] = $callback;
+    }
+}
+
+if (!function_exists('plugin_basename')) {
+    /**
+     * The plugin-relative path, as WordPress computes it.
+     *
+     * ## Why `WP_PLUGIN_DIR` is defined here, and why it is the plugin itself
+     *
+     * The stub layer stands in for a WordPress install, and in one the plugins
+     * directory is *the parent of the plugin's own directory* — every plugin
+     * lives somewhere under `WP_PLUGIN_DIR`, which is what makes a plugin's
+     * basename look like `wp-mini-laravel/wp-mini-laravel.php` rather than a bare
+     * filename. Core's `register_activation_hook()` depends on that shape: it
+     * computes `plugin_basename( $file )` and returns without registering
+     * anything when the result has no directory separator, which is how it
+     * refuses a path that is not inside the plugins directory.
+     *
+     * Getting this wrong is not a subtle failure, it is a *silent* one — the
+     * hook simply never registers — and before this constant existed the
+     * fallback below stripped the plugin's own directory and produced exactly
+     * that bare filename, so every `register_*_hook()` call in the framework
+     * resolved to nothing. The tests written against the lifecycle wiring caught
+     * it; see {@see \Tests\Unit\PluginLifecycleWiringTest}, which asserts the
+     * registered key contains a separator for that reason.
+     *
+     * Deriving the value rather than hardcoding it keeps the relation intact for
+     * anyone who moves the plugin.
+     */
+    function plugin_basename(string $file): string
+    {
+        $file = wp_normalize_path($file);
+        $root = wp_normalize_path(WP_PLUGIN_DIR);
+
+        if (str_starts_with($file, rtrim($root, '/') . '/')) {
+            return ltrim(substr($file, strlen(rtrim($root, '/'))), '/');
+        }
+
+        return ltrim($file, '/');
+    }
+}
+
+// Defined after `plugin_basename()` so the reason for it sits next to the
+// function that reads it, and guarded so a test that has already provided one
+// wins.
+//
+// `ABSPATH` above is the *plugin's* root — deliberately, because the entry file
+// calls `realpath(ABSPATH . 'wp-admin/includes/plugin.php')` during bootstrap and
+// that has to resolve to the stub. That is a different thing from
+// `WP_PLUGIN_DIR`, which is the directory the plugin sits *in*, and the two
+// cannot be the same value without collapsing a plugin's basename to a bare
+// filename — which core treats as "not a plugin" and refuses to register. A real
+// install has them one level apart; so does this.
+//
+// Derived from `ABSPATH` through `rtrim()`, not by counting `dirname()` levels:
+// `ABSPATH` is defined with a trailing separator, and `dirname()` ignores it, so
+// a level count that reads correctly here would be off by one on a machine where
+// the path resolved differently.
+if (!defined('WP_PLUGIN_DIR')) {
+    define('WP_PLUGIN_DIR', dirname(rtrim(ABSPATH, '/\\')) . '/');
+}
+
+if (!function_exists('esc_attr')) {
+    function esc_attr(string $text): string
+    {
+        return htmlspecialchars($text, ENT_QUOTES, 'UTF-8');
+    }
+}
+
+if (!function_exists('checked')) {
+    /**
+     * Echo the `checked` attribute when the two values match, as core does.
+     *
+     * `$echo` defaults to true because that is core's default and a caller that
+     * forgot it would otherwise get a silently missing attribute. Returns the
+     * string either way, which is what makes `checked(...)` usable in a test.
+     *
+     * @param mixed $checked
+     * @param mixed $current
+     */
+    function checked($checked, $current = true, bool $echo = true): string
+    {
+        $result = (string) $checked === (string) $current ? " checked='checked'" : '';
+
+        if ($echo) {
+            echo $result;
+        }
+
+        return $result;
+    }
+}
+
+if (!function_exists('add_settings_field')) {
+    /**
+     * Record a settings field, as core does.
+     *
+     * @param callable $callback
+     * @param array<string, mixed> $args
+     */
+    function add_settings_field(
+        string $id,
+        string $title,
+        $callback,
+        string $page = 'general',
+        string $section = 'default',
+        array $args = []
+    ): void {
+        WpStub::$settingsFields[] = [
+            'id' => $id,
+            'title' => $title,
+            'callback' => $callback,
+            'page' => $page,
+            'section' => $section,
+            'args' => $args,
+        ];
+    }
+}
+
+if (!function_exists('register_setting')) {
+    /**
+     * Record a registered setting. Nothing calls it — see the comment below.
+     *
+     * @param array<string, mixed>|string $args
+     */
+    function register_setting(string $group, string $name, $args = []): void
+    {
+        WpStub::$registeredSettings[] = ['group' => $group, 'name' => $name, 'args' => $args];
+    }
+}
+
 if (!function_exists('__')) {
     function __(string $text, string $domain = 'default'): string
     {
@@ -260,11 +452,21 @@ if (!function_exists('get_option')) {
 
 if (!function_exists('update_option')) {
     /**
+     * Record a written option.
+     *
+     * The `$autoload` flag is recorded rather than dropped, because it is a
+     * decision callers make deliberately — the migration high-water mark and the
+     * uninstall toggle are both written with autoload off, since both are read
+     * once and loading them on every page view for the life of the site is
+     * waste. A stub that discarded the flag could not tell a caller that passed
+     * it from one that forgot.
+     *
      * @param mixed $value
      */
     function update_option(string $option, $value, bool $autoload = true): bool
     {
         WpStub::$options[$option] = $value;
+        WpStub::$optionAutoload[$option] = $autoload;
 
         return true;
     }
