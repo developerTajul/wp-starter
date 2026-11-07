@@ -228,6 +228,56 @@ final class WordPressRouterAdapterTest extends TestCase
     }
 
     /**
+     * A constraint containing braces is removed whole, not up to its first `}`.
+     *
+     * ## What this does *not* claim
+     *
+     * That the old parser got this wrong. It did not, and that is worth stating
+     * rather than glossing: `preg_replace('/\{[^}]*\}/', '', …)` stops at the
+     * quantifier's first `}` and removes only `{id:[0-9]`, but the leftover `}}`
+     * then normalises to a separator and the name comes out `leads_destroy`
+     * anyway. The old code was correct here *by accident of normalisation*, which
+     * is precisely why the case is worth pinning down: the correctness rested on
+     * a step three lines away, and a change to that step — keeping braces rather
+     * than folding them to `_` — would have broken it silently.
+     *
+     * Delegating to the compiler makes it correct on purpose, and this test is
+     * what holds that in place.
+     */
+    public function test_a_brace_bearing_constraint_does_not_leak_into_the_derived_action(): void
+    {
+        $this->router->adminAction('leads/{id:[0-9]{1,3}}/destroy', Fixtures\StringController::class, 'index');
+        $this->router->flush();
+
+        $this->assertArrayHasKey(
+            'admin_post_leads_destroy',
+            WpStub::$actions,
+            'The quantifier inside a constraint leaked into the hook name.'
+        );
+    }
+
+    /**
+     * A compiled placeholder is removed by name, not mangled into the action.
+     *
+     * A path that reached the adapter already compiled — `(?P<id>[^/]+)/leads` — is
+     * an ordinary state after a route has been through registration. The old
+     * `\{[^}]*\}` removal knew nothing about that spelling, so the letters left
+     * over from `(?P<id>…)` were folded into the name: `admin_post_p_id_leads`.
+     * Nobody could have matched it, because nobody would write it.
+     */
+    public function test_a_compiled_placeholder_does_not_leak_letters_into_the_derived_action(): void
+    {
+        $this->router->adminAction('(?P<id>[^/]+)/leads/store', Fixtures\StringController::class, 'index');
+        $this->router->flush();
+
+        $this->assertArrayHasKey(
+            'admin_post_leads_store',
+            WpStub::$actions,
+            'A compiled group leaked its own spelling into the action name.'
+        );
+    }
+
+    /**
      * Two routes deriving one action name is refused, not accepted. `add_action()`
      * does not replace an existing callback, so both would run on one submission
      * and the second controller would act on the first's request.

@@ -734,6 +734,66 @@ final class UrlGeneratorTest extends TestCase
         );
     }
 
+    /**
+     * The empty-constraint spelling generates the same URL as a bare placeholder.
+     *
+     * ## The defect, end to end
+     *
+     * `posts/{id:}` and `posts/{id}` are the same placeholder to the compiler —
+     * both become `(?P<id>[^/]+)`, and both routes dispatch identically. But the
+     * generator used to answer them differently, because its regex required a
+     * character after the `:`. For `{id:}` it matched nothing, so the placeholder
+     * was left in the URL verbatim (`posts/{id:}`) *and* the value the caller
+     * passed was classified as unused by {@see queryString()} — which appends it
+     * as a query parameter. The result was a link to a path WordPress does not
+     * serve, carrying the argument in a place nothing reads.
+     *
+     * Asserted through `route()` rather than on the private substitution, because
+     * the query-string half is where the damage became visible: a link that is
+     * merely wrong is a 404 somebody notices, while one that silently moves the
+     * argument into the query string looks like it worked.
+     */
+    public function test_the_empty_constraint_spelling_generates_the_same_url_as_a_bare_placeholder(): void
+    {
+        $this->api()->registrar()
+            ->get('posts/{id:}', [\stdClass::class, 'show'])
+            ->name('posts.empty');
+        $this->api()->registrar()
+            ->get('posts/{id}', [\stdClass::class, 'show'])
+            ->name('posts.bare');
+        $this->api()->flush();
+
+        $this->assertSame(
+            $this->generator->route('posts.bare', ['id' => 42]),
+            $this->generator->route('posts.empty', ['id' => 42]),
+            'Two spellings of the same placeholder must generate the same URL.'
+        );
+        $this->assertStringContainsString('42', $this->generator->route('posts.empty', ['id' => 42]));
+    }
+
+    /**
+     * A constrained placeholder whose constraint contains a brace generates a
+     * clean URL.
+     *
+     * The scan that resolves `{id:[0-9]{1,3}}` has to span the quantifier's own
+     * braces. A parser that stopped at the first `}` would leave `{1,3}}` glued
+     * into the generated path — a URL that no route matches, produced by the code
+     * whose job is to know where routes live.
+     */
+    public function test_a_quantified_constraint_generates_a_clean_url(): void
+    {
+        $this->api()->registrar()
+            ->get('posts/{id:[0-9]{1,3}}', [\stdClass::class, 'show'])
+            ->name('posts.bounded');
+        $this->api()->flush();
+
+        $url = $this->generator->route('posts.bounded', ['id' => 42]);
+
+        $this->assertStringContainsString('42', $url);
+        $this->assertStringNotContainsString('{', $url, 'A placeholder survived into the generated URL.');
+        $this->assertStringNotContainsString('1,3', $url, 'The constraint\'s quantifier leaked into the URL.');
+    }
+
     // ----------------------------------------------------------------- helpers
 
     /**

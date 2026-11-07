@@ -1010,7 +1010,21 @@ final class WordPressRouterAdapter extends AbstractRouterAdapter
         // Placeholders are dropped rather than flattened: `leads/{id}` names the
         // same handler whether the id is numeric or a slug, and the value arrives
         // as a request parameter, not as part of the action.
-        $source = (string) preg_replace('/\{[^}]*\}/', '', $source);
+        //
+        // Removed through the shared compiler rather than by matching `\{[^}]*\}`,
+        // so the adapter and the compiler agree on where a placeholder ends. The
+        // two visible differences: a constraint holding a quantifier is removed
+        // whole instead of up to its first `}` (the old pattern left `}}` behind,
+        // which the normalisation below turned back into a separator — correct by
+        // accident, and three lines away from the code that made it so), and a
+        // path already compiled to `(?P<id>…)` loses the group instead of
+        // contributing `p_id` to the name. Both spellings are handled because
+        // either can arrive here.
+        $source = RouteCompiler::substitute(
+            $source,
+            static fn (string $name, ?string $constraint): string => ''
+        );
+
         $action = strtolower((string) preg_replace('/[^A-Za-z0-9]+/', '_', $source));
         $action = trim($action, '_');
 

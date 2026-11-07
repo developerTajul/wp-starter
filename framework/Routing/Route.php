@@ -372,13 +372,28 @@ final class Route
     /**
      * Placeholder names in this route's path, in the order they appear.
      *
+     * Delegated to {@see RouteCompiler::parameterNames()} rather than answered
+     * with a local regex, because this answer has to match what the compiler did
+     * with the same path. The regex that used to live here required at least one
+     * character after a `:`, so on the empty-constraint spelling `posts/{id:}` —
+     * which the compiler reads as "no constraint" and turns into a working
+     * `(?P<id>[^/]+)` — it reported *no* parameters. The route dispatched and the
+     * binding step then dropped the argument silently, since there was no name to
+     * bind. Nothing raised, and no test compared the two readings.
+     *
      * @return list<string>
      */
     public function getParameterNames(): array
     {
-        preg_match_all('/\{([A-Za-z_][A-Za-z0-9_]*)(?::[^}]+)?\}/', $this->path, $matches);
+        return RouteCompiler::parameterNames($this->path);
+    }
 
-        return $matches[1];
+    /**
+     * Whether this route's path takes any parameters.
+     */
+    public function hasParameters(): bool
+    {
+        return RouteCompiler::hasParameters($this->path);
     }
 
     /**

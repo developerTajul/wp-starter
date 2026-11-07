@@ -352,19 +352,23 @@ final class UrlGenerator
      * path that reached the generator through a compilation step would otherwise
      * generate a URL with a regex in it.
      *
+     * The scan is {@see RouteCompiler::substitute()}'s, not a local regex. A
+     * generator that disagrees with the compiler about where a placeholder ends
+     * produces URLs that point at routes the router matches differently — and the
+     * failure is a 404 on a link the application itself generated. The regex that
+     * used to live here also required a character after the `:`, so
+     * `posts/{id:}` produced no match at all: the placeholder was left in the URL
+     * verbatim and the value the caller passed was reported as unused.
+     *
      * @param array<string, scalar> $parameters
      *
      * @throws RuntimeException When a placeholder has no value.
      */
     private function substitute(Route $route, array $parameters): string
     {
-        $path = $route->getPath();
-
-        $result = preg_replace_callback(
-            '/\{([A-Za-z_][A-Za-z0-9_]*)(?::[^}]+)?\}|\(\?P<([A-Za-z_][A-Za-z0-9_]*)>[^)]*\)/',
-            function (array $m) use ($route, $parameters): string {
-                $key = $m[1] !== '' ? $m[1] : $m[2];
-
+        return RouteCompiler::substitute(
+            $route->getPath(),
+            function (string $key) use ($route, $parameters): string {
                 if (!array_key_exists($key, $parameters)) {
                     throw new RuntimeException(sprintf(
                         'Route [%s] needs a value for parameter [{%s}] — route(\'%s\', [\'%s\' => ...]).',
@@ -389,21 +393,8 @@ final class UrlGenerator
                 }
 
                 return rawurlencode((string) $value);
-            },
-            $path
+            }
         );
-
-        // A PCRE failure returns null rather than throwing, and casting null to
-        // string yields "" — an empty URL that looks like a routing bug rather
-        // than a regex one. Reported instead.
-        if ($result === null) {
-            throw new RuntimeException(sprintf(
-                'Could not compile the path for route [%s].',
-                $route->getName() ?? $route->getDisplayPath()
-            ));
-        }
-
-        return $result;
     }
 
     /**

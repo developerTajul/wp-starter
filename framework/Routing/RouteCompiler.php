@@ -6,13 +6,15 @@ namespace Framework\Routing;
 /**
  * Turns declared routes into the shape WordPress matches against.
  *
- * Two jobs, both of which every routing domain needs and none of which should
+ * Three jobs, all of which every routing domain needs and none of which should
  * exist twice:
  *
  *  - **Translation.** `posts/{id:\d+}` becomes the regex WordPress compiles.
  *    This is a real parser, not a string replace: a constraint is itself a regex
  *    and can contain braces and nested parens, so where a placeholder ends is a
  *    question only a scanner can answer.
+ *  - **Extraction.** The placeholder names in a path, in order. Answered by the
+ *    same scanner, for the same reason.
  *  - **Ordering.** Most-specific-first, because WordPress takes the first pattern
  *    that matches and `posts/{id}` registered before `posts/latest` would
  *    dispatch `show` with `id="latest"`.
@@ -26,6 +28,21 @@ namespace Framework\Routing;
  * resolves in the other, with nothing raised at registration. So the parser has
  * exactly one home, and {@see Router} delegates to it rather than keeping a
  * second copy.
+ *
+ * **This class is that home, and every other module delegates to it.** Three
+ * callers used to carry their own regex for the same grammar —
+ * `Route::getParameterNames()`, `UrlGenerator::substitute()` and
+ * `WordPressRouterAdapter::actionName()` — and they disagreed. On `posts/{id:}`
+ * (a placeholder with an empty constraint, which this compiler reads as "no
+ * constraint" and compiles to a working `(?P<id>[^/]+)`), the two
+ * `\{...(?::[^}]+)?\}` regexes matched *nothing at all*: the route dispatched
+ * correctly while `getParameterNames()` reported no parameters, so parameter
+ * binding silently dropped the argument and `UrlGenerator` rejected a value it
+ * had been given as unused. The adapter's `\{[^}]*\}` was wrong differently and
+ * more quietly — it mangled a compiled `(?P<id>…)` path into an action name
+ * containing `p_id`, and got the quantifier case right only because the stray
+ * brace it left behind happened to normalise to a separator. A green suite did
+ * not catch any of it, because nothing compared the answers.
  *
  * Stateless, and every method is static: this is a pure function over a path.
  */
@@ -47,6 +64,186 @@ final class RouteCompiler
     public static function toPattern(string $path): string
     {
         return self::escapeNonPlaceholders(self::substitutePlaceholders($path));
+    }
+
+    /**
+     * The placeholder names in a path, in the order they appear.
+     *
+     * The counterpart to {@see toPattern()}: the names it compiles are the names
+     * this returns, because both walk the path with {@see findPlaceholderEnd()}.
+     * That is the point of the method existing here rather than at each call site
+     * — a caller that extracted names with its own regex would be asserting a
+     * reading of the grammar that the compiler does not share.
+     *
+     * Names are returned once per occurrence, so `posts/{id}/comments/{id}` yields
+     * `['id', 'id']`. Duplicates are the caller's to judge: `Router`'s binding
+     * step feeds each to a positional argument, where a repeat is legitimate,
+     * while `UrlGenerator` only ever asks which names are *known*.
+     *
+     * An empty list means the path has no placeholders — including the case where
+     * it has something that merely looks like one, such as a `{` that never
+     * closes or a body that is not a name.
+     *
+     * @return list<string>
+     */
+    public static function parameterNames(string $path): array
+    {
+        $names = [];
+        $length = strlen($path);
+        $i = 0;
+
+        while ($i < $length) {
+            if ($path[$i] !== '{') {
+                $i++;
+                continue;
+            }
+
+            $end = self::findPlaceholderEnd($path, $i);
+
+            if ($end === null) {
+                $i++;
+                continue;
+            }
+
+            $name = self::placeholderName($path, $i, $end);
+
+            if ($name !== null) {
+                $names[] = $name;
+            }
+
+            $i = $end + 1;
+        }
+
+        return $names;
+    }
+
+    /**
+     * Whether a path contains any placeholder at all.
+     *
+     * Prefer this to `parameterNames($path) !== []` on a hot path: it stops at the
+     * first one rather than collecting all of them, and for the common caller —
+     * "does this route take an argument?" — the answer is needed once.
+     */
+    public static function hasParameters(string $path): bool
+    {
+        return self::parameterNames($path) !== [];
+    }
+
+    /**
+     * Replace `{name}` and `(?P<name>...)` with the caller-supplied text for each.
+     *
+     * The one substitution path shared by {@see toPattern()} and
+     * {@see UrlGenerator}, so a URL is built from the same reading of the grammar
+     * that compiled the route it points at.
+     *
+     * ## Why the compiled spelling is accepted as well as the declared one
+     *
+     * Because both are legal in a path that reaches here. `{id}` is what an
+     * author writes; `(?P<id>[^/]+)` is what `toPattern()` produced from it. A
+     * route whose path was replaced by its compiled form — the state a REST route
+     * is in after registration — still has to generate a URL, and a replacement
+     * that understood only braces would leave the regex in the output.
+     *
+     * ## Why it is driven by a callback
+     *
+     * The two callers want different things from the same match. `toPattern()`
+     * wants a capture group and no escaping; `UrlGenerator` wants an encoded
+     * value and needs to *throw* naming the route when one is missing. Returning
+     * a structure and letting each build its own string would mean two more
+     * scanners; a callback keeps one.
+     *
+     * The callback receives the placeholder name and its constraint (null when
+     * none was written — including the empty-constraint spelling `{id:}`, which
+     * is normalised to null rather than passed through as `''`).
+     *
+     * @param callable(string, string|null): string $replace
+     */
+    public static function substitute(string $path, callable $replace): string
+    {
+        $result = '';
+        $length = strlen($path);
+        $i = 0;
+
+        while ($i < $length) {
+            // A compiled `(?P<name>...)` group, which the brace scan below would
+            // walk straight past. Checked first because the two spellings cannot
+            // overlap: this branch only fires on `(`, that one only on `{`.
+            if ($path[$i] === '('
+                && preg_match('/\G\(\?P<[A-Za-z_][A-Za-z0-9_]*>/', $path, $m, 0, $i) === 1
+            ) {
+                $end = self::findGroupEnd($path, $i + strlen($m[0]));
+
+                if ($end !== null) {
+                    $name = substr($m[0], 4, -1);
+                    $result .= $replace($name, null);
+                    $i = $end + 1;
+                    continue;
+                }
+            }
+
+            if ($path[$i] !== '{') {
+                $result .= $path[$i];
+                $i++;
+                continue;
+            }
+
+            $end = self::findPlaceholderEnd($path, $i);
+
+            if ($end === null) {
+                $result .= $path[$i];
+                $i++;
+                continue;
+            }
+
+            $name = self::placeholderName($path, $i, $end);
+
+            // Not a name — leave the text alone so the caller's escaping deals
+            // with it, rather than swallowing a malformed placeholder.
+            if ($name === null) {
+                $result .= substr($path, $i, $end - $i + 1);
+                $i = $end + 1;
+                continue;
+            }
+
+            $body = substr($path, $i + 1, $end - $i - 1);
+            $constraint = explode(':', $body, 2)[1] ?? null;
+
+            $result .= $replace($name, self::normaliseConstraint($constraint));
+            $i = $end + 1;
+        }
+
+        return $result;
+    }
+
+    /**
+     * The placeholder name a `{`…`}` span declares, or null when it is not one.
+     *
+     * Shared by {@see parameterNames()} and {@see substitute()} so the two agree
+     * on what counts as a name — the failure mode being a name the compiler
+     * substitutes but no extractor reports, which is invisible until a value goes
+     * missing at dispatch.
+     */
+    private static function placeholderName(string $path, int $start, int $end): ?string
+    {
+        $body = substr($path, $start + 1, $end - $start - 1);
+        $name = explode(':', $body, 2)[0];
+
+        return preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $name) === 1 ? $name : null;
+    }
+
+    /**
+     * A constraint as written, or null when none was given.
+     *
+     * `{id:}` splits to an empty string, which is *not* null — so a `?? '[^/]+'`
+     * would not catch it, and the group would compile to `(?P<id>)`. That matches
+     * the empty string rather than a path segment, and since WordPress anchors
+     * every pattern, such a route would also shadow any sibling it is registered
+     * before. Normalised here so every caller sees one spelling of "no
+     * constraint".
+     */
+    private static function normaliseConstraint(?string $constraint): ?string
+    {
+        return $constraint === null || trim($constraint) === '' ? null : $constraint;
     }
 
     /**
@@ -141,7 +338,11 @@ final class RouteCompiler
                 continue;
             }
 
-            if (str_contains(substr($path, $i + 1, $end - $i - 1), ':')) {
+            $name = self::placeholderName($path, $i, $end);
+
+            if ($name !== null
+                && self::normaliseConstraint(explode(':', substr($path, $i + 1, $end - $i - 1), 2)[1] ?? null) !== null
+            ) {
                 $count++;
             }
 
@@ -263,6 +464,11 @@ final class RouteCompiler
     /**
      * Replace `{name}` and `{name:constraint}` with a named capture group.
      *
+     * A thin wrapper over {@see substitute()}, which owns the scanning. This
+     * method exists to name the direction — the public API is "substitute with
+     * whatever you like", and the compiler's own use of it is "with a capture
+     * group".
+     *
      * Scanned rather than matched with a regex, because a constraint is itself a
      * regex and can contain braces — `{id:[0-9]{1,3}}` is a natural way to bound a
      * numeric id, and a `[^}]+` character class stops at the quantifier's closing
@@ -275,52 +481,17 @@ final class RouteCompiler
      */
     private static function substitutePlaceholders(string $path): string
     {
-        $result = '';
-        $length = strlen($path);
-        $i = 0;
-
-        while ($i < $length) {
-            if ($path[$i] !== '{') {
-                $result .= $path[$i];
-                $i++;
-                continue;
-            }
-
-            $end = self::findPlaceholderEnd($path, $i);
-
-            // Not a placeholder — an unmatched `{`, or a name that does not fit
-            // the convention. Left verbatim so the caller's escaping handles it,
-            // rather than swallowed as a malformed group.
-            if ($end === null) {
-                $result .= $path[$i];
-                $i++;
-                continue;
-            }
-
-            $body = substr($path, $i + 1, $end - $i - 1);
-            [$name, $constraint] = array_pad(explode(':', $body, 2), 2, null);
-
-            if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $name) !== 1) {
-                $result .= substr($path, $i, $end - $i + 1);
-                $i = $end + 1;
-                continue;
-            }
-
-            // `{id:}` splits to an empty constraint, which is *not* null — so a
-            // `?? '[^/]+'` would not catch it, and the group would compile to
-            // `(?P<id>)`. That matches the empty string rather than a path
-            // segment, and since WordPress anchors every pattern, such a route
-            // would also shadow any sibling it is registered before. Treated as
-            // "no constraint given" instead.
-            if ($constraint === null || trim($constraint) === '') {
-                $constraint = '[^/]+';
-            }
-
-            $result .= sprintf('(?P<%s>%s)', $name, $constraint);
-            $i = $end + 1;
-        }
-
-        return $result;
+        return self::substitute(
+            $path,
+            // The one place a constraint written as `''` becomes `[^/]+`. A
+            // declared `{id}` and an empty-constrained `{id:}` compile to the
+            // same group, which is what lets `parameterNames()` treat them alike.
+            static fn (string $name, ?string $constraint): string => sprintf(
+                '(?P<%s>%s)',
+                $name,
+                $constraint ?? '[^/]+'
+            )
+        );
     }
 
     /**

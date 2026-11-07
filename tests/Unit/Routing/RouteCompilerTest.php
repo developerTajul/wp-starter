@@ -160,4 +160,218 @@ final class RouteCompilerTest extends TestCase
     {
         $this->assertSame([], RouteCompiler::sortBySpecificity([]));
     }
+
+    /**
+     * The names `parameterNames()` reports are exactly the names `toPattern()`
+     * compiled.
+     *
+     * ## The property, and why it is asserted as a property
+     *
+     * Extraction and compilation answer the same question — "where does a
+     * placeholder end?" — so a path that compiles to *n* capture groups must
+     * report *n* names, in the same order. Checking that as a relation over a
+     * table of awkward paths, rather than asserting a literal list per path, is
+     * what makes it a claim about the grammar rather than about eleven strings
+     * somebody transcribed.
+     *
+     * ## The defect it exists to pin
+     *
+     * Three modules each carried a private regex for this grammar and only one of
+     * them was the compiler. On `posts/{id:}` the two `\{...(?::[^}]+)?\}` copies
+     * — this one's ancestors in `Route` and `UrlGenerator` — matched *nothing*:
+     * the pattern required a character after the `:`, and the compiler, reading
+     * the same path, produced a working `(?P<id>[^/]+)`. So the route dispatched
+     * correctly while `Route::getParameterNames()` returned `[]`, the binding step
+     * had no name to bind and dropped the argument, and `UrlGenerator` rejected a
+     * parameter the caller had supplied as "unused". Nothing raised.
+     *
+     * A green suite did not catch it because nothing compared the two answers.
+     * This test is that comparison.
+     */
+    public function test_extracted_names_agree_with_the_compiled_pattern(): void
+    {
+        $paths = [
+            'posts',
+            'posts/{id}',
+            'posts/{id:\d+}',
+            'posts/{id:[0-9]{1,3}}',
+            'posts/{id:}',
+            'posts/{id:   }',
+            'posts/{id:((\d+))}',
+            'posts/{id:(?:a(b))}',
+            'posts/{a}/{b}',
+            'posts/{id}/comments/{comment}',
+            'v1.0/{id:\d+}/{slug:[a-z-]+}',
+            'export.json',
+            'weird/{not a name}',
+            'posts/(draft',
+        ];
+
+        foreach ($paths as $path) {
+            $names = RouteCompiler::parameterNames($path);
+
+            $this->assertSame(
+                count($names),
+                preg_match_all('/\(\?P<[A-Za-z_][A-Za-z0-9_]*>/', RouteCompiler::toPattern($path)),
+                sprintf(
+                    'The compiler built a different number of capture groups than parameterNames() reported '
+                    . "for [%s]. A name the compiler substitutes but no extractor reports is invisible until a "
+                    . 'route dispatches with an argument missing.',
+                    $path
+                )
+            );
+
+            // And the names themselves are the group names, in order.
+            preg_match_all('/\(\?P<([A-Za-z_][A-Za-z0-9_]*)>/', RouteCompiler::toPattern($path), $m);
+            $this->assertSame($names, $m[1], sprintf('The reported names are not the compiled ones for [%s].', $path));
+        }
+    }
+
+    /**
+     * The empty-constraint spelling yields a named parameter, not none.
+     *
+     * Singled out from the table above because it is the case that actually
+     * diverged in production code, and a failure here should name the defect
+     * rather than report a count mismatch.
+     */
+    public function test_an_empty_constraint_still_yields_a_parameter_name(): void
+    {
+        $this->assertSame(['id'], RouteCompiler::parameterNames('posts/{id:}'));
+        $this->assertSame(['id'], RouteCompiler::parameterNames('posts/{id:   }'));
+    }
+
+    /**
+     * A constrained placeholder nested in a longer path is reported once, not
+     * twice and not zero times.
+     *
+     * The quantifier's braces are the trap: a name-plus-constraint scan that
+     * stopped at the first `}` would see `{id:[0-9]` and then treat `{1,3}` as a
+     * second placeholder with a non-name body. The count is what catches that —
+     * one group compiled, one name reported.
+     */
+    public function test_a_quantified_constraint_yields_exactly_one_name(): void
+    {
+        $this->assertSame(['id'], RouteCompiler::parameterNames('posts/{id:[0-9]{1,3}}'));
+        $this->assertSame(['id'], RouteCompiler::parameterNames('posts/{id:[0-9]{1,3}}/edit'));
+    }
+
+    /**
+     * A name that is not a name is not reported.
+     *
+     * `parameterNames()` and `substitute()` share the name check, so a body the
+     * compiler leaves verbatim as literal text must not be extracted as a
+     * parameter — otherwise the binding step would look for a request value for a
+     * placeholder that was never compiled into a group.
+     */
+    public function test_a_malformed_placeholder_yields_no_name(): void
+    {
+        $this->assertSame([], RouteCompiler::parameterNames('weird/{not a name}'));
+        $this->assertSame([], RouteCompiler::parameterNames('weird/{1starts_with_a_digit}'));
+        $this->assertSame([], RouteCompiler::parameterNames('posts/(draft'));
+        $this->assertSame([], RouteCompiler::parameterNames('posts/unclosed/{id'));
+    }
+
+    /**
+     * `hasParameters()` agrees with the list it short-circuits.
+     *
+     * The two are the same question asked two ways, and a `hasParameters()` that
+     * walked a different scan would give a caller "this route takes an argument"
+     * followed by an empty name list to bind it from.
+     */
+    public function test_has_parameters_agrees_with_the_name_list(): void
+    {
+        foreach (['posts', 'posts/{id}', 'posts/{id:}', 'weird/{not a name}', 'posts/{id}/{x}'] as $path) {
+            $this->assertSame(
+                RouteCompiler::parameterNames($path) !== [],
+                RouteCompiler::hasParameters($path),
+                sprintf('hasParameters() disagrees with parameterNames() on [%s].', $path)
+            );
+        }
+    }
+
+    /**
+     * `substitute()` understands both spellings of a placeholder.
+     *
+     * `{id}` is what an author writes; `(?P<id>[^/]+)` is what `toPattern()`
+     * produced. A path that reached a caller through a compilation step — the
+     * state a REST route is in after registration — has to be substitutable too,
+     * or a URL generated from it would contain the regex verbatim.
+     */
+    public function test_substitute_handles_the_declared_and_compiled_spellings(): void
+    {
+        $replace = static fn (string $name, ?string $constraint): string => '[' . $name . ']';
+
+        $this->assertSame('posts/[id]', RouteCompiler::substitute('posts/{id}', $replace));
+        $this->assertSame('posts/[id]', RouteCompiler::substitute('posts/{id:[0-9]{1,3}}', $replace));
+        $this->assertSame('posts/[id]', RouteCompiler::substitute('posts/(?P<id>[^/]+)', $replace));
+
+        // A nested group inside the compiled spelling has to be spanned whole, or
+        // the substitution leaves the group's tail behind as literal text.
+        $this->assertSame('posts/[id]', RouteCompiler::substitute('posts/(?P<id>((\d+)))', $replace));
+        $this->assertSame('posts/[id]', RouteCompiler::substitute('posts/(?P<id>(?:a(b)))', $replace));
+
+        // Both spellings in one path, in order.
+        $this->assertSame(
+            'a/[x]/b/[y]',
+            RouteCompiler::substitute('a/{x}/b/(?P<y>[^/]+)', $replace)
+        );
+    }
+
+    /**
+     * `substitute()` hands the callback the constraint, normalised.
+     *
+     * The callback is the only place a caller can tell "no constraint" from "an
+     * empty one", and it must not have to: `{id}` and `{id:}` mean the same thing
+     * to this compiler, so they mean the same thing to a callback. Anything else
+     * would push the grammar's edge case into every caller.
+     */
+    public function test_substitute_normalises_the_constraint_for_the_callback(): void
+    {
+        $seen = [];
+
+        RouteCompiler::substitute(
+            'a/{x}/b/{y:\d+}/c/{z:}/d/{w:   }',
+            static function (string $name, ?string $constraint) use (&$seen): string {
+                $seen[$name] = $constraint;
+
+                return '';
+            }
+        );
+
+        $this->assertSame(
+            ['x' => null, 'y' => '\d+', 'z' => null, 'w' => null],
+            $seen,
+            'A callback must not have to know that `{id:}` and `{id}` are the same placeholder.'
+        );
+    }
+
+    /**
+     * Literal text around placeholders is passed through untouched.
+     *
+     * `substitute()` is a scanner, not an escaper — that is `toPattern()`'s extra
+     * step. A substitution that also quoted its literals would double-escape the
+     * path on its way to `escapeNonPlaceholders()`.
+     */
+    public function test_substitute_leaves_literal_text_alone(): void
+    {
+        $replace = static fn (string $name, ?string $constraint): string => 'X';
+
+        $this->assertSame('export.json/X', RouteCompiler::substitute('export.json/{id}', $replace));
+        $this->assertSame('a(b)/X', RouteCompiler::substitute('a(b)/{id}', $replace));
+        $this->assertSame('weird/{not a name}/X', RouteCompiler::substitute('weird/{not a name}/{id}', $replace));
+    }
+
+    /**
+     * A compiled group that never closes is not substituted.
+     *
+     * The mirror of the unclosed-brace case. Bailing out leaves the text for the
+     * caller's escaping, which is the safe direction: treating an unterminated
+     * group as a placeholder would consume the rest of the path.
+     */
+    public function test_an_unclosed_compiled_group_is_left_alone(): void
+    {
+        $replace = static fn (string $name, ?string $constraint): string => 'X';
+
+        $this->assertSame('posts/(?P<id>[^/]+', RouteCompiler::substitute('posts/(?P<id>[^/]+', $replace));
+    }
 }
