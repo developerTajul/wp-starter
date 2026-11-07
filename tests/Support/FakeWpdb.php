@@ -113,6 +113,12 @@ final class FakeWpdb extends wpdb
         $this->tables[$table] = [];
         $this->autoIncrement[$table] = 1;
 
+        // Cleared, not left alone: a table that is dropped and re-created must
+        // not inherit the indexes of its previous life, or a test that asserts
+        // "this migration added no index" would pass on leftover state.
+        $this->indexes[$table] = [];
+        $this->constraints[$table] = [];
+
         $this->columnCache[$table] = $columns;
     }
 
@@ -152,6 +158,61 @@ final class FakeWpdb extends wpdb
      * @var array<string, list<string>>
      */
     private array $columnCache = [];
+
+    /**
+     * Indexes per table, as index name => whether it is UNIQUE.
+     *
+     * Populated by an `ALTER TABLE ... ADD KEY`, so a test can assert that a
+     * `unique()` replaced the plain index rather than being added beside it —
+     * which is the property the company-name migration exists to establish and
+     * the one a naive "did the statement run" assertion would miss.
+     *
+     * @var array<string, array<string, bool>>
+     */
+    private array $indexes = [];
+
+    /**
+     * Foreign key constraint names per table.
+     *
+     * @var array<string, array<string, true>>
+     */
+    private array $constraints = [];
+
+    /**
+     * Whether a table carries an index of the given name.
+     */
+    public function hasIndex(string $table, string $index): bool
+    {
+        return isset($this->indexes[$table][$index]);
+    }
+
+    /**
+     * Whether the named index is UNIQUE, or null when there is no such index.
+     */
+    public function indexIsUnique(string $table, string $index): ?bool
+    {
+        return $this->indexes[$table][$index] ?? null;
+    }
+
+    /**
+     * Every index on a table, as name => whether it is UNIQUE.
+     *
+     * @return array<string, bool>
+     */
+    public function indexes(string $table): array
+    {
+        return $this->indexes[$table] ?? [];
+    }
+
+    /**
+     * Every foreign key constraint name on a table.
+     *
+     * @return list<string>
+     */
+    public function constraints(string $table): array
+    {
+        return array_keys($this->constraints[$table] ?? []);
+    }
 
     // ------------------------------------------------------------- wpdb surface
 
@@ -340,6 +401,19 @@ final class FakeWpdb extends wpdb
     }
 
     /**
+     * The charset/collation clause a CREATE TABLE ends with.
+     *
+     * `utf8mb4` rather than the older `utf8`, matching what WordPress's own
+     * tables use on any install the plugin supports — so a test that asserts the
+     * clause reached the statement is asserting the value a real install would
+     * produce, not a convenient one.
+     */
+    public function get_charset_collate(): string
+    {
+        return 'DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci';
+    }
+
+    /**
      * @param string $query
      * @param mixed  ...$args
      * @return string
@@ -405,14 +479,8 @@ final class FakeWpdb extends wpdb
             return 0;
         }
 
-        if (preg_match('/^\s*alter\s+table\s+`?([a-z0-9_]+)`?\s+add\s+column\s+`?([a-z0-9_]+)`?/i', $sql, $m) === 1) {
-            $this->columnCache[$m[1]][] = $m[2];
-
-            foreach ($this->tables[$m[1]] ?? [] as $i => $row) {
-                $this->tables[$m[1]][$i][$m[2]] = 0;
-            }
-
-            return 0;
+        if (preg_match('/^\s*alter\s+table\s+`?([a-z0-9_]+)`?\s+(.+)$/is', $sql, $m) === 1) {
+            return $this->runAlter($m[1], $m[2]);
         }
 
         // `IF EXISTS` is optional and precedes the name. Matched rather than left
@@ -420,12 +488,126 @@ final class FakeWpdb extends wpdb
         // half-applied rollback can be re-run — and a fake that rejected the
         // spelling would make a correct migration look broken.
         if (preg_match('/^\s*drop\s+table\s+(?:if\s+exists\s+)?`?([a-z0-9_]+)`?/i', $sql, $m) === 1) {
-            unset($this->tables[$m[1]], $this->columnCache[$m[1]], $this->autoIncrement[$m[1]]);
+            unset(
+                $this->tables[$m[1]],
+                $this->columnCache[$m[1]],
+                $this->autoIncrement[$m[1]],
+                $this->indexes[$m[1]],
+                $this->constraints[$m[1]]
+            );
 
             return 0;
         }
 
         throw new \LogicException('FakeWpdb cannot execute DDL: ' . $sql);
+    }
+
+    /**
+     * Apply the clauses of one `ALTER TABLE`.
+     *
+     * Clauses are applied in MySQL's own evaluation order, **not** the order
+     * they are written — DROP before ADD — because that is the behaviour the
+     * schema builder depends on and the whole reason it emits one combined
+     * statement rather than several. A fake that honoured the written order
+     * would make a correct migration look broken and, worse, a migration that
+     * relies on the real order pass here and fail on a real database.
+     *
+     * Only the clause shapes the builder emits are understood; anything else
+     * throws rather than being ignored, so an unsupported statement is a loud
+     * failure instead of a silently-missing schema change.
+     */
+    private function runAlter(string $table, string $body): int
+    {
+        $clauses = $this->splitClauses($body);
+
+        // MySQL's order: drops first, then adds. Written order is deliberately
+        // not used; see the docblock.
+        usort($clauses, static function (string $a, string $b): int {
+            $rank = static fn (string $clause): int => preg_match('/^\s*drop\s/i', $clause) === 1 ? 0 : 1;
+
+            return $rank($a) <=> $rank($b);
+        });
+
+        foreach ($clauses as $clause) {
+            $this->runAlterClause($table, trim($clause));
+        }
+
+        return 0;
+    }
+
+    /**
+     * Split an ALTER body on top-level commas.
+     *
+     * Depth-aware on parentheses, because a column definition or a key list
+     * contains commas of its own — `decimal(15,2)`, `KEY (a, b)` — and splitting
+     * on every comma would cut a clause in half.
+     *
+     * @return list<string>
+     */
+    private function splitClauses(string $body): array
+    {
+        $clauses = [];
+        $current = '';
+        $depth = 0;
+
+        for ($i = 0, $length = strlen($body); $i < $length; $i++) {
+            $char = $body[$i];
+
+            if ($char === '(') {
+                $depth++;
+            } elseif ($char === ')') {
+                $depth--;
+            } elseif ($char === ',' && $depth === 0) {
+                $clauses[] = $current;
+                $current = '';
+
+                continue;
+            }
+
+            $current .= $char;
+        }
+
+        if (trim($current) !== '') {
+            $clauses[] = $current;
+        }
+
+        return $clauses;
+    }
+
+    /**
+     * Apply one ALTER clause.
+     */
+    private function runAlterClause(string $table, string $clause): void
+    {
+        if (preg_match('/^add\s+column\s+`?([a-z0-9_]+)`?/i', $clause, $m) === 1) {
+            $this->columnCache[$table][] = $m[1];
+
+            foreach ($this->tables[$table] ?? [] as $i => $row) {
+                $this->tables[$table][$i][$m[1]] = 0;
+            }
+
+            return;
+        }
+
+        if (preg_match('/^add\s+(unique\s+)?key\s+`?([a-z0-9_]+)`?/i', $clause, $m) === 1) {
+            $this->indexes[$table][$m[2]] = strtolower(trim($m[1] ?? '')) === 'unique';
+
+            return;
+        }
+
+        if (preg_match('/^add\s+constraint\s+`?([a-z0-9_]+)`?\s+foreign\s+key/i', $clause, $m) === 1) {
+            $this->constraints[$table][$m[1]] = true;
+
+            return;
+        }
+
+        if (preg_match('/^drop\s+(?:key|index)\s+`?([a-z0-9_]+)`?/i', $clause, $m) === 1) {
+            unset($this->indexes[$table][$m[1]]);
+
+            return;
+        }
+
+        throw new \LogicException('FakeWpdb cannot execute ALTER clause: ' . $clause);
     }
 
     /**
@@ -676,6 +858,27 @@ final class FakeWpdb extends wpdb
                     static fn (array $row): bool => (int) $row['batch'] === $batch
                 )
             ));
+        }
+
+        // The constraint-registry probe the schema adapter makes before adding
+        // a foreign key. Answered from the same `$constraints` map the ALTER
+        // parser fills, so the fake reports a constraint present exactly when it
+        // has seen the statement that creates one — an unrehearsed `true` here
+        // would make a re-run look idempotent while the adapter silently skipped
+        // every ALTER.
+        //
+        // Both `%s` placeholders are already substituted by `prepare()` before
+        // this is reached, and come back single-quoted; the pattern accepts
+        // either quoting so a probe written without placeholders still parses.
+        if (preg_match(
+            '/^\s*select\s+constraint_name\s+from\s+information_schema\.table_constraints\s+'
+            . 'where\s+.*?table_name\s*=\s*[\'`]?([a-z0-9_]+)[\'`]?\s+.*?constraint_name\s*=\s*[\'`]?([a-z0-9_]+)[\'`]?/is',
+            $sql,
+            $m
+        ) === 1) {
+            return isset($this->constraints[$m[1]][$m[2]])
+                ? [['CONSTRAINT_NAME' => $m[2]]]
+                : [];
         }
 
         // COUNT(*), optionally with an equality WHERE. Returns one row, so

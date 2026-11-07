@@ -65,6 +65,29 @@ final class MigratorTest extends TestCase
     }
 
     /**
+     * `pendingMigrations()` is the one read that runs *before* the migrator's own
+     * entry point rather than inside it: `migrate` calls it to decide whether
+     * there is anything to do, and only then calls `runPending()`.
+     *
+     * So it is the first thing to touch the tracking table on a fresh install,
+     * and until it guarded itself it issued a `SELECT` against a table nothing
+     * had created — the "Table doesn't exist" a first `wp wp_mini migrate` failed
+     * with. The test above covers the same question through `status()`, which
+     * guarded from the start and so never exercised this path.
+     */
+    public function test_pending_migrations_creates_the_tracking_table_when_absent(): void
+    {
+        $this->workspace->write('2026_11_05_100000_create_users_table', RecordingMigration::class);
+
+        $this->assertFalse($this->db->tableExists($this->table));
+
+        $pending = $this->migrator()->pendingMigrations();
+
+        $this->assertTrue($this->db->tableExists($this->table));
+        $this->assertSame(['2026_11_05_100000_create_users_table'], array_column($pending, 'identifier'));
+    }
+
+    /**
      * Running it twice must not try to create the table twice — the second
      * CREATE TABLE would fail and abort a genuinely valid migration run.
      */

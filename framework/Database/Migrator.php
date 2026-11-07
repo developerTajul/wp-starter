@@ -545,12 +545,20 @@ class Migrator
     /**
      * Migration files that have not been run, oldest-first.
      *
+     * Ensures the tracking table first. This method is public and is called
+     * *before* {@see runPending()} by `migrate`, so on a fresh database it is
+     * the first thing that reads `{prefix}plugin_migrations` — and reading a
+     * table that has never been created fails with "Table doesn't exist"
+     * before the migrator ever gets the chance to create it.
+     *
      * @return list<MigrationFile>
      *
      * @throws MigrationException When the directory is missing.
      */
     public function pendingMigrations(): array
     {
+        $this->ensureTrackingTable();
+
         $tracked = $this->appliedMigrations();
 
         return array_values(array_filter(

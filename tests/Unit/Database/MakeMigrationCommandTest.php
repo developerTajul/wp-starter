@@ -22,6 +22,20 @@ use Tests\Support\WpStub;
  * with the framework's own parser, and confirm the class it implies is the class
  * the file declares.
  */
+/**
+ * The class the migrator will derive from a generated file, or null when the
+ * file is not named the way the migrator demands.
+ *
+ * The migrator reads the class name out of the *basename* of the migration file
+ * — `MigrationFile::PATTERN` is anchored to `^` and carries no directory part —
+ * so a file in a subdirectory must satisfy the pattern on its own name, and a
+ * non-null result here is itself the assertion that it does.
+ */
+function migrationClassIn(string $path): ?string
+{
+    return MigrationFile::fromPath($path)?->class;
+}
+
 final class MakeMigrationCommandTest extends TestCase
 {
     private string $workspace;
@@ -63,7 +77,7 @@ final class MakeMigrationCommandTest extends TestCase
         $command = new TestableMakeMigrationCommand();
         $command->handle(['create_leads_table'], []);
 
-        $files = glob($this->workspace . '/database/migrations/*.php') ?: [];
+        $files = $this->migrationFiles();
 
         $this->assertCount(1, $files);
         $this->assertStringContainsString('create_leads_table', $files[0]);
@@ -78,15 +92,13 @@ final class MakeMigrationCommandTest extends TestCase
     {
         (new TestableMakeMigrationCommand())->handle(['create_leads_table'], []);
 
-        $files = glob($this->workspace . '/database/migrations/*.php') ?: [];
-        $migration = MigrationFile::fromPath($files[0]);
+        $files = $this->migrationFiles();
 
-        $this->assertInstanceOf(
-            MigrationFile::class,
-            $migration,
+        $this->assertSame(
+            'CreateLeadsTable',
+            migrationClassIn($files[0]),
             'The generated filename must satisfy the migrator\'s naming convention.'
         );
-        $this->assertSame('CreateLeadsTable', $migration->class);
         $this->assertStringContainsString('class CreateLeadsTable', (string) file_get_contents($files[0]));
     }
 
@@ -100,7 +112,7 @@ final class MakeMigrationCommandTest extends TestCase
     {
         (new TestableMakeMigrationCommand())->handle([$input], []);
 
-        $files = glob($this->workspace . '/database/migrations/*.php') ?: [];
+        $files = $this->migrationFiles();
 
         $this->assertCount(1, $files);
         $this->assertStringContainsString($expectedFilePart, $files[0]);
@@ -129,8 +141,7 @@ final class MakeMigrationCommandTest extends TestCase
     {
         (new TestableMakeMigrationCommand())->handle(['create_leads_table'], []);
 
-        $files = glob($this->workspace . '/database/migrations/*.php') ?: [];
-        $contents = (string) file_get_contents($files[0]);
+        $contents = (string) file_get_contents($this->migrationFiles()[0]);
 
         $this->assertStringContainsString("'leads'", $contents);
         $this->assertStringNotContainsString('{{ table }}', $contents);
@@ -140,9 +151,7 @@ final class MakeMigrationCommandTest extends TestCase
     {
         (new TestableMakeMigrationCommand())->handle(['add_status_to_leads'], []);
 
-        $files = glob($this->workspace . '/database/migrations/*.php') ?: [];
-
-        $this->assertStringContainsString("'leads'", (string) file_get_contents($files[0]));
+        $this->assertStringContainsString("'leads'", (string) file_get_contents($this->migrationFiles()[0]));
     }
 
     /**
@@ -154,11 +163,9 @@ final class MakeMigrationCommandTest extends TestCase
     {
         (new TestableMakeMigrationCommand())->handle(['create_leads_table'], []);
 
-        $files = glob($this->workspace . '/database/migrations/*.php') ?: [];
-
         $this->assertDoesNotMatchRegularExpression(
             '/\{\{\s*\w+\s*\}\}/',
-            (string) file_get_contents($files[0])
+            (string) file_get_contents($this->migrationFiles()[0])
         );
     }
 
@@ -171,7 +178,7 @@ final class MakeMigrationCommandTest extends TestCase
     {
         (new TestableMakeMigrationCommand())->handle(['create_leads_table'], []);
 
-        $files = glob($this->workspace . '/database/migrations/*.php') ?: [];
+        $files = $this->migrationFiles();
 
         $this->assertSame(
             0,
@@ -196,10 +203,115 @@ final class MakeMigrationCommandTest extends TestCase
     }
 
     /**
-     * A name made only of separators normalizes to an empty description, which
-     * would produce `<timestamp>_.php` — a filename `MigrationFile::PATTERN`
-     * rejects, so the migrator would skip it forever while the generator reported
-     * success. Refused at the point of generation instead.
+     * A migration may be filed in a sub-directory, and the name that matters —
+     * the one the migrator derives the class from — is still the *basename*.
+     *
+     * `MigrationFile::PATTERN` is anchored to the start of the string and
+     * carries no directory part, so the test reads the class back through the
+     * framework's own parser against the full path: a generator that let the
+     * directory leak into the filename would produce something the migrator
+     * silently skips, which is the failure mode this pins.
+     */
+    public function test_a_nested_description_lands_in_a_sub_directory_with_a_parsable_name(): void
+    {
+        (new TestableMakeMigrationCommand())->handle(['notes/create_notes_table'], []);
+
+        $files = $this->migrationFiles();
+
+        $this->assertCount(1, $files);
+
+        // The *directory* is asserted as a directory, not as a substring of the
+        // path — an earlier version of this test checked only that the path
+        // contained "notes", which the filename satisfied on its own, so it
+        // passed while the generator was writing a flat file. Asserting the
+        // parent directory is what makes the nesting the thing under test.
+        //
+        // StudlyCased to match the namespace: the directory and
+        // `App\Database\Migrations\Notes` are one decision spelled twice, and a
+        // PSR-4 lookup is case-sensitive on a case-sensitive filesystem.
+        $this->assertSame(
+            'Notes',
+            basename(dirname($files[0])),
+            'The migration should be written into a Notes/ sub-directory.'
+        );
+
+        $this->assertStringContainsString('create_notes_table', basename($files[0]));
+
+        // The migrator can still read the class out of it, and it is the class
+        // the file declares.
+        $this->assertSame('CreateNotesTable', migrationClassIn($files[0]));
+        $this->assertStringContainsString(
+            'class CreateNotesTable',
+            (string) file_get_contents($files[0])
+        );
+    }
+
+    /**
+     * The nested migration's namespace gains the sub-namespace after the
+     * generator's own path — `App\Database\Migrations\Notes`, not
+     * `App\Notes\Database\Migrations`.
+     *
+     * The segment is StudlyCased, so `notes/` declares `...\Notes` — a namespace
+     * spelled the way every other namespace in the project is, rather than
+     * echoing the lower-case directory the caller typed.
+     */
+    public function test_a_nested_migration_namespace_appends_after_the_generator_path(): void
+    {
+        (new TestableMakeMigrationCommand())->handle(['notes/create_notes_table'], []);
+
+        $contents = (string) file_get_contents($this->migrationFiles()[0]);
+
+        $this->assertStringContainsString('namespace App\\Database\\Migrations\\Notes;', $contents);
+        $this->assertStringNotContainsString('Migrations\\notes', $contents);
+    }
+
+    /**
+     * Deeper nesting normalizes every segment, not just the first.
+     */
+    public function test_a_deeply_nested_migration_normalizes_each_segment(): void
+    {
+        (new TestableMakeMigrationCommand())->handle(['admin/notes/create_notes_table'], []);
+
+        $files = $this->migrationFiles();
+
+        $this->assertSame('Notes', basename(dirname($files[0])));
+        $this->assertSame('Admin', basename(dirname(dirname($files[0]))));
+        $this->assertStringContainsString(
+            'namespace App\\Database\\Migrations\\Admin\\Notes;',
+            (string) file_get_contents($files[0])
+        );
+    }
+
+    /**
+     * A description with no slash keeps the flat spelling and namespace — the
+     * sub-namespace support must be inert when it is not asked for.
+     */
+    public function test_a_flat_description_is_unaffected(): void
+    {
+        (new TestableMakeMigrationCommand())->handle(['create_notes_table'], []);
+
+        $files = $this->migrationFiles();
+        $contents = (string) file_get_contents($files[0]);
+
+        $this->assertSame(
+            'migrations',
+            basename(dirname($files[0])),
+            'A flat description must not create a sub-directory.'
+        );
+        $this->assertStringContainsString('namespace App\\Database\\Migrations;', $contents);
+        $this->assertStringNotContainsString('Migrations\\;', $contents);
+    }
+
+    /**
+     * A name made only of separators cannot become a class name, so it is
+     * refused rather than producing `<timestamp>_.php` — a filename
+     * `MigrationFile::PATTERN` rejects, which the migrator would skip forever
+     * while the generator reported success.
+     *
+     * Refused with the *description* message rather than a naming complaint,
+     * because the caller has not made a naming mistake: they gave prose where a
+     * description belonged, and "please provide a description" is the message
+     * that tells them what to do instead.
      */
     public function test_a_name_that_normalizes_to_nothing_is_refused(): void
     {
@@ -207,7 +319,7 @@ final class MakeMigrationCommandTest extends TestCase
         $command->handle(['!!!'], []);
 
         $this->assertStringContainsString('Please provide a migration description', implode("\n", $command->messages));
-        $this->assertSame([], glob($this->workspace . '/database/migrations/*.php') ?: []);
+        $this->assertSame([], $this->migrationFiles());
     }
 
     /**
@@ -231,7 +343,7 @@ final class MakeMigrationCommandTest extends TestCase
         $first = new TestableMakeMigrationCommand();
         $first->handle(['create_leads_table'], []);
 
-        $written = glob($this->workspace . '/database/migrations/*.php') ?: [];
+        $written = $this->migrationFiles();
         $this->assertCount(1, $written, 'the first run should have written one file');
 
         // Capture what it wrote, then put the tree back exactly as it was before —
@@ -241,7 +353,7 @@ final class MakeMigrationCommandTest extends TestCase
         $second = new TestableMakeMigrationCommand();
         $second->handle(['create_leads_table'], []);
 
-        $after = glob($this->workspace . '/database/migrations/*.php') ?: [];
+        $after = $this->migrationFiles();
         $this->assertCount(1, $after, 'the second run must not add a file');
 
         // The file is byte-identical to the first run's output: it was refused,
@@ -272,10 +384,43 @@ final class MakeMigrationCommandTest extends TestCase
         $probe = new TestableMakeMigrationCommand();
         $probe->handle([$description], []);
 
-        $written = glob($this->workspace . '/database/migrations/*.php') ?: [];
+        $written = $this->migrationFiles();
         $this->assertNotEmpty($written, 'the probe run should have written a file');
 
         return $written[0];
+    }
+
+    /**
+     * Every `.php` file under `database/migrations`.
+     *
+     * Recursive, because a migration named `notes/create_notes_table` lands in a
+     * subdirectory — and a recursive read is also what makes the "exactly one
+     * file" assertions meaningful rather than merely blind to anything nested.
+     *
+     * @return list<string>
+     */
+    private function migrationFiles(): array
+    {
+        $root = $this->workspace . '/database/migrations';
+
+        if (!is_dir($root)) {
+            return [];
+        }
+
+        $found = [];
+        $items = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS)
+        );
+
+        foreach ($items as $item) {
+            if ($item->isFile() && strtolower($item->getExtension()) === 'php') {
+                $found[] = $item->getPathname();
+            }
+        }
+
+        sort($found);
+
+        return $found;
     }
 
     public function test_the_name_is_prefixed_with_the_cli_prefix(): void

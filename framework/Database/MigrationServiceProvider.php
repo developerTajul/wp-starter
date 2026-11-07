@@ -4,9 +4,12 @@ declare(strict_types=1);
 namespace Framework\Database;
 
 use DevLinkStudios\WPServiceContainer\ServiceProvider;
+use Framework\Database\Adapters\DatabaseAdapterInterface;
+use Framework\Database\Adapters\WpDatabaseAdapter;
 
 /**
- * Binds the migrator, and the console commands that drive it.
+ * Binds the migrator, the schema adapter, and the console commands that drive
+ * them.
  *
  * The migrator is bound as a singleton with **no** explicit path, so it falls
  * back to `base_path('database/migrations')`. Binding the path here instead would
@@ -18,12 +21,28 @@ use DevLinkStudios\WPServiceContainer\ServiceProvider;
  * The three commands take the migrator by constructor injection, which is what
  * makes them testable without WP-CLI: a test hands them a migrator built over a
  * temporary directory and a fake database.
+ *
+ * ## The schema adapter binding
+ *
+ * `DatabaseAdapterInterface` is bound to the WordPress implementation, which is
+ * the seam {@see \Framework\Database\Schema\Schema} resolves through. A project
+ * targeting something other than `$wpdb` — an external service, a second
+ * database — binds its own adapter here and the migrations do not change, since
+ * they speak only the blueprint vocabulary.
  */
 class MigrationServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
         $this->container->singleton(Migrator::class, static fn (): Migrator => new Migrator());
+
+        // No `$wpdb` argument: the adapter resolves the global lazily, on first
+        // use, so binding it here does not require WordPress to have finished
+        // loading — which it has not, during `register()`.
+        $this->container->singleton(
+            DatabaseAdapterInterface::class,
+            static fn (): DatabaseAdapterInterface => new WpDatabaseAdapter()
+        );
 
         $this->container->bind(
             Commands\MigrateCommand::class,
