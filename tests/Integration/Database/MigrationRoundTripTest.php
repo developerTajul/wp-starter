@@ -309,6 +309,55 @@ final class MigrationRoundTripTest extends TestCase
     }
 
     /**
+     * A default carrying a backslash compiles to a literal that MySQL reads back
+     * as the value the author wrote.
+     *
+     * ## Why this is not a formatting nitpick
+     *
+     * MySQL treats `\` as an escape character *inside a string literal*. A
+     * builder that only doubles quotes emits `DEFAULT 'C:\path\'` for a Windows
+     * path — and that trailing backslash escapes the closing quote, so the
+     * literal never terminates. The damage is not confined to the one column: the
+     * rest of the `CREATE TABLE` is swallowed into the string, and the statement
+     * fails (or, worse, succeeds against a schema nobody asked for). Every
+     * `default()` value in the plugin is a candidate, and a directory-separator
+     * default is exactly the shape a plugin setting would take.
+     *
+     * Doubling the backslash *first* is what makes it correct, and the order is
+     * the whole subtlety: escaping quotes first would rewrite `\'` to `\''`, and
+     * the backslash pass would then double a backslash that was already doing
+     * escaping work — doubling it twice over.
+     *
+     * Asserted through the fake's parser rather than by matching the emitted
+     * text, because the emitted text is the thing under suspicion. The fake
+     * unescapes the literal the way a server would, so reading the default back
+     * out is a claim about meaning, not about spelling.
+     */
+    public function test_a_default_with_a_trailing_backslash_survives_compilation(): void
+    {
+        Schema::create(self::TABLE, function ($table): void {
+            $table->string('windows_path')->default('C:\\path\\');
+            $table->string('quoted')->default("it's");
+            $table->string('both')->default("C:\\it's\\");
+        });
+
+        $create = $this->createStatement();
+
+        // The literal must be *closed*: an unescaped trailing backslash would
+        // consume the quote and leave the statement unbalanced.
+        $this->assertMatchesRegularExpression(
+            "/`windows_path` varchar\\(191\\) NOT NULL DEFAULT 'C:\\\\\\\\path\\\\\\\\'/",
+            $create,
+            "A trailing backslash must be doubled so it cannot escape the closing quote.\n\n{$create}"
+        );
+
+        // And each value has to read back as what was written.
+        $this->assertSame('C:\\path\\', $this->db->columnMeta('wp_' . self::TABLE, 'windows_path')['Default']);
+        $this->assertSame("it's", $this->db->columnMeta('wp_' . self::TABLE, 'quoted')['Default']);
+        $this->assertSame("C:\\it's\\", $this->db->columnMeta('wp_' . self::TABLE, 'both')['Default']);
+    }
+
+    /**
      * The one `CREATE TABLE` the seed issued.
      */
     private function createStatement(): string

@@ -1322,9 +1322,9 @@ final class FakeWpdb extends wpdb
 
         $default = null;
 
-        if (preg_match('/\bdefault\s+(\'((?:[^\']|\'\')*)\'|[^\s,]+)/i', $definition, $d) === 1) {
+        if (preg_match('/\bdefault\s+(\'((?:[^\'\\\\]|\\\\.|\'\')*)\'|[^\s,]+)/i', $definition, $d) === 1) {
             $default = isset($d[2]) && $d[2] !== ''
-                ? str_replace("''", "'", $d[2])
+                ? $this->unescapeLiteral($d[2])
                 : trim($d[1], "'");
         }
 
@@ -1340,6 +1340,72 @@ final class FakeWpdb extends wpdb
             'Default' => $default,
             'Extra' => $extra,
         ];
+    }
+
+    /**
+     * Read a SQL string literal's body back as the value a server would store.
+     *
+     * The body is the text *between* the quotes, already stripped of the outer
+     * quotes by the caller's capture group.
+     *
+     * ## Why `\\` and `''` are both handled, and in this order
+     *
+     * MySQL treats a backslash as an escape character inside a literal and also
+     * accepts a doubled quote. The builder emits both spellings — `\\` for a
+     * backslash, `''` for a quote — so a fake that only collapsed `''` reported
+     * `C:\\path\\` where a server reports `C:\path\`, and any schema assertion
+     * comparing a default through the fake disagreed with reality by exactly the
+     * escaping the builder had done.
+     *
+     * Backslashes are consumed *first* by a single left-to-right pass rather than
+     * by two `str_replace()` calls, because the passes are not commutative: a
+     * value that legitimately contains the two characters `\'` would have its
+     * quote collapsed by a quote pass and then its backslash collapsed by the
+     * backslash pass, yielding `'` — one character where the server yields two.
+     * Walking the string once, and letting a backslash claim the character after
+     * it, is what keeps `\\` and `\'` distinguishable.
+     */
+    private function unescapeLiteral(string $body): string
+    {
+        $out = '';
+        $length = strlen($body);
+
+        for ($i = 0; $i < $length; $i++) {
+            $char = $body[$i];
+
+            if ($char !== '\\') {
+                $out .= $char;
+                continue;
+            }
+
+            // A trailing backslash with nothing after it cannot escape anything;
+            // keep it rather than dropping it silently.
+            if ($i + 1 >= $length) {
+                $out .= '\\';
+                continue;
+            }
+
+            $next = $body[++$i];
+
+            $out .= match ($next) {
+                '\\' => '\\',
+                "'" => "'",
+                '"' => '"',
+                'n' => "\n",
+                'r' => "\r",
+                't' => "\t",
+                '0' => "\0",
+                'Z' => "\x1a",
+                // MySQL drops the backslash before any other character, so `\x`
+                // reads as `x`.
+                default => $next,
+            };
+        }
+
+        // A doubled quote is a quote, and is safe to collapse unconditionally:
+        // the loop above has already consumed every backslash escape, so any `''`
+        // remaining is the doubling spelling rather than an escaped quote.
+        return str_replace("''", "'", $out);
     }
 
     /**

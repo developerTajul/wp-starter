@@ -2475,6 +2475,13 @@ class Blueprint
      * what `tinyint(1)` holds; the alternative, `DEFAULT TRUE`, is accepted by
      * MySQL 8 and rejected by 5.7 and by MariaDB, so writing the number is the
      * only spelling that works everywhere the plugin claims to run.
+     *
+     * Backslashes are doubled *before* quotes are doubled. MySQL treats a
+     * backslash as an escape character inside a string literal, so a Windows
+     * path ending in a separator — `C:\path\` — would otherwise escape its own
+     * closing quote and swallow the rest of the statement. The order matters:
+     * escaping quotes first would turn `\'` into `\''`, and the backslash pass
+     * would then double the backslash that was already doing the escaping.
      */
     private static function compileDefault(string|int|float|bool $value): string
     {
@@ -2486,7 +2493,7 @@ class Blueprint
             return (string) $value;
         }
 
-        return "'" . str_replace("'", "''", $value) . "'";
+        return "'" . str_replace(['\\', "'"], ['\\\\', "''"], $value) . "'";
     }
 
     /**
