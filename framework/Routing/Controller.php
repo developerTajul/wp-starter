@@ -11,8 +11,8 @@ use WP_REST_Response;
 /**
  * Base class for REST controllers.
  *
- * A controller does not have to extend this — the router dispatches to any
- * resolvable object — but doing so buys the attribute-driven registration below
+ * A controller does not have to extend this - the router dispatches to any
+ * resolvable object - but doing so buys the attribute-driven registration below
  * and the response helpers, which is what keeps route definitions out of a
  * central routes file.
  */
@@ -59,7 +59,7 @@ abstract class Controller
     /**
      * Wrap data in an explicit WP_REST_Response.
      *
-     * Returning the raw array would work too — WordPress wraps it with a 200 —
+     * Returning the raw array would work too - WordPress wraps it with a 200 -
      * but a controller that needs any other status or a header has to build the
      * response itself, and mixing the two styles in one class reads as an
      * oversight rather than a decision. Being explicit everywhere avoids that.

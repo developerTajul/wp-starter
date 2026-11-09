@@ -14,13 +14,13 @@ use Framework\Routing\RouteLoader;
 use Framework\Routing\RouteLoadResult;
 
 /**
- * `wp wp_mini route:list` — every registered route, web and REST, in one table.
+ * `wp wp_mini route:list` - every registered route, web and REST, in one table.
  *
- * ## Why this command has to load the routes itself
+ * Why this command has to load the routes itself
  *
  * Every other part of the routing layer runs inside a WordPress action. WP-CLI
- * fires none of them — no `rest_api_init`, no `admin_menu`, no `admin_post`, no
- * `template_redirect` — so when this command runs, both routers are empty and the
+ * fires none of them - no `rest_api_init`, no `admin_menu`, no `admin_post`, no
+ * `template_redirect` - so when this command runs, both routers are empty and the
  * true answer is invisible. Listing nothing would be a *wrong* answer presented
  * confidently, so the command loads both routes files itself through
  * {@see RouteLoader}, the same entry point the service provider uses.
@@ -28,19 +28,19 @@ use Framework\Routing\RouteLoadResult;
  * Loading is idempotent per file, so running this in a process where a hook has
  * already fired lists what that load collected rather than doubling it.
  *
- * ## Why the table is built by hand
+ * Why the table is built by hand
  *
  * `info()` writes raw lines and WP-CLI renders them literally, so the columns are
  * padded here. Deferring to WP-CLI's own table formatter would make the command
- * untestable outside WP-CLI, which is where its tests run — the exit-code-and-
+ * untestable outside WP-CLI, which is where its tests run - the exit-code-and-
  * output contract would be unverifiable. The same choice `migrate:status` makes,
  * for the same reason.
  *
- * ## The Domain column is not decoration
+ * The Domain column is not decoration
  *
  * It is what makes the table answerable. `leads` may be an admin screen, a
  * form action or a REST endpoint, and those are three different URLs and three
- * different hooks — the URI column shows *which* one, but only because the
+ * different hooks - the URI column shows *which* one, but only because the
  * domain says how to read the URI. A single list without it would be a list of
  * strings that look alike and behave nothing alike.
  */
@@ -111,7 +111,7 @@ class RouteListCommand extends Command
         $failures = [];
 
         /**
-         * Order matters only for the output, which is sorted afterwards anyway —
+         * Order matters only for the output, which is sorted afterwards anyway -
          * but loading API first matches the order the service provider's own
          * hooks tend to fire in, so a failure is reported in the same sequence a
          * developer would see it live.
@@ -147,7 +147,7 @@ class RouteListCommand extends Command
      * Every route, as a printable row.
      *
      * Web routes come first because they are the ones a developer cannot
-     * otherwise enumerate — a REST route is discoverable from `/wp-json` and a
+     * otherwise enumerate - a REST route is discoverable from `/wp-json` and a
      * web route is not, so this listing is the only place the whole web surface
      * appears at once.
      *
@@ -198,7 +198,7 @@ class RouteListCommand extends Command
         // The hook is the more useful of the two, so it goes FIRST and the URL
         // follows as a comment on it. WordPress reaches both web surfaces through
         // the same `admin-post.php` and `admin.php` entry points, so the URL's
-        // distinguishing part is its query string — which sits at the very end,
+        // distinguishing part is its query string - which sits at the very end,
         // exactly where truncation cuts. Hook-first means a long row still shows
         // the one string a developer greps for, and loses only the reminder of how
         // a browser gets there.
@@ -236,24 +236,24 @@ class RouteListCommand extends Command
      * The `Controller@action` cell, or the closure marker.
      *
      * A closure gets a word rather than an empty cell: an empty cell reads as a
-     * route with no handler, which is the one state publish() refuses — so the
+     * route with no handler, which is the one state publish() refuses - so the
      * blank would be alarming and wrong. The file and line are not shown because
      * a closure's reflection line points into the routes file, which the reader
      * already knows.
      *
-     * ## Why the namespace is trimmed
+     * Why the namespace is trimmed
      *
      * A controller's fully-qualified name is long enough to overflow this column
-     * on its own — `Tests\Unit\Routing\Fixtures\StringController@index` is 50
+     * on its own - `Tests\Unit\Routing\Fixtures\StringController@index` is 50
      * characters against a width of 40. Left whole, every row truncates to the
      * same generic `Tests\Unit\Routing\Fixtures\StringCon...`, which is the
      * *prefix* every controller shares and therefore the part that distinguishes
-     * nothing — while the `@action`, the one thing the reader came for, is cut
+     * nothing - while the `@action`, the one thing the reader came for, is cut
      * off the end. The column would be uniformly useless and look fine.
      *
      * So the namespace is dropped and only the class basename is kept. In a real
      * project two controllers of the same basename in different namespaces are
-     * possible, and showing only the basename would be ambiguous — but an
+     * possible, and showing only the basename would be ambiguous - but an
      * ambiguous cell that fits beats an unambiguous one nobody can read, and the
      * routes file the reader is about to open names the class in full anyway.
      */
@@ -269,7 +269,7 @@ class RouteListCommand extends Command
     }
 
     /**
-     * The class basename — `App\Http\Controllers\LeadController` → `LeadController`.
+     * The class basename - `App\Http\Controllers\LeadController` → `LeadController`.
      *
      * Anonymous classes have no useful basename (their name contains a NUL byte
      * and a file path), so the whole name is kept and the column's truncation
@@ -294,7 +294,7 @@ class RouteListCommand extends Command
             return '-';
         }
 
-        // Short names only — the namespace is the same for every row and would
+        // Short names only - the namespace is the same for every row and would
         // consume the column without distinguishing anything. `Authorize` tells
         // a reader as much as `Framework\Http\Middleware\Authorize` in a table
         // whose other columns are already the interesting part.
@@ -360,7 +360,7 @@ class RouteListCommand extends Command
      * Cut a cell to its column width, marking the cut.
      *
      * Without this a long path pushes every column after it out of alignment for
-     * that one row — the table stops being readable exactly when a route is long
+     * that one row - the table stops being readable exactly when a route is long
      * enough to be worth studying. The ellipsis is ASCII rather than `…` because
      * a Windows console in a non-UTF-8 code page renders the multi-byte glyph as
      * mojibake, and the summary counts are what matter most there.

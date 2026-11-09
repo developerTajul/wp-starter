@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Lifecycle;
 
-use App\Lifecycle\PluginLifecycle;
+use Framework\Lifecycle\PluginLifecycle;
 use DevLinkStudios\WPServiceContainer\Container;
 use DevLinkStudios\WPServiceContainer\Contracts\ContainerInterface;
 use Framework\Database\Adapters\WpDatabaseAdapter;
@@ -88,17 +88,38 @@ final class PluginLifecycleTest extends TestCase
     }
 
     /**
-     * The default is false, and that is the only safe default for something that
-     * deletes a site's data.
+     * The default is `true`: deleting the plugin is the consent.
+     *
+     * ## Why this is the assertion, and why it is the one that matters
+     *
+     * The option used to default to `false`, and the effect on a real site was
+     * that the plugin's files were deleted while its tables stayed — because the
+     * only thing that ever wrote the option was a checkbox on the Reading screen
+     * that most operators never opened. WordPress's own prompt ("Are you sure
+     * you want to delete X and its data?") is the consent, given at the moment of
+     * deletion by the person doing the deleting, and an install where nobody
+     * touched the setting is the ordinary case rather than an unusual one.
+     *
+     * So an absent option — the state of every fresh install — must mean the
+     * wipe runs. This test is what fails if the default ever drifts back.
      */
-    public function test_data_is_kept_when_the_option_was_never_set(): void
+    public function test_data_is_deleted_when_the_option_was_never_set(): void
     {
-        $this->assertFalse(PluginLifecycle::shouldDeleteDataOnUninstall());
+        $this->assertArrayNotHasKey(
+            PluginLifecycle::deleteDataOption(),
+            WpStub::$options,
+            'Precondition: something already wrote the option.'
+        );
+
+        $this->assertTrue(
+            PluginLifecycle::shouldDeleteDataOnUninstall(),
+            'The default kept a site\'s data, so deleting the plugin leaves its tables behind.'
+        );
     }
 
     /**
      * A stored value can arrive as `'1'`, `1` or `true` depending on who wrote
-     * it, and all three mean yes.
+     * it, and all three mean yes; `false` and its spellings are the opt-out.
      */
     public function test_the_setting_is_read_as_a_bool_whatever_was_stored(): void
     {
@@ -243,25 +264,56 @@ final class PluginLifecycleTest extends TestCase
     // ------------------------------------------------------------- uninstall
 
     /**
-     * The gate: with the option off, nothing is touched at all — not even the
-     * container, since the work behind it would be for a decision already made.
+     * The opt-out: an operator who unticked the box keeps everything — and
+     * nothing is touched at all, not even the container, since the work behind it
+     * would be for a decision already made.
      */
-    public function test_uninstall_keeps_everything_when_the_option_is_off(): void
+    public function test_uninstall_keeps_everything_when_the_operator_opted_out(): void
     {
         $this->workspace->write('2026_11_05_100000_create_users_table', SchemaMigration::class);
         $this->lifecycle()->activate($this->container);
+
+        PluginLifecycle::setDeleteDataOnUninstall(false);
 
         $container = $this->container();
         $removed = $this->lifecycle()->uninstall($container);
 
         $this->assertFalse($removed);
-        $this->assertTrue($this->db->tableExists('wp_users'), 'The option was off and a table was dropped.');
+        $this->assertTrue($this->db->tableExists('wp_users'), 'The operator opted out and a table was dropped.');
         $this->assertTrue($this->db->tableExists('wp_plugin_migrations'));
         $this->assertFalse($container->isBooted(), 'The container was booted for a wipe that did not happen.');
     }
 
     /**
-     * With the option on, the tables and the ledger are gone.
+     * **The default path, and the bug this whole change is about.**
+     *
+     * Nothing writes the option — the state of every install where nobody has
+     * opened the Reading screen, which is nearly all of them. WordPress asked
+     * "delete X and its data?", the operator said yes, and the tables must go.
+     * Before this, they did not: the file was deleted and the schema survived.
+     */
+    public function test_uninstall_removes_everything_when_the_option_was_never_set(): void
+    {
+        $this->workspace->write('2026_11_05_100000_create_users_table', SchemaMigration::class);
+        $this->lifecycle()->activate($this->container);
+
+        $this->assertArrayNotHasKey(
+            PluginLifecycle::deleteDataOption(),
+            WpStub::$options,
+            'Precondition: something already wrote the option.'
+        );
+
+        $this->assertTrue($this->lifecycle()->uninstall($this->container()));
+        $this->assertFalse(
+            $this->db->tableExists('wp_users'),
+            'An uninstall with no stored preference left the plugin\'s tables behind.'
+        );
+        $this->assertFalse($this->db->tableExists('wp_plugin_migrations'));
+    }
+
+    /**
+     * ...and when the option is explicitly on, which is the same outcome by the
+     * other route.
      */
     public function test_uninstall_removes_everything_when_the_option_is_on(): void
     {

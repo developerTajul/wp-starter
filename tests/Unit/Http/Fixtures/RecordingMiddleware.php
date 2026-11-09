@@ -18,8 +18,25 @@ use Framework\Http\Request;
  * The label is supplied through a contextual binding in the test, which is also
  * what proves the pipeline resolves middleware through the container rather than
  * instantiating it directly.
+ *
+ * ## Why this is not `final`
+ *
+ * It is the base the pipeline tests extend to get two distinct class names for
+ * two stack positions — {@see OuterMiddleware} and {@see InnerMiddleware} — and
+ * distinct names are required because the pipeline resolves middleware *by
+ * class*, so two entries of one class are two resolutions of one binding and
+ * cannot carry different labels. A `final` here would make those subclasses
+ * unloadable: PHP fatals at class *declaration*, which is not catchable, so any
+ * `class_exists()` or container warm-up that reached one would kill the process
+ * rather than fail a test. That is also why the three subclasses must be
+ * genuinely loadable rather than merely never resolved — the short-circuit test
+ * happens to never load {@see BehindMiddleware}, but that is a property of the
+ * test, not a guarantee the class may rely on.
+ *
+ * Subclassing to configure a base middleware is the documented way to do it, so
+ * this mirrors the real shape rather than working around it.
  */
-final class RecordingMiddleware implements Middleware
+class RecordingMiddleware implements Middleware
 {
     /** @var list<string> */
     public static array $log = [];

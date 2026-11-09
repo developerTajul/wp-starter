@@ -631,6 +631,99 @@ if (!function_exists('delete_transient')) {
     }
 }
 
+// --------------------------------------------------------------- object cache
+//
+// WordPress's object cache is a *per-request* store unless a persistent backend
+// (Redis, Memcached) is installed, and `wp_using_ext_object_cache()` is the only
+// way to ask which. These stubs model the in-memory half faithfully: a write
+// lands in `WpStub::$objectCache`, which `WpStub::reset()` clears — exactly the
+// "gone on the next request" behaviour a store that wrongly assumed persistence
+// would be caught by.
+//
+// `$found` is by reference, and that is the whole reason this block is written
+// out rather than inlined. `wp_cache_get()` returns `false` for a miss AND
+// `false` for a stored `false`; `$found` is the only thing that tells them
+// apart. A stub that forgets to write it makes every cache-miss test pass while
+// the implementation under it cannot distinguish a cached `false` from nothing
+// at all — the precise failure mode the `current_user_can()` stub below warns
+// about, and the reason `WpCacheStore` never stores a bare `false`.
+
+if (!function_exists('wp_cache_get')) {
+    /**
+     * @param string $group
+     * @param bool   $found Set to whether the key was present. By reference:
+     *                      this is the only signal that separates a stored
+     *                      `false` from a miss.
+     *
+     * @return mixed
+     */
+    function wp_cache_get(string $key, string $group = '', bool &$found = null)
+    {
+        $grouped = WpStub::$objectCache[$group] ?? [];
+
+        if (!array_key_exists($key, $grouped)) {
+            // Written even on a miss. Leaving `$found` untouched would leave
+            // whatever the caller last had in it, which reads as a hit.
+            $found = false;
+
+            return false;
+        }
+
+        $found = true;
+
+        return $grouped[$key];
+    }
+}
+
+if (!function_exists('wp_cache_set')) {
+    /**
+     * @param mixed $value
+     * @param int   $expiration Ignored: an object cache with no persistent
+     *                          backend has nothing to expire *from*, since the
+     *                          store dies with the request.
+     */
+    function wp_cache_set(string $key, $value, string $group = '', int $expiration = 0): bool
+    {
+        WpStub::$objectCache[$group][$key] = $value;
+        WpStub::$objectCacheWrites[] = [
+            'key' => $key,
+            'group' => $group,
+            'value' => $value,
+            'expiration' => $expiration,
+        ];
+
+        return true;
+    }
+}
+
+if (!function_exists('wp_cache_delete')) {
+    /**
+     * A delete from a group that does not exist is a silent success, as in
+     * WordPress — which is why the group name has to be right at every call
+     * site and a wrong one fails invisibly.
+     */
+    function wp_cache_delete(string $key, string $group = ''): bool
+    {
+        unset(WpStub::$objectCache[$group][$key]);
+
+        return true;
+    }
+}
+
+if (!function_exists('wp_using_ext_object_cache')) {
+    /**
+     * Whether a *persistent* object cache backend is installed.
+     *
+     * Defaults to false in {@see WpStub}, because that is the state of a stock
+     * WordPress — and the one a store that assumed persistence would break in.
+     * A test flips `WpStub::$usingExtObjectCache` to exercise the other branch.
+     */
+    function wp_using_ext_object_cache(): bool
+    {
+        return WpStub::$usingExtObjectCache;
+    }
+}
+
 // setcookie() is NOT stubbed here. It is a PHP builtin, so a global function
 // declaration would be a fatal and the function_exists() guard above would
 // silently skip it — see tests/stubs/builtins.php, which defines it in the

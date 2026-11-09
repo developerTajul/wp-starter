@@ -8,9 +8,9 @@ use InvalidArgumentException;
 /**
  * One REST route: an HTTP method, a path, a handler, and its middleware.
  *
- * Mutable by design, and configured in place. The two ways a route gets built —
+ * Mutable by design, and configured in place. The two ways a route gets built -
  * the fluent form (`$router->get('posts')->middleware(...)`) and the declarative
- * form (`#[Route('GET', 'posts', middleware: [...])]`) — both need to hold the
+ * form (`#[Route('GET', 'posts', middleware: [...])]`) - both need to hold the
  * same object the Router stored, so a clone-on-write mutator here would silently
  * drop half the configuration. {@see RouteRegistrar::controllerAction()} is
  * where that matters: it returns the stored route so the caller can keep
@@ -51,8 +51,8 @@ final class Route
     /**
      * A stable identifier for this route, e.g. "leads.show".
      *
-     * Null until `name()` is called. Names are not required — an unnamed route is
-     * perfectly ordinary — but a named one can be addressed by name in
+     * Null until `name()` is called. Names are not required - an unnamed route is
+     * perfectly ordinary - but a named one can be addressed by name in
      * `route:list` and in generated URLs, which is what keeps a hard-coded path
      * from appearing in a template or a redirect.
      */
@@ -61,16 +61,16 @@ final class Route
     /**
      * A prefix the group this route was declared in contributes to its name.
      *
-     * ## Why this lives on the route and not in the registrar
+     * Why this lives on the route and not in the registrar
      *
      * `->name()` is called by the *author*, on the object {@see RouteRegistrar}
-     * handed back — which is after the group callback has moved on, in the fluent
+     * handed back - which is after the group callback has moved on, in the fluent
      * chain. So the registrar cannot wrap the call: by the time `name()` runs, the
      * only thing that knows which group the route was declared in is the route
      * itself.
      *
-     * The alternative — having the registrar re-walk its routes and rename them
-     * after the callback returns — is wrong for a subtler reason: a route's `name()`
+     * The alternative - having the registrar re-walk its routes and rename them
+     * after the callback returns - is wrong for a subtler reason: a route's `name()`
      * call is its author's final word, and a prefix applied afterwards would
      * overwrite a name the author deliberately set outside the convention. This is
      * applied *inside* `name()`, so the two compose in the order they were written.
@@ -81,8 +81,8 @@ final class Route
      * WordPress-specific arguments for this route.
      *
      * This is the escape hatch the fluent API needs to stay honest: a web route
-     * carries things WordPress invented — `menu_title`, `icon`, `position`,
-     * `capability`, `parent`, `post_type` — that have no Laravel counterpart and
+     * carries things WordPress invented - `menu_title`, `icon`, `position`,
+     * `capability`, `parent`, `post_type` - that have no Laravel counterpart and
      * should not be invented as first-class methods. Options are read by the
      * adapter that compiles the route and ignored by the ones that do not
      * understand them, so the same `Route` object can be handed to either router.
@@ -153,10 +153,10 @@ final class Route
      *
      * A list given as one array is flattened, so the two forms cannot produce
      * routes that differ only in whether a guard was registered as one entry or
-     * two — the pipeline would run them the same way, but `getMiddleware()` is
+     * two - the pipeline would run them the same way, but `getMiddleware()` is
      * what the audit tests and the route listing read.
      *
-     * ## Entries may carry parameters
+     * Entries may carry parameters
      *
      * An entry may be `'class:param'`, Laravel-style:
      *
@@ -164,7 +164,7 @@ final class Route
      *
      * The pipeline splits each entry at the first colon and hands the rest to the
      * middleware, which receives it through a variadic `handle(...$arguments)`.
-     * This class deliberately does not parse or validate that — it stores strings
+     * This class deliberately does not parse or validate that - it stores strings
      * and does not know which contract, let alone which signature, they will be
      * run under. The one rule enforced here is that an entry is a non-empty
      * string; a parameter naming a middleware that takes none is reported by
@@ -216,15 +216,15 @@ final class Route
      *
      * A name is documentation that the code can check: `route:list` prints it,
      * and a URL generator can look it up without any file agreeing on a literal
-     * path. Duplicates are not rejected here — a name is chosen by the author,
+     * path. Duplicates are not rejected here - a name is chosen by the author,
      * and whether two routes may share one is a project's decision, not the
      * router's. The listing reports a collision rather than the router refusing
      * to boot over it.
      *
-     * ## A group's `as` prefix is applied here, not before
+     * A group's `as` prefix is applied here, not before
      *
      * `Route::group(['as' => 'leads.'], ...)` contributes a prefix, and this is the
-     * one place it can be applied — see {@see $namePrefix}. The name the author
+     * one place it can be applied - see {@see $namePrefix}. The name the author
      * passes is therefore *relative to the group*, which is the whole point:
      * `->name('index')` inside `['as' => 'leads.']` produces `leads.index`, and two
      * groups may each declare an `index` without colliding.
@@ -246,7 +246,7 @@ final class Route
      * spelling.
      *
      * Has no effect on a route that is never named, and no effect on one named
-     * before this call — a `Route` built by hand and named outside any group is
+     * before this call - a `Route` built by hand and named outside any group is
      * unchanged either way.
      */
     public function namePrefix(string $prefix): self
@@ -263,7 +263,7 @@ final class Route
      *         ->withOptions(['menu_title' => 'Settings', 'icon' => 'dashicons-admin-generic']);
      *
      * `array_replace` rather than `array_merge`: these bundles are string-keyed,
-     * but replacing is the clearer statement of intent — a second call setting
+     * but replacing is the clearer statement of intent - a second call setting
      * `menu_title` overrides the first, it does not add a second one.
      *
      * @param array<string, mixed> $options
@@ -375,9 +375,9 @@ final class Route
      * Delegated to {@see RouteCompiler::parameterNames()} rather than answered
      * with a local regex, because this answer has to match what the compiler did
      * with the same path. The regex that used to live here required at least one
-     * character after a `:`, so on the empty-constraint spelling `posts/{id:}` —
+     * character after a `:`, so on the empty-constraint spelling `posts/{id:}` -
      * which the compiler reads as "no constraint" and turns into a working
-     * `(?P<id>[^/]+)` — it reported *no* parameters. The route dispatched and the
+     * `(?P<id>[^/]+)` - it reported *no* parameters. The route dispatched and the
      * binding step then dropped the argument silently, since there was no name to
      * bind. Nothing raised, and no test compared the two readings.
      *

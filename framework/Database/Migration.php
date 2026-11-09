@@ -13,7 +13,7 @@ namespace Framework\Database;
  * actually needs it.
  *
  * Migrations are resolved from the container, so one may declare constructor
- * dependencies — a `$wpdb`, a schema builder, a seeder — rather than reaching for
+ * dependencies - a `$wpdb`, a schema builder, a seeder - rather than reaching for
  * `global $wpdb` and making itself untestable.
  *
  * A migration's own `up()`/`down()` failures are the migrator's to report; it

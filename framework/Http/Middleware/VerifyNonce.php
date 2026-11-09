@@ -35,10 +35,10 @@ use Framework\Http\Responses\JsonResponse;
  * disagree; naming it at the route makes the pairing visible in the routes file
  * but spreads the value across two files that must still match.
  *
- * ## Parameters
+ * Parameters
  *
  * The first parameter is the nonce **action**. The optional second is the
- * **field name**, which defaults to `_wpnonce` — what `wp_nonce_field()` emits,
+ * **field name**, which defaults to `_wpnonce` - what `wp_nonce_field()` emits,
  * so a standard WordPress form post needs no change.
  *
  *     'nonce:leads_store'                    // field _wpnonce, action leads_store
@@ -47,16 +47,16 @@ use Framework\Http\Responses\JsonResponse;
  * A missing action is **refused**, not defaulted. `VerifyAdminNonce` defaults to
  * `'-1'` because that is what `wp_nonce_field()` bakes into a form given no
  * action, and it is a legitimate configuration. Here an omitted action is a
- * routes-file typo — `'nonce:'` — and quietly verifying against `-1` would
+ * routes-file typo - `'nonce:'` - and quietly verifying against `-1` would
  * accept a nonce minted for a *different* purpose, or reject every real
  * submission, with nothing to indicate which. See {@see VerifyAdminNonce} for why
  * `-1` is a specific action and not a wildcard.
  *
- * ## Where the nonce is read from
+ * Where the nonce is read from
  *
  * `$request->input()`, which sees the query string, the form body and a JSON
  * document alike. That is what makes a nonce acceptable from a `fetch()` that
- * sends `X-WP-Nonce` — no, that header is *not* read here: WordPress's REST
+ * sends `X-WP-Nonce` - no, that header is *not* read here: WordPress's REST
  * layer consumes it, and this middleware guards the web surfaces, where the
  * nonce travels as a form field. A headless client posting a form reaches this
  * through the body.
@@ -81,7 +81,7 @@ class VerifyNonce implements Middleware
         if ($action === '') {
             return $this->reject($request, sprintf(
                 'This route requires a nonce but no action was configured. '
-                . 'Write it as [nonce:%s] — the part after the colon is missing.',
+                . 'Write it as [nonce:%s], the part after the colon is missing.',
                 'leads_store'
             ));
         }
@@ -100,7 +100,7 @@ class VerifyNonce implements Middleware
         if (!function_exists('wp_verify_nonce')) {
             // Failing closed. A middleware whose whole job is a security check
             // must not degrade into a pass-through when the function it needs is
-            // absent — that would make a broken install look like a working one.
+            // absent - that would make a broken install look like a working one.
             return $this->reject($request, 'The security check could not be performed.');
         }
 
@@ -143,7 +143,7 @@ class VerifyNonce implements Middleware
             );
         }
 
-        // wp_die() is absent — a non-WordPress context, or a filtered install.
+        // wp_die() is absent - a non-WordPress context, or a filtered install.
         // Falling through to $next() would silently drop the check, so the only
         // safe answer is to refuse, however plainly.
         return new JsonResponse(

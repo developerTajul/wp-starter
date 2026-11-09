@@ -6,7 +6,7 @@ namespace Framework\Database\Storage;
 /**
  * Everything the migrator needs to keep its own book-keeping.
  *
- * ## Why this exists
+ * Why this exists
  *
  * {@see \Framework\Database\Migrator} ran migrations *and* kept the record of
  * which ones had run, and it kept that record by reaching for `$wpdb` directly:
@@ -19,24 +19,24 @@ namespace Framework\Database\Storage;
  * ordering and running migration files. The two concerns were never separable
  * because they shared a connection rather than an interface.
  *
- * This is that interface. The migrator knows what it needs — *is this recorded*,
- * *what batch was last*, *take the lock* — and nothing about how any of it is
+ * This is that interface. The migrator knows what it needs - *is this recorded*,
+ * *what batch was last*, *take the lock* - and nothing about how any of it is
  * stored. The `$wpdb` version is one implementation; a version over a different
  * database, or an in-memory one for a test, is another.
  *
- * ## Why it is not {@see \Framework\Database\Adapters\DatabaseAdapterInterface}
+ * Why it is not {@see \Framework\Database\Adapters\DatabaseAdapterInterface}
  *
  * Because that interface is a *schema* seam and says so: it compiles and runs
  * DDL, and its contract is deliberately free of query building. Widening it to
  * carry row reads would put `get_var()` and `insert()` on every adapter in the
- * project — including ones written for a target that has no SQL at all — to
+ * project - including ones written for a target that has no SQL at all - to
  * serve a single caller. The two seams are genuinely different jobs, so they are
  * two types.
  *
- * ## The lock is part of the contract, not an implementation detail
+ * The lock is part of the contract, not an implementation detail
  *
- * A real `GET_LOCK` is a server-side concern with a real failure mode — another
- * deploy holding it — and the migrator's whole batch-numbering guarantee rests
+ * A real `GET_LOCK` is a server-side concern with a real failure mode - another
+ * deploy holding it - and the migrator's whole batch-numbering guarantee rests
  * on only one process running at a time. A version of this interface that
  * quietly no-opped the lock would let two concurrent runs interleave, so
  * {@see acquireLock()} is required to actually exclude, and to report when it
@@ -58,7 +58,7 @@ interface MigrationStorageInterface
      *
      * A *catalogue probe*, not "attempt something and catch the failure". The
      * caller is deciding whether to create the table, and a probe that failed for
-     * an unrelated reason — permissions, a dropped connection — must not be read
+     * an unrelated reason - permissions, a dropped connection - must not be read
      * as an absence that justifies a `CREATE`.
      */
     public function trackingTableExists(): bool;
@@ -68,7 +68,7 @@ interface MigrationStorageInterface
      *
      * Asked because the `batch` column was not in the first cut of the table. A
      * plugin that upgraded in place would otherwise fail every write with
-     * "Unknown column", so the caller adds it on demand — and it can only decide
+     * "Unknown column", so the caller adds it on demand - and it can only decide
      * that by asking.
      */
     public function trackingTableHasColumn(string $column): bool;
@@ -148,7 +148,7 @@ interface MigrationStorageInterface
     /**
      * Raise the high-water mark, if the given batch is higher than the current one.
      *
-     * Monotonic by contract — it never moves down — because a caller that could
+     * Monotonic by contract - it never moves down - because a caller that could
      * lower it would reintroduce the reuse the mark exists to prevent.
      */
     public function rememberBatch(int $batch): void;
@@ -175,7 +175,7 @@ interface MigrationStorageInterface
     /**
      * Ask the database to roll back the next failing statement, where it can.
      *
-     * Not a transaction — DDL implicitly commits in MySQL and cannot be wrapped
+     * Not a transaction - DDL implicitly commits in MySQL and cannot be wrapped
      * in one. This is the narrower protection the platform does offer, and it is
      * best-effort: an implementation on a target without the concept does
      * nothing, and nothing is lost, because the batch stop is what actually keeps
@@ -189,7 +189,7 @@ interface MigrationStorageInterface
      * @param int $timeoutSeconds How long to wait for a holder to release.
      *
      * @throws \Framework\Database\Exceptions\MigrationException When the lock
-     *         could not be taken — whether because another process holds it past
+     *         could not be taken - whether because another process holds it past
      *         the timeout or because the request itself errored. The two are
      *         distinguished in the message, because one means "wait" and the other
      *         means "something is wrong".

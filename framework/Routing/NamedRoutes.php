@@ -8,10 +8,10 @@ use Framework\Routing\Contracts\RouterInterface;
 /**
  * The named routes of every domain, in one place.
  *
- * ## Why this is not just "iterate the two routers"
+ * Why this is not just "iterate the two routers"
  *
  * {@see UrlGenerator} needs to turn a name into a route, and the routes live in
- * two separate tables — the web adapter's and the REST one's — owned by two
+ * two separate tables - the web adapter's and the REST one's - owned by two
  * adapters that deliberately know nothing about each other. Something has to hold
  * both, and the obvious candidate is the generator itself.
  *
@@ -20,7 +20,7 @@ use Framework\Routing\Contracts\RouterInterface;
  * `template_redirect`. A view rendering `route('leads.index')` runs inside those
  * same actions, and a redirect runs inside `admin_post`. So the generator is
  * resolved at a moment when the web table may be full and the REST one empty, or
- * the reverse — and a generator that copied the routes into itself at
+ * the reverse - and a generator that copied the routes into itself at
  * construction would be correct only for whichever domain happened to load first.
  * The failure is quiet: a name that exists resolves to null, and a template falls
  * back to a bare path nobody notices until a link 404s.
@@ -29,17 +29,17 @@ use Framework\Routing\Contracts\RouterInterface;
  * generator holds this registry, and the registry asks the routers on every
  * lookup. A route registered after the generator was built is found anyway.
  *
- * ## Registered by the adapters, so it cannot be forgotten
+ * Registered by the adapters, so it cannot be forgotten
  *
  * Each adapter hands itself to {@see add()} in its own `flush()`. Nothing else
  * has to remember to do it: a router that has published routes has registered
  * them here, and a router that has not has nothing to contribute yet. That
- * ordering — flush, then lookup — is the same one the routes themselves follow.
+ * ordering - flush, then lookup - is the same one the routes themselves follow.
  *
- * ## Names are per-domain, and a collision is reported, not merged
+ * Names are per-domain, and a collision is reported, not merged
  *
  * Two routes may not share a name. The router tolerates it (`Route::name()`
- * explains why), and `route:list` reports it — but a *URL* cannot: `route('leads')`
+ * explains why), and `route:list` reports it - but a *URL* cannot: `route('leads')`
  * has exactly one answer, and silently picking the first would make a link point
  * at whichever table happened to be registered first. So a duplicate is recorded
  * as an ambiguity and reported when that name is asked for.
@@ -63,7 +63,7 @@ final class NamedRoutes
     /**
      * Whether this router's routes have already been recorded.
      *
-     * A `flush()` can run more than once — the web hooks each load and flush, and
+     * A `flush()` can run more than once - the web hooks each load and flush, and
      * the adapter's own guard is what makes that safe. Registering the same router
      * twice would then look like a name collision and turn an ordinary page load
      * into an "ambiguous route name" error, so the router is recorded once.
@@ -76,7 +76,7 @@ final class NamedRoutes
      * Record a router, so its named routes can be looked up.
      *
      * Idempotent per router. Called by the adapters at flush time; a caller that
-     * wants to generate URLs before any flush — `route:list`, a test, a command —
+     * wants to generate URLs before any flush - `route:list`, a test, a command -
      * may call it directly once the routes are loaded.
      */
     public function add(RouterInterface $router): void
@@ -97,7 +97,7 @@ final class NamedRoutes
         //    the only record of it is the route table itself.
         //  - **Once here, once in a domain already registered.** The check above
         //    catches this only if the *other* router is also scanned, which means
-        //    comparing these names against every name recorded so far — not just
+        //    comparing these names against every name recorded so far - not just
         //    against this router's own.
         //
         // The second is the case that matters in practice: `leads` is a perfectly
@@ -111,7 +111,7 @@ final class NamedRoutes
             $other = $this->domainDeclaring($name, $domain);
 
             if ($other !== null) {
-                // Both claimants are recorded, not just the second one — the
+                // Both claimants are recorded, not just the second one - the
                 // report is what an author acts on, and naming one of the two
                 // routes that collide sends them looking for the wrong file. The
                 // first is added at the moment the second is found, so the list
@@ -131,7 +131,7 @@ final class NamedRoutes
      * The route registered under a name, or null.
      *
      * Searches every registered domain, because a name is chosen by the author and
-     * carries no domain of its own — `route('leads.index')` should not require the
+     * carries no domain of its own - `route('leads.index')` should not require the
      * caller to know that "leads" happens to be a web screen. The first domain to
      * declare it wins, which is only ever observable when a name is duplicated,
      * and that case is reported by {@see ambiguity()}.
@@ -205,7 +205,7 @@ final class NamedRoutes
     /**
      * How a router is named in a collision report.
      *
-     * `domain()` is the router's own answer — "web" or "api" — so a project that
+     * `domain()` is the router's own answer, "web" or "api", so a project that
      * adds a third adapter gets a sensible label without this class knowing about
      * it. The class name is the fallback, because a label of "" would leave the
      * report saying a name was claimed twice by nothing.

@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 namespace Tests\Integration\Routing;
 
-use App\Http\Controllers\Admin\LeadController;
+use App\Http\Controllers\Admin\CompanyController;
 use DevLinkStudios\WPServiceContainer\Container;
 use DevLinkStudios\WPServiceContainer\Contracts\ContainerInterface;
 use Framework\Http\HttpServiceProvider;
@@ -14,9 +14,11 @@ use Framework\Http\Middleware\TrimStrings;
 use Framework\Routing\Adapters\RestApiRouterAdapter;
 use Framework\Routing\Adapters\WordPressRouterAdapter;
 use Framework\Routing\CaptureWebRequestFactory;
+use Framework\Routing\NamedRoutes;
 use Framework\Routing\RouteLoader;
 use Framework\Routing\RouteRegistrar;
 use Framework\Routing\RouteResolver;
+use Framework\Routing\UrlGenerator;
 use Framework\Routing\WebRouteRegistrar;
 use PHPUnit\Framework\TestCase;
 use Tests\Support\WpStub;
@@ -53,6 +55,14 @@ final class WebRoutesFileTest extends TestCase
     private Container $container;
     private WordPressRouterAdapter $router;
 
+    /**
+     * The registry the adapter publishes into, held here so the tests can build
+     * URLs from the same one. `NamedRoutes` is `protected` on the adapter, and
+     * handing it in is also what {@see \App\Providers\RouteServiceProvider} does —
+     * two registries would let a route register and still not be nameable.
+     */
+    private NamedRoutes $named;
+
     protected function setUp(): void
     {
         WpStub::reset();
@@ -64,10 +74,15 @@ final class WebRoutesFileTest extends TestCase
         // resolvable — the same provider a real project registers.
         (new HttpServiceProvider($this->container))->register();
 
+        $this->named = new NamedRoutes();
+
         $this->router = new WordPressRouterAdapter(
             $this->container,
             new RouteResolver($this->container),
-            new CaptureWebRequestFactory()
+            new CaptureWebRequestFactory(),
+            null,
+            null,
+            $this->named
         );
     }
 
@@ -144,9 +159,8 @@ final class WebRoutesFileTest extends TestCase
             $this->router->getRoutes()
         );
 
-        $this->assertContains('wp-mini-laravel', $paths, 'The existing dashboard screen went missing.');
-        $this->assertContains(LeadController::SCREEN_SLUG, $paths);
-        $this->assertContains(LeadController::CREATE_SLUG, $paths);
+        $this->assertContains(CompanyController::SCREEN_SLUG, $paths);
+        $this->assertContains(CompanyController::CREATE_SLUG, $paths);
     }
 
     /**
@@ -161,7 +175,7 @@ final class WebRoutesFileTest extends TestCase
      * `flush()` only hooks `admin_menu`; the menu functions run when WordPress
      * fires it, so the action is fired here before anything is read back.
      */
-    public function test_the_loaded_file_publishes_the_leads_menu_before_its_submenu(): void
+    public function test_the_loaded_file_publishes_the_companies_menu_before_its_submenu(): void
     {
         $this->loader()->load($this->router, 'routes/web.php');
         $this->router->flush();
@@ -170,7 +184,7 @@ final class WebRoutesFileTest extends TestCase
         $slugs = array_column(WpStub::$menuPages, 'menu_slug');
 
         $this->assertSame(
-            ['wp-mini-laravel', LeadController::SCREEN_SLUG],
+            [CompanyController::SCREEN_SLUG],
             $slugs,
             'Top-level menus, in registration order.'
         );
@@ -178,14 +192,109 @@ final class WebRoutesFileTest extends TestCase
         $submenuParents = array_column(WpStub::$submenuPages, 'parent_slug');
 
         $this->assertSame(
-            [LeadController::SCREEN_SLUG],
+            [CompanyController::SCREEN_SLUG],
             $submenuParents,
             'The create screen is a submenu of the list screen.'
         );
         $this->assertSame(
-            [LeadController::CREATE_SLUG],
+            [CompanyController::CREATE_SLUG],
             array_column(WpStub::$submenuPages, 'menu_slug')
         );
+    }
+
+    /**
+     * **A screen's URL is the slug WordPress registered, or the link 404s.**
+     *
+     * This is the bug this test exists for, and it is worth stating in full
+     * because the symptom pointed somewhere else entirely. The create screen was
+     * declared as `Route::get('/companies/create', ...)`, which WordPress
+     * registered under the submenu slug `companies-create` — separators
+     * normalized — while `UrlGenerator` built its URL from the path verbatim and
+     * produced `admin.php?page=companies%2Fcreate`. Different screens.
+     *
+     * The failure was then disguised by a second one: `CompanyController::create()`
+     * redirected to a route name nothing declared, the generator threw, and the
+     * error handler rendered a 404 *at whichever URL the browser had loaded*. So
+     * the operator saw "404 on admin.php?page=companies" and reasonably concluded
+     * that the add-company *link* was broken — when no such link had been involved.
+     *
+     * The invariant is that the slug WordPress dispatches on and the `page`
+     * parameter `route()` produces are one string. Asserted as a set membership
+     * rather than two literals, because the value itself is the controller's to
+     * declare — what must not drift is that both sides read it.
+     */
+    public function test_every_admin_screen_url_addresses_the_slug_wordpress_registered(): void
+    {
+        $this->loader()->load($this->router, 'routes/web.php');
+        $this->router->flush();
+        WpStub::doAction('admin_menu');
+
+        $registered = array_merge(
+            array_column(WpStub::$menuPages, 'menu_slug'),
+            array_column(WpStub::$submenuPages, 'menu_slug')
+        );
+
+        $urls = new UrlGenerator($this->named);
+
+        foreach ([
+            'companies.index' => CompanyController::SCREEN_SLUG,
+            'companies.create' => CompanyController::CREATE_SLUG,
+        ] as $name => $expectedSlug) {
+            $url = $urls->route($name);
+
+            parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+            $page = $query['page'] ?? null;
+
+            $this->assertSame(
+                $expectedSlug,
+                $page,
+                sprintf('route(%s) does not address the screen WordPress registered.', $name)
+            );
+
+            $this->assertContains(
+                $page,
+                $registered,
+                sprintf('route(%s) points at [%s], which no add_menu_page() call registered.', $name, (string) $page)
+            );
+        }
+    }
+
+    /**
+     * Every route name the controller redirects to is declared by the routes file.
+     *
+     * A redirect target is resolved when the redirect is *built*, so a name nothing
+     * declares throws from inside the controller — after a successful write, in the
+     * `store()` path. The user's work is done and their browser gets an error page.
+     *
+     * The names are literals here on purpose. Deriving them from the controller
+     * would make the test agree with whatever the controller says, which is the
+     * one thing it must not do: the controller and the routes file are the two
+     * things that have to match.
+     *
+     * The `flush()` is load-bearing and is the subtlety worth naming: a name is
+     * registered with the shared registry from inside `flush()`, not when the
+     * route is declared — because a route's surface and action name are only
+     * settled at publish time. A test that skips it asks a registry nothing has
+     * filled and concludes that *every* name is missing, including the ones that
+     * work.
+     */
+    public function test_the_names_the_controller_redirects_to_are_declared(): void
+    {
+        $this->loader()->load($this->router, 'routes/web.php');
+        $this->router->flush();
+
+        $urls = new UrlGenerator($this->named);
+
+        foreach (['companies.index', 'company.store', 'company.update'] as $name) {
+            $this->assertTrue(
+                $urls->has($name),
+                sprintf(
+                    'CompanyController redirects to route name [%s], which routes/web.php does not declare. '
+                    . 'The redirect throws when it is built, so the write succeeds and the user sees a 404.',
+                    $name
+                )
+            );
+        }
     }
 
     /**
@@ -200,7 +309,7 @@ final class WebRoutesFileTest extends TestCase
         $this->router->flush();
 
         $this->assertArrayHasKey(
-            'admin_post_' . LeadController::STORE_ACTION,
+            'admin_post_' . CompanyController::STORE_ACTION,
             WpStub::$actions,
             'The form posts this action name; WordPress must have a handler for it.'
         );
@@ -228,15 +337,15 @@ final class WebRoutesFileTest extends TestCase
     {
         $this->loader()->load($this->router, 'routes/web.php');
 
-        $store = $this->routeFor('leads/store');
+        $store = $this->routeFor('companies/store');
 
         $this->assertNotNull($store, 'The store route was not declared.');
 
         $this->assertSame(
             [
                 Authenticate::class,
-                'capability:' . LeadController::CAPABILITY,
-                'nonce:' . LeadController::STORE_ACTION,
+                'capability:' . CompanyController::CAPABILITY,
+                'nonce:' . CompanyController::STORE_ACTION,
                 TrimStrings::class,
                 ConvertEmptyStringsToNull::class,
                 SanitizeInput::class,
@@ -257,10 +366,10 @@ final class WebRoutesFileTest extends TestCase
     {
         $this->loader()->load($this->router, 'routes/web.php');
 
-        $middleware = $this->routeFor('leads/store')?->getMiddleware() ?? [];
+        $middleware = $this->routeFor('companies/store')?->getMiddleware() ?? [];
 
-        $this->assertContains('capability:' . LeadController::CAPABILITY, $middleware);
-        $this->assertContains('nonce:' . LeadController::STORE_ACTION, $middleware);
+        $this->assertContains('capability:' . CompanyController::CAPABILITY, $middleware);
+        $this->assertContains('nonce:' . CompanyController::STORE_ACTION, $middleware);
     }
 
     /**
@@ -272,7 +381,9 @@ final class WebRoutesFileTest extends TestCase
     {
         $this->loader()->load($this->router, 'routes/web.php');
 
-        $middleware = $this->routeFor('leads/store')?->getMiddleware() ?? [];
+        $middleware = $this->routeFor('companies/store')?->getMiddleware() ?? [];
+
+        $this->assertNotSame([], $middleware, 'The store route was not declared.');
 
         foreach ($middleware as $entry) {
             $class = str_contains($entry, ':') ? explode(':', $entry, 2)[0] : $entry;

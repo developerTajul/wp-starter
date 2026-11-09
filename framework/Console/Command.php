@@ -12,7 +12,7 @@ namespace Framework\Console;
  * code limited to what the command *does* rather than how it reports.
  *
  * This class deliberately does not extend \WP_CLI_Command. WP-CLI accepts a
- * plain callable — which is exactly what the kernel registers — so extending it
+ * plain callable - which is exactly what the kernel registers - so extending it
  * would couple every command to WP-CLI being loaded in order to be *declared*,
  * not merely to be run.
  */
@@ -81,7 +81,7 @@ abstract class Command
      * commands, and they drifted: `migrate` refused `false`/`no`/`0` but read
      * `off` as *yes*, while `migrate:fresh`'s `--force` check accepted `off` as
      * *no*. The same spelling therefore meant opposite things in two commands,
-     * and in `--pretend`'s case the wrong reading is the dangerous one — a CI
+     * and in `--pretend`'s case the wrong reading is the dangerous one, a CI
      * variable spelled `PRETEND=off` silently turned a real migration into a dry
      * run that reported success.
      *
@@ -100,7 +100,7 @@ abstract class Command
      *
      * Returns false when the key is absent. A bare `--flag` arrives as boolean
      * `true` and is returned as-is, because casting it to a string would produce
-     * `"1"` — which happens to be correct, but only by accident. A string is
+     * `"1"` - which happens to be correct, but only by accident. A string is
      * trimmed, lowercased, and then refused if it is either a word in
      * {@see self::FALSY_FLAG_VALUES} or numerically zero.
      *
@@ -134,7 +134,7 @@ abstract class Command
     /**
      * Whether a flag value is a numeric spelling of zero.
      *
-     * ## Why the word list is not enough
+     * Why the word list is not enough
      *
      * `FALSY_FLAG_VALUES` holds `'0'` and seven words, and every one of them was
      * written by whoever read the migration docs last. But WP-CLI passes
@@ -145,8 +145,8 @@ abstract class Command
      * of those reaches this method as a string the old `in_array()` did not
      * recognise, so it fell through to `true`.
      *
-     * That is the dangerous direction. These flags guard destructive work —
-     * `migrate:fresh` drops every table — and a value whose numeric meaning is
+     * That is the dangerous direction. These flags guard destructive work -
+     * `migrate:fresh` drops every table - and a value whose numeric meaning is
      * zero being read as "yes, proceed" inverts the operator's intent. Comparing
      * the *value* rather than the spelling is what makes the check complete:
      * `is_numeric()` accepts every one of those forms, and a float comparison
@@ -156,7 +156,7 @@ abstract class Command
      * Deliberately numeric-only rather than a general truthiness test: `'0.5'`,
      * `'1e0'` and `'0x0'` all stay true, because a caller who writes a non-zero
      * number or a non-decimal literal has not written "no". `is_numeric()`
-     * rejecting `'0x0'` is correct here, not a gap — PHP does not parse hex in
+     * rejecting `'0x0'` is correct here, not a gap - PHP does not parse hex in
      * numeric strings, and treating it as zero would be guessing.
      */
     private static function zeroIsFalse(string $value): bool

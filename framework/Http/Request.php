@@ -11,52 +11,44 @@ use Framework\Http\Exceptions\HttpException;
  * This is the **only** place in the framework allowed to read `$_GET`, `$_POST`,
  * `$_SERVER`, `$_COOKIE` or `$_FILES`, and the only place allowed to open
  * `php://input`. Everything downstream receives a Request object, which is what
- * makes a controller, a middleware or a service testable without a web server —
+ * makes a controller, a middleware or a service testable without a web server  - 
  * and what makes the headless case work at all.
  *
  * Construction is deliberately split from capture:
  *
- *   Request::capture()      reads the superglobals — used once, in production.
- *   new Request(...)        takes the parts explicitly — used everywhere else.
+ *   Request::capture()      reads the superglobals  -  used once, in production.
+ *   new Request(...)        takes the parts explicitly  -  used everywhere else.
  *
  * A test builds the second form and never touches a superglobal; the production
  * entry point calls the first. A single constructor that read globals by default
  * would make every test that wanted a specific body mutate `php://input`'s
  * stand-in instead, which cannot be done.
  *
- * ## Headless support
- *
  * A JSON body is decoded and folded into the request's parameters, so
  * `input('email')` finds the value whether the client sent a form post or a
- * `{"email": ...}` document. Requests still get a `Content-Type` check rather
- * than sniffing the body, because the header is what tells you the client's
- * *intent*; a form body that happens to be valid JSON is still a form body.
+ * `{"email": ...}` document. The `Content-Type` header is checked rather than the
+ * body sniffed, because the header states the client's intent, and a form body
+ * that happens to be valid JSON is still a form body.
  *
- * ## Source precedence
- *
- * Parameters are merged `query` -> `body` -> `json`, so the later, more specific
- * source wins, and `all()` reports the merged view. `query()` reads the raw
- * query source only. When a request needs to be constructed from a WordPress
- * `WP_REST_Request` rather than the superglobals, {@see fromRestRequest()} takes
- * that request's already-resolved parameter order instead — see the note there
- * for why that matters.
- *
- * ## URL parameters beat the query string
+ * Parameters merge `query` -> `body` -> `json`, so the later, more specific
+ * source wins and `all()` reports the merged view. `query()` reads the raw query
+ * source only. To build a request from a WordPress `WP_REST_Request` rather than
+ * the superglobals, {@see fromRestRequest()} takes that request's already-resolved
+ * parameter order instead.
  *
  * On a routed REST request a URL-matched parameter outranks a query parameter of
- * the same name: `GET /leads/999?id=1` gives `input('id') === '999'`. That is
- * **not** what `WP_REST_Request` does on its own — core's parameter order puts
- * `GET` above `URL`, and unpinned, core answers `'1'`. The reversal comes from
- * the router, which calls `set_param()` for every URL-matched name before the
- * controller runs; `WP_REST_Request::set_param()` overwrites the key in *every*
- * bucket it appears in, so the URL value has already replaced the query value
- * inside the query bucket by the time this class reads it. Compared against a
- * real install, both paths then agree.
+ * the same name: `GET /leads/999?id=1` gives `input('id') === '999'`. That is not
+ * what `WP_REST_Request` does alone; core's order puts `GET` above `URL` and
+ * unpinned core answers `'1'`. The reversal comes from the router calling
+ * `set_param()` for every URL-matched name before the controller runs, and
+ * `set_param()` overwrites the key in every bucket it appears in, so the URL
+ * value has already replaced the query value inside the query bucket by the time
+ * this class reads it. Against a real install the two paths then agree.
  */
 class Request
 {
     /**
-     * The JSON body, decoded once. Null means "no JSON parameters" — either
+     * The JSON body, decoded once. Null means "no JSON parameters"  -  either
      * there was no body, or it decoded to a scalar.
      *
      * @var array<int|string, mixed>|null
@@ -79,7 +71,7 @@ class Request
      *                                          read it lazily from php://input.
      * @param array<string, string>     $headers Lowercased header names, `-` separated.
      * @param bool                      $decoded Internal. True to skip decoding the raw
-     *                                          body into the JSON bucket — used only by
+     *                                          body into the JSON bucket  -  used only by
      *                                          {@see withInput()}, which supplies
      *                                          parameters that are already resolved. A
      *                                          caller outside this class never passes it.
@@ -97,14 +89,14 @@ class Request
         $this->rawBody = $rawBody;
 
         // Decoded in the constructor rather than lazily, because the result is a
-        // readonly-ish cache that a lazy getter would have to make mutable — and
+        // readonly-ish cache that a lazy getter would have to make mutable  -  and
         // because a malformed JSON body is worth knowing about at the point the
         // request is built, not three frames later inside a controller. A broken
         // body does not throw here (see decodeJson()); isJson() simply reports
         // false, and input() falls back to the other sources.
         //
         // `$decoded` is the escape hatch for the one caller that has already
-        // resolved its parameters — see withInput(). Without it a transformed copy
+        // resolved its parameters  -  see withInput(). Without it a transformed copy
         // of a JSON request would re-decode the unchanged raw body and reinstate
         // the untransformed values on top of the transformed ones, which is a
         // silent no-op on exactly the requests a headless client sends.
@@ -113,7 +105,6 @@ class Request
         }
     }
 
-    // ------------------------------------------------------------- construction
 
     /**
      * Build a Request from PHP's superglobals. The production entry point.
@@ -132,8 +123,8 @@ class Request
             cookies: self::superglobal($_COOKIE),
             // php://input is read here rather than in the constructor so that a
             // hand-built Request never opens it. On a JSON POST this stream is
-            // the *only* place the payload exists — PHP does not populate $_POST
-            // for a non-form content type — so skipping it would make every
+            // the *only* place the payload exists  -  PHP does not populate $_POST
+            // for a non-form content type  -  so skipping it would make every
             // headless request arrive empty.
             rawBody: self::readInputStream(),
             headers: self::captureHeaders(self::superglobal($_SERVER))
@@ -146,7 +137,7 @@ class Request
      * Used by the REST entry point, where WordPress has already resolved the
      * parameters and knows the URL-matched ones separately.
      *
-     * The parameter split mirrors WordPress's own `get_parameter_order()` — JSON,
+     * The parameter split mirrors WordPress's own `get_parameter_order()`  -  JSON,
      * then body, then query, then URL.
      *
      * **The URL params are folded into the body layer, on top of it.** WordPress
@@ -154,20 +145,20 @@ class Request
      * `posts/{id}` matched. `Routing::Router` corrects that by calling
      * `set_param()` per URL name, which overwrites the value *inside whichever
      * source already held the key*; this class cannot call `set_param()`, so it
-     * reaches the same answer structurally — URL params go in the later,
+     * reaches the same answer structurally  -  URL params go in the later,
      * winning layer.
      *
      * The query layer keeps everything else the client sent, including a
      * parameter that merely *shares a name* with a URL param. Dropping it here
      * would make `query('id')` return null for a value the client really did
-     * send, and leave no way to reach it — a controller filtering by `?id=` while
+     * send, and leave no way to reach it  -  a controller filtering by `?id=` while
      * the route also matches `{id}` would be reading a parameter it cannot see.
      * Where the names collide, `input()` reports the URL value, which is the
      * router's decision and not a reason to destroy the other one.
      *
      * A `WP_REST_Request` body is already decoded into its parameter buckets, and
      * the raw body is not always available, so `rawBody` is given as the raw body
-     * when the request can supply one — which is what keeps `json()` and
+     * when the request can supply one  -  which is what keeps `json()` and
      * `jsonOrFail()` consistent with `isJson()` instead of reporting an empty
      * document for a request that did carry one.
      */
@@ -183,7 +174,7 @@ class Request
                 // WordPress canonicalizes header names by lowercasing them and
                 // replacing `-` with `_`, so its array is keyed `content_type`,
                 // not `content-type`. Translating back is what makes
-                // `header('Content-Type')` work here — and getting the direction
+                // `header('Content-Type')` work here  -  and getting the direction
                 // wrong fails silently, because the lookup simply finds nothing
                 // and every `isJson()` answers false.
                 //
@@ -214,7 +205,7 @@ class Request
 
         // get_body() is not always usable: for GET and for multipart it returns
         // an empty string, and a form body is in the POST bucket rather than a
-        // raw stream. An empty string is the honest answer there — it decodes to
+        // raw stream. An empty string is the honest answer there  -  it decodes to
         // null, which is what json() should report for a request with no JSON.
         $rawBody = method_exists($request, 'get_body') ? (string) $request->get_body() : '';
 
@@ -239,7 +230,7 @@ class Request
     /**
      * Read php://input, tolerating a stream that cannot be opened.
      *
-     * `php://input` is unreadable in some SAPIs and for `multipart/form-data` —
+     * `php://input` is unreadable in some SAPIs and for `multipart/form-data`  - 
      * in both cases the payload is already in $_POST and nothing is lost. An
      * empty string is therefore the correct outcome, not an error.
      */
@@ -291,7 +282,6 @@ class Request
         return $headers;
     }
 
-    // ------------------------------------------------------------------ reading
 
     /**
      * Every parameter this request carries, merged query -> body -> JSON.
@@ -311,46 +301,40 @@ class Request
     /**
      * A copy of this request with its merged parameters transformed.
      *
-     * ## Why a copy, and why this method has to exist
-     *
      * Middleware such as `TrimStrings`, `ConvertEmptyStringsToNull` and
-     * `SanitizeInput` exist to hand a *cleaner* request to the rest of the stack,
-     * and this class is immutable and exposes no raw source buckets — so without
-     * this method there is no way to write them at all except by reaching into
-     * the constructor from outside, which would mean re-reading the superglobals
-     * (losing the URL parameters a routed request carries) or duplicating every
-     * constructor argument at the call site.
+     * `SanitizeInput` hand a cleaner request to the rest of the stack, and this
+     * class is immutable and exposes no raw source buckets, so without this method
+     * they cannot be written at all except by reaching into the constructor from
+     * outside: that would mean re-reading the superglobals (losing the URL
+     * parameters a routed request carries) or duplicating every constructor
+     * argument at the call site.
      *
      * It returns a new instance rather than mutating, because the request a
-     * middleware received may still be held by the caller that sent it — the
-     * adapter's `Request` binding, a log entry, an outer middleware that wants the
-     * original on the way back out.
+     * middleware received may still be held by whoever sent it: the adapter's
+     * `Request` binding, a log entry, an outer middleware wanting the original on
+     * the way back out.
      *
-     * ## What is transformed, and what is not
+     * Only the merged parameters are transformed. `$transform` is applied to
+     * `all()` and the result replaces the body bucket; the query and JSON buckets
+     * are emptied, because leaving the originals would mean `input()` still
+     * reported untrimmed values, since the merged view takes the last source and a
+     * stale `query` entry would reappear the moment nothing overwrote it. Method,
+     * headers, cookies, files, server values and raw body are carried over
+     * untouched: transport facts, not user input.
      *
-     * **Only the merged parameters.** `$transform` is applied to `all()` and the
-     * result replaces the body bucket; the query bucket and the JSON bucket are
-     * emptied, because leaving the originals in place would mean `input()` still
-     * reported untrimmed values — the merged view takes the last source, so a
-     * stale `query` entry would reappear the moment nothing overwrote it. The
-     * method, headers, cookies, files, server values and raw body are carried
-     * over untouched: those are transport facts, not user input, and a middleware
-     * that wants to change one is doing something this method is not for.
+     * The consequence for `post()` is worth naming: afterwards `post()` and
+     * `input()` agree, both reading transformed values, whereas before they
+     * differed for a JSON request. That is intended; the transform describes what
+     * the application should see as input, and `post()` is not a back door around
+     * it.
      *
-     * The consequence for `post()` is worth naming: after this call `post()` and
-     * `input()` agree, both reading the transformed values, whereas before they
-     * differed for a JSON request. That is the intended reading — the transform
-     * describes what the application should see as input, and `post()` is not a
-     * back door around it.
-     *
-     * ### The JSON bucket is carried, not re-decoded
-     *
-     * A `Request` whose body is `Content-Type: application/json` decodes its raw
-     * body into a JSON bucket in the constructor, and that bucket wins the merge
-     * in {@see all()}. Building the copy through the ordinary constructor would
-     * therefore re-decode the **unchanged** raw body and quietly reinstate the
-     * untransformed values on top of the transformed ones — the transform would
-     * appear to do nothing on exactly the requests a headless client sends.
+     * The JSON bucket is carried, not re-decoded. A request with
+     * `Content-Type: application/json` decodes its raw body into a JSON bucket in
+     * the constructor, and that bucket wins the merge in {@see all()}. Building
+     * the copy through the ordinary constructor would re-decode the unchanged raw
+     * body and reinstate the untransformed values on top of the transformed ones,
+     * so the transform would appear to do nothing on exactly the requests a
+     * headless client sends.
      *
      * So the copy is built through {@see fromTransformedInput()}, which is the
      * constructor with the decode step suppressed. The raw body is still carried
@@ -374,15 +358,15 @@ class Request
     /**
      * Build a copy whose parameters are already resolved, with no decode pass.
      *
-     * Private and static because it exists for exactly one caller —
-     * {@see withInput()} — and is the only construction path in this class that
+     * Private and static because it exists for exactly one caller  - 
+     * {@see withInput()}  -  and is the only construction path in this class that
      * skips the constructor's JSON decoding. Everything a caller reaches for
      * normally goes through the public constructor; keeping this narrow is what
      * stops "no decode" from becoming a second, differently-behaved entry point.
      *
      * The transformed parameters go in the **body** bucket with the query and
-     * JSON buckets left empty, so `all()` — which merges query, then body, then
-     * JSON — reports them and nothing else. The headers, server values, cookies,
+     * JSON buckets left empty, so `all()`  -  which merges query, then body, then
+     * JSON  -  reports them and nothing else. The headers, server values, cookies,
      * files and raw body are carried across unchanged, so the copy still
      * describes the same wire request.
      *
@@ -431,7 +415,7 @@ class Request
     }
 
     /**
-     * One query-string parameter — the raw query source only.
+     * One query-string parameter  -  the raw query source only.
      *
      * Distinct from `input()` on purpose: a query parameter is part of the
      * address the client asked for, while a body parameter is part of what they
@@ -446,7 +430,7 @@ class Request
     }
 
     /**
-     * One parameter from the parsed body — the body source only.
+     * One parameter from the parsed body  -  the body source only.
      *
      * Does **not** see JSON parameters. That is deliberate rather than an
      * oversight: `post()` exists for code that specifically wants form-encoded
@@ -523,8 +507,8 @@ class Request
      * Uploaded files, in $_FILES shape.
      *
      * Returned as-is rather than normalized: $_FILES' parallel-arrays layout for
-     * a multi-file field is awkward but universal, and every consumer of it —
-     * `media_handle_upload()`, `wp_handle_upload()` — already expects that shape.
+     * a multi-file field is awkward but universal, and every consumer of it  - 
+     * `media_handle_upload()`, `wp_handle_upload()`  -  already expects that shape.
      * Normalizing here would mean un-normalizing at the call site.
      *
      * @return array<string, mixed>
@@ -534,7 +518,6 @@ class Request
         return $this->files;
     }
 
-    // ----------------------------------------------------------------- metadata
 
     /**
      * The uppercase HTTP method, defaulting to GET.
@@ -566,7 +549,7 @@ class Request
     /**
      * Whether the client asked for a JSON response.
      *
-     * True when it declared `Accept: application/json` — or when it sent a JSON
+     * True when it declared `Accept: application/json`  -  or when it sent a JSON
      * body, since a client that speaks JSON into an endpoint can only be
      * answered in kind.
      */
@@ -583,7 +566,7 @@ class Request
         }
 
         // Matched rather than compared, because Accept is a list with quality
-        // values — `application/json;q=0.9, text/html` is a JSON request.
+        // values  -  `application/json;q=0.9, text/html` is a JSON request.
         return stripos($accept, 'application/json') !== false
             || stripos($accept, '+json') !== false;
     }
@@ -653,7 +636,7 @@ class Request
     }
 
     /**
-     * The request URI, as sent — path and query string, no scheme or host.
+     * The request URI, as sent  -  path and query string, no scheme or host.
      */
     public function uri(): string
     {
@@ -679,24 +662,23 @@ class Request
         return $this->cookies[$name] ?? $default;
     }
 
-    // ------------------------------------------------------------------ internal
 
     /**
      * Decode the body, returning null rather than throwing on malformed input.
      *
      * The constructor uses this so that a broken body yields a request with no
-     * JSON parameters instead of an exception escaping construction — a request
+     * JSON parameters instead of an exception escaping construction  -  a request
      * that cannot be built has nothing to report the failure through. Callers
      * that need the loud version call `jsonOrFail()`, which re-decodes and
      * throws with the real `json_last_error_msg()`.
      *
-     * A JSON document that is not an object — `"hello"`, `42`, `null` — decodes
+     * A JSON document that is not an object  -  `"hello"`, `42`, `null`  -  decodes
      * to a non-array and is treated as no JSON parameters, because a scalar
      * cannot be addressed by `input($key)` at all.
      *
      * A **list** is a different case and is returned as one. `[1,2]` is a real
-     * JSON document a client may plausibly send — a bulk operation, an array of
-     * ids — and discarding it here would make `all()` and `json()` disagree with
+     * JSON document a client may plausibly send  -  a bulk operation, an array of
+     * ids  -  and discarding it here would make `all()` and `json()` disagree with
      * `jsonOrFail()`, which returns it. Parameters are then addressed by index,
      * which is the best that can be done with a body that has no keys.
      *

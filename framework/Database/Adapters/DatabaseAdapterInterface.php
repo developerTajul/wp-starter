@@ -6,11 +6,11 @@ namespace Framework\Database\Adapters;
 /**
  * The whole of what the schema layer is allowed to know about a database.
  *
- * ## Why this exists
+ * Why this exists
  *
  * {@see \Framework\Database\Schema\Schema} and
  * {@see \Framework\Database\Schema\Blueprint} describe a table in the vocabulary
- * of the framework — a column has a type, a length, a nullability, a default.
+ * of the framework - a column has a type, a length, a nullability, a default.
  * Turning that description into the SQL one particular database accepts, and
  * running it, is a different job, and it is the job described here.
  *
@@ -19,26 +19,26 @@ namespace Framework\Database\Adapters;
  * either compiles statements and executes them, or records what it was asked to
  * do so a test can assert on the description rather than on the SQL.
  *
- * ## The contract is deliberately narrow
+ * The contract is deliberately narrow
  *
  * No query building. This is a *schema* seam, not a general-purpose database
- * abstraction — a caller that wants to read rows wants `$wpdb`, and wrapping it
+ * abstraction - a caller that wants to read rows wants `$wpdb`, and wrapping it
  * here would grow an interface whose every addition is a change every adapter
  * has to absorb.
  *
  * What it does cover, and all it covers, is four kinds of thing:
  *
- *  - **Names** — {@see prefix()} and {@see tableName()}, so a schema can write a
+ *  - **Names** - {@see prefix()} and {@see tableName()}, so a schema can write a
  *    table the way an application thinks of it and the statement still addresses
  *    the table that exists.
- *  - **Running a statement** — {@see statement()}, {@see createTable()},
+ *  - **Running a statement** - {@see statement()}, {@see createTable()},
  *    {@see dropTableIfExists()} and {@see renameTable()}, each taking an
  *    assembled statement rather than a fragment.
- *  - **Asking what exists** — {@see hasTable()}, {@see hasColumn()},
+ *  - **Asking what exists** - {@see hasTable()}, {@see hasColumn()},
  *    {@see hasIndex()}, {@see tables()}, {@see columnDetails()},
  *    {@see indexDetails()} and {@see columnDefinition()}: catalogue probes, so a
  *    migration can decide without running something and reading the wreckage.
- *  - **Recording instead of running** — {@see pretend()},
+ *  - **Recording instead of running** - {@see pretend()},
  *    {@see stopPretending()} and {@see recordedStatements()}, which are what make
  *    a dry run possible without a second code path through every migration.
  *
@@ -46,26 +46,26 @@ namespace Framework\Database\Adapters;
  * there because a table's charset is part of the statement the caller assembles.
  *
  * A caller needing more than this is the signal that it wants a second seam
- * rather than a wider one — which is exactly what happened when the migrator
+ * rather than a wider one - which is exactly what happened when the migrator
  * needed to read and write its own book-keeping rows:
  * {@see \Framework\Database\Storage\MigrationStorageInterface} is that seam, and
  * it exists separately so this one did not have to grow `insert()` and
  * `get_var()` for a single caller.
  *
- * ## Statements are statements, not fragments
+ * Statements are statements, not fragments
  *
  * Each method takes an already-assembled, fully-qualified statement. An adapter
- * may still translate it into the dialect it targets — the WordPress adapter
- * re-shapes `CREATE TABLE` into the diffing form `dbDelta()` expects — but it is
+ * may still translate it into the dialect it targets - the WordPress adapter
+ * re-shapes `CREATE TABLE` into the diffing form `dbDelta()` expects - but it is
  * never handed a half-built clause to finish. A seam that required compiling SQL
  * in one place and completing it in another would put half the dialect in the
  * caller and half in the adapter, which is exactly the coupling this interface
  * exists to prevent.
  *
- * ## Identifiers, not values
+ * Identifiers, not values
  *
  * Every string a caller passes here is a table or column *name*, and none of
- * them can be bound as a parameter — `prepare()` quotes values, and a quoted
+ * them can be bound as a parameter - `prepare()` quotes values, and a quoted
  * table name is a syntax error. So an implementation is responsible for making
  * an identifier safe to interpolate; a caller never does it and never has to
  * reason about whether it did.
@@ -76,7 +76,7 @@ interface DatabaseAdapterInterface
      * The prefix prepended to every table name in this database.
      *
      * Bare `$wpdb->prefix` on WordPress, and applied to WordPress's own tables
-     * exactly as it is to the ones a plugin creates — a site configured with
+     * exactly as it is to the ones a plugin creates - a site configured with
      * `$table_prefix = 'leadbridge_'` has `leadbridge_users`, not `users`.
      *
      * Part of the contract rather than an implementation detail because a table
@@ -92,14 +92,14 @@ interface DatabaseAdapterInterface
      * Applied to every table name a migration writes down, so a schema can name
      * a table the way an application thinks of it (`leads`, `users`) and the
      * statement still addresses the table that exists. On WordPress that prefix
-     * is `$wpdb->prefix`, and it applies to **every** table — core's own
+     * is `$wpdb->prefix`, and it applies to **every** table - core's own
      * included. A site with `$table_prefix = 'leadbridge_'` has
      * `leadbridge_users`, so `constrained('users')` must resolve to
      * `leadbridge_users`; leaving core's names unprefixed is a foreign key that
      * points at a table which does not exist.
      *
-     * An implementation is free to do something else — map a name through a
-     * scheme of its own, or leave names untouched — which is why this is a
+     * An implementation is free to do something else - map a name through a
+     * scheme of its own, or leave names untouched - which is why this is a
      * method rather than `prefix() . $name` at each call site. Identity is the
      * correct behaviour for a target with no notion of prefixes, and is what an
      * adapter over such a target should return.
@@ -111,7 +111,7 @@ interface DatabaseAdapterInterface
      *
      * @param string $sql        A complete statement.
      * @param string $operation  What the statement was doing, in the form a
-     *                           message can use — "create the notes table". A
+     *                           message can use - "create the notes table". A
      *                           failing adapter is expected to put this in its
      *                           exception, because "migration failed" without
      *                           the operation is the message an operator cannot
@@ -139,7 +139,7 @@ interface DatabaseAdapterInterface
     /**
      * Drop a table, and do nothing if it is not there.
      *
-     * Not "drop a table that exists" — the *does not exist* half is the contract.
+     * Not "drop a table that exists" - the *does not exist* half is the contract.
      * A `down()` is routinely run against a database where its `up()` half
      * failed, and a drop that raised "unknown table" there would turn a
      * recoverable state into a stuck one: the migration could not complete and
@@ -158,8 +158,8 @@ interface DatabaseAdapterInterface
      *
      * A *catalogue probe*, not "attempt something and catch the failure": a
      * migration that asks whether a table exists is usually deciding whether to
-     * create it, and a statement that failed for an unrelated reason —
-     * permissions, a dropped connection — must not be read as an absence.
+     * create it, and a statement that failed for an unrelated reason -
+     * permissions, a dropped connection - must not be read as an absence.
      */
     public function hasTable(string $table): bool;
 
@@ -167,14 +167,14 @@ interface DatabaseAdapterInterface
      * Whether a table carries a column of the given name.     *
      * A *catalogue probe*, for the same reason {@see hasTable()} is one: the
      * caller is a migration deciding whether to add the column, and "the probe
-     * failed" must not be read as "the column is absent" — that would add a
+     * failed" must not be read as "the column is absent", that would add a
      * second copy of a column that is already there, which MySQL refuses, turning
      * a recoverable re-run into a failure.
      *
      * **An absent table is `false`, not an error.** A column cannot exist on a
      * table that does not, and a guard that asks "is this column missing?" before
      * adding it is most often running against a table created moments earlier in
-     * the same batch — or not yet created at all, on a fresh install.
+     * the same batch - or not yet created at all, on a fresh install.
      *
      * @param string $table  The bare table name, with no prefix.
      * @param string $column The column name, as the schema spells it.
@@ -199,7 +199,7 @@ interface DatabaseAdapterInterface
      * The SQL definition of an existing column, as the database spells it.
      *
      * The counterpart to {@see hasColumn()}: that one answers whether a column is
-     * there, this one answers what it *is*. The case that needs it is a rename —
+     * there, this one answers what it *is*. The case that needs it is a rename -
      * MySQL's `CHANGE COLUMN` requires the definition to be restated, and a
      * caller who has only two names should not have to repeat a type the database
      * already knows.
@@ -209,7 +209,7 @@ interface DatabaseAdapterInterface
      * describing and the adapter translating. Asking the target what it currently
      * has is the adapter's job, not a new dependency's.
      *
-     * Returns null when the column is absent, rather than throwing — absence is
+     * Returns null when the column is absent, rather than throwing - absence is
      * the ordinary answer for a migration that is being re-run, and the caller
      * has {@see hasColumn()} to distinguish it from a failure if it cares.
      *
@@ -217,8 +217,8 @@ interface DatabaseAdapterInterface
      * @param string $column The column name.
      *
      * @return string|null A definition usable directly after a `CHANGE COLUMN`
-     *                     clause — type, nullability, default and extra, in that
-     *                     order — or null when the column does not exist.
+     *                     clause - type, nullability, default and extra, in that
+     *                     order - or null when the column does not exist.
      */
     public function columnDefinition(string $table, string $column): ?string;
 
@@ -232,7 +232,7 @@ interface DatabaseAdapterInterface
      * exist under either name. Failing loudly is the only outcome that surfaces
      * the mistake at the point it is made.
      *
-     * Both names are bare, and both are resolved through {@see tableName()} — a
+     * Both names are bare, and both are resolved through {@see tableName()} - a
      * rename that prefixed only the destination would move `wp_notes` to
      * `archive`, a table nothing else in the application would look for again,
      * and the data would appear to have vanished rather than the migration to
@@ -250,7 +250,7 @@ interface DatabaseAdapterInterface
      * The character set and collation clause for new tables.
      *
      * Preferred over a hardcoded `utf8mb4` because the host application usually
-     * knows better than a framework does — WordPress returns the collation its
+     * knows better than a framework does - WordPress returns the collation its
      * own tables use, which is the one a plugin's tables should match, and on a
      * pre-5.5 database that is deliberately *not* utf8mb4.
      *
@@ -266,18 +266,18 @@ interface DatabaseAdapterInterface
      * issuing method on the adapter appends to a list rather than touching the
      * database, and {@see recordedStatements()} hands the list back.
      *
-     * ## What pretending can and cannot see
+     * What pretending can and cannot see
      *
      * It intercepts **this interface**, which is where every `Schema::` call
-     * lands. A migration that also issues raw `$wpdb->query()` calls — a data
-     * migration rewriting values, say — is not visible here, and cannot be: the
+     * lands. A migration that also issues raw `$wpdb->query()` calls - a data
+     * migration rewriting values, say - is not visible here, and cannot be: the
      * framework does not route those calls, so there is nothing to intercept.
      *
      * That is a real limit and the command built on this states it, rather than
      * implying the output is a complete account of what a run would do. A
      * `--pretend` that quietly omitted half the work would be worse than none.
      *
-     * ## Reads are not recorded
+     * Reads are not recorded
      *
      * Probes such as {@see hasColumn()} still execute, and must: a migration that
      * guards an `ADD COLUMN` on a probe has to take the same branch it would take
@@ -289,7 +289,7 @@ interface DatabaseAdapterInterface
     /**
      * Stop recording and run statements again.
      *
-     * Does not clear the recorded list — {@see recordedStatements()} is read
+     * Does not clear the recorded list - {@see recordedStatements()} is read
      * after this, and clearing here would make the caller's only way to obtain
      * the output also the act of destroying it.
      */
@@ -314,7 +314,7 @@ interface DatabaseAdapterInterface
      * what to dump is choosing among real tables, and one that had to re-apply
      * the prefix to make a query would be re-deriving a name it was just given.
      *
-     * Ordered, so a dump of several tables is stable between runs — a diff of two
+     * Ordered, so a dump of several tables is stable between runs - a diff of two
      * dumps should show real schema changes and not a reshuffled table list.
      *
      * @return list<string>
@@ -337,7 +337,7 @@ interface DatabaseAdapterInterface
      * A table's keys, each with its columns in index order.
      *
      * The primary key is included, named `PRIMARY`, because a dumper has to know
-     * a table has one — but a caller emitting schema vocabulary must not turn it
+     * a table has one - but a caller emitting schema vocabulary must not turn it
      * into an `index()` call, since the builder writes the primary key itself.
      *
      * @return list<array{name: string, columns: list<string>, unique: bool, primary: bool}>

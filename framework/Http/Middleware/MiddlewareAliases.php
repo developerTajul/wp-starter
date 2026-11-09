@@ -18,13 +18,13 @@ use InvalidArgumentException;
  *         VerifyNonce::class . ':leads_store',
  *     ])
  *
- * The second is not wrong — a class name is a perfectly good stack entry and
- * always will be — but it is 40 characters of namespace before the reader
+ * The second is not wrong - a class name is a perfectly good stack entry and
+ * always will be - but it is 40 characters of namespace before the reader
  * reaches the part that differs between two routes, and a `use` statement that
  * exists only to build a string. An alias is what makes the routes file read as
  * policy rather than as wiring.
  *
- * ## Aliases are a convenience, and the class name always wins
+ * Aliases are a convenience, and the class name always wins
  *
  * An alias never *replaces* a class name. {@see resolve()} is applied to an entry
  * only when the entry is not already a loadable class, so:
@@ -32,7 +32,7 @@ use InvalidArgumentException;
  *  - a real class name passes through untouched, alias or no alias;
  *  - an alias resolves to this framework's class;
  *  - an unknown name is resolved to itself and fails later, at dispatch, naming
- *    the entry — rather than being reported here, where there is no route to
+ *    the entry - rather than being reported here, where there is no route to
  *    name and no way to tell a typo from a project's own un-aliased middleware.
  *
  * That ordering matters for a framework that ships to other projects: a project
@@ -40,10 +40,10 @@ use InvalidArgumentException;
  * name would quietly substitute the framework's. Class names are checked first so
  * that can never happen.
  *
- * ## The default set
+ * The default set
  *
  * The framework's own parameterized middleware is aliased out of the box. A
- * project adds its own by binding this class and calling {@see alias()} — most
+ * project adds its own by binding this class and calling {@see alias()} - most
  * naturally in a service provider's `register()`:
  *
  *     $aliases = $container->resolve(MiddlewareAliases::class);
@@ -67,14 +67,15 @@ final class MiddlewareAliases
         'trim' => TrimStrings::class,
         'null' => ConvertEmptyStringsToNull::class,
         'sanitize' => SanitizeInput::class,
+        'throttle' => ThrottleRequests::class,
     ];
 
     /**
      * Register an alias, replacing any previous entry under the same name.
      *
      * Replacing rather than refusing: a project overriding `'capability'` to
-     * point at its own class is a legitimate thing to want, and the alternative —
-     * throwing — would make the framework's defaults unoverridable. Silent
+     * point at its own class is a legitimate thing to want, and the alternative -
+     * throwing - would make the framework's defaults unoverridable. Silent
      * replacement is the same contract the container's `instance()` and `bind()`
      * already have, so nothing here is surprising to a reader who knows those.
      *
@@ -117,7 +118,7 @@ final class MiddlewareAliases
     /**
      * The class name for a stack entry, resolving an alias when there is one.
      *
-     * Order is loadable-class-first, then alias, then the entry unchanged — see
+     * Order is loadable-class-first, then alias, then the entry unchanged - see
      * the class docblock for why that order is not arbitrary.
      */
     public function resolve(string $entry): string

@@ -11,7 +11,7 @@ use Framework\Database\Schema\Schema;
 use Throwable;
 
 /**
- * `wp wp_mini migrate` — apply every pending migration as one batch.
+ * `wp wp_mini migrate` - apply every pending migration as one batch.
  *
  * The migrator is injected rather than built here, so the command has no opinion
  * about where migrations live or which database handle is in play. That is what
@@ -47,8 +47,8 @@ class MigrateCommand extends Command
             $this->migrate($pretend, $step);
         } finally {
             // The listing is taken in a `finally` so a migration that throws still
-            // prints what it had got through — that is the half of the output an
-            // operator debugging a failing migration most wants — and so the
+            // prints what it had got through - that is the half of the output an
+            // operator debugging a failing migration most wants - and so the
             // process is never left recording after `handle()` returns.
             if ($pretend) {
                 $this->reportPretend(Schema::stopPretending());
@@ -65,7 +65,7 @@ class MigrateCommand extends Command
      * quietly turn `--step=false` into a stepwise run.
      *
      * The list of falsy spellings lives on the base class so it cannot drift from
-     * the other commands' — see {@see Command::FALSY_FLAG_VALUES}.
+     * the other commands', see {@see Command::FALSY_FLAG_VALUES}.
      */
     private function hasFlag(array $assocArgs, string $name): bool
     {
@@ -128,7 +128,7 @@ class MigrateCommand extends Command
 
             // Spelled out because the failed run still consumed a batch number
             // without recording anything under it. `migrate:rollback` targets the
-            // newest *recorded* batch, so it will not touch this one — an operator
+            // newest *recorded* batch, so it will not touch this one - an operator
             // who assumes otherwise reverses the previous batch by mistake. Under
             // `--step` the earlier migrations each *did* record, so the warning is
             // about the failed one alone and is still true of it.
@@ -162,10 +162,10 @@ class MigrateCommand extends Command
     /**
      * Print the statements a pretend run would have issued.
      *
-     * ## Why this says what it cannot see
+     * Why this says what it cannot see
      *
      * The recording seam is the schema adapter, which is where every `Schema::`
-     * call lands — but a migration that also issues raw `$wpdb->query()` calls
+     * call lands - but a migration that also issues raw `$wpdb->query()` calls
      * (a data migration rewriting values, say) has those calls neither recorded
      * nor run, because the framework does not route them and so has nothing to
      * intercept. The note is printed only when a migration actually ran, since

@@ -11,18 +11,18 @@ use Framework\Database\Schema\Schema;
 use Throwable;
 
 /**
- * `wp wp_mini migrate:refresh` — reverse every batch, then migrate from scratch.
+ * `wp wp_mini migrate:refresh` - reverse every batch, then migrate from scratch.
  *
  * The corrective half of `migrate:fresh`. Where `fresh` throws the schema away
- * and rebuilds it, this runs each migration's own `down()` first — so the result
+ * and rebuilds it, this runs each migration's own `down()` first, so the result
  * is the same schema, reached through the path a developer wrote and can debug,
  * with any error surfaced against the migration that caused it.
  *
- * ## Why it exists when `fresh` already exists
+ * Why it exists when `fresh` already exists
  *
  * They fail differently, and that difference is the whole reason to keep both.
  *
- * `fresh` never calls `down()`, so it cannot tell you that a `down()` is broken —
+ * `fresh` never calls `down()`, so it cannot tell you that a `down()` is broken -
  * it will report success over a migration whose `down()` has been failing for
  * months. `refresh` calls every one of them, so it is the command that finds out.
  * Conversely a `down()` that throws aborts `refresh` partway and leaves the
@@ -32,7 +32,7 @@ use Throwable;
  * So: `refresh` when you want the reverse path exercised, `fresh` when you want
  * a known-good schema regardless of what the reverse path does.
  *
- * ## Why there is no `--step` or `--batch` here
+ * Why there is no `--step` or `--batch` here
  *
  * Both exist on `migrate:rollback`, and both would make this command's contract
  * ambiguous: "refresh from batch 3" does not say whether the batches before it
@@ -66,8 +66,8 @@ class MigrateRefreshCommand extends Command
         try {
             $this->refresh($pretend);
         } finally {
-            // `refresh` touches both halves — it reverses everything and then
-            // re-applies it — so a leak here would leave the schema either empty
+            // `refresh` touches both halves - it reverses everything and then
+            // re-applies it - so a leak here would leave the schema either empty
             // or double-applied depending on which side leaked. Restored on every
             // path, including the early returns inside.
             if ($pretend) {
@@ -103,7 +103,7 @@ class MigrateRefreshCommand extends Command
             });
         } catch (MigrationException $e) {
             // Stopped mid-sweep. What was reversed is genuinely reversed and its
-            // rows are gone, so the honest report is how far it got — and the
+            // rows are gone, so the honest report is how far it got - and the
             // instruction is to fix and re-run, not to reach for `fresh` before
             // understanding what broke.
             $this->error($e->getMessage());
@@ -148,7 +148,7 @@ class MigrateRefreshCommand extends Command
 
             $this->warning(sprintf(
                 'The rollback completed, but only %d migration(s) were re-applied. '
-                . 'The database is partially migrated — fix the failure and run `migrate`.',
+                . 'The database is partially migrated, fix the failure and run `migrate`.',
                 count($landed)
             ));
 

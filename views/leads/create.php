@@ -2,11 +2,12 @@
 /**
  * The add-lead form body.
  *
- * Rendered by App\Http\Controllers\Admin\LeadController::create(). Everything
+ * The `leads.create` route that would render it is commented out in
+ * `routes/web.php`, so no live controller reaches this file today. Everything
  * WordPress-specific about this form — where it posts, which action name fires,
  * the nonce, the return address — arrives as a variable, because a template that
  * called `admin_url()` or `wp_nonce_field()` itself could not be rendered outside
- * a wp-admin request. See the controller for which value is which.
+ * a wp-admin request.
  *
  * The field values and their error messages come from the flash bag the framework
  * wrote on the last rejected submission: `old()` repopulates the input, and

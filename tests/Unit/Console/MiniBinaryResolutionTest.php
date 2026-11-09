@@ -44,7 +44,20 @@ final class MiniBinaryResolutionTest extends TestCase
         'miniIsShellScript',
         'miniPathCandidates',
         'miniFindInstalled',
+        'miniCacheDirectory',
     ];
+
+    /**
+     * The script's constants, defined here rather than extracted.
+     *
+     * `miniCacheDirectory()` reads `MINI_CACHE_DIRECTORY`, and the extraction
+     * below takes functions only — `eval()` on the `const` line would work, but a
+     * redeclaration would be a hard error if a second test class ever did the
+     * same, and a constant is not what these tests are pinning. The *value* is
+     * checked against the script instead, in
+     * {@see test_the_cache_directory_name_matches_the_one_the_script_declares()}.
+     */
+    private const CACHE_DIRECTORY = 'wp-mini-laravel-cli-cache';
 
     /**
      * A directory standing in for a machine's `bin/`, created per test and removed
@@ -267,6 +280,113 @@ final class MiniBinaryResolutionTest extends TestCase
     }
 
     /**
+     * The cache lives under the system temporary directory, not under the plugin.
+     *
+     * ## The defect this pins
+     *
+     * The downloaded WP-CLI used to be cached at `<plugin root>/.cli-cache/`. On
+     * Windows a process that has read a file keeps a share lock on it for as long
+     * as it lives, so a WP-CLI still running — or, on some hosts, an antivirus
+     * scanner that has just touched the phar — makes the file undeletable.
+     * WordPress deletes a plugin by recursively removing its directory, so the
+     * delete fails partway with "Could not fully remove the plugin" and the cause
+     * is invisible. Asserting the path is *outside* the plugin root is the whole
+     * point; asserting it equals some particular temporary path would not be,
+     * because the defect is the relationship, not the string.
+     */
+    public function test_the_cache_directory_is_outside_the_plugin_root(): void
+    {
+        $pluginRoot = dirname(__DIR__, 3);
+        $cache = $this->helpers()->miniCacheDirectory();
+
+        $this->assertFalse(
+            str_starts_with($cache . DIRECTORY_SEPARATOR, $pluginRoot . DIRECTORY_SEPARATOR),
+            "The download cache resolved to [{$cache}], which is inside the plugin root. A phar locked there "
+            . 'by a running process makes WordPress fail to delete or update the plugin.'
+        );
+    }
+
+    /**
+     * The cache path is built from `sys_get_temp_dir()` with `DIRECTORY_SEPARATOR`.
+     *
+     * Cross-platform by construction: the separator is the platform's own, so a
+     * Windows path never mixes `\` and `/` and a Unix path never gains one. The
+     * equality against a separately-computed expectation is what catches the
+     * hardcoded `'/wp-mini-laravel-cli-cache'` that would still pass the
+     * outside-the-plugin check on Windows while producing a mixed-separator path.
+     */
+    public function test_the_cache_path_uses_the_platform_separator(): void
+    {
+        $cache = $this->helpers()->miniCacheDirectory();
+
+        $this->assertSame(
+            rtrim(sys_get_temp_dir(), '/\\') . DIRECTORY_SEPARATOR . self::CACHE_DIRECTORY,
+            $cache,
+            'The cache path must be sys_get_temp_dir() joined with the platform separator.'
+        );
+    }
+
+    /**
+     * The path is absolute, so it cannot resolve against the current directory.
+     *
+     * `sys_get_temp_dir()` answers `"."` when none of `TMP`/`TEMP`/`TMPDIR` is set
+     * — which would put the cache back in whatever directory the command was run
+     * from, the plugin root in the reported case. The function substitutes a
+     * platform default instead, and this asserts the result is one.
+     */
+    public function test_the_cache_path_is_absolute_even_without_a_temp_environment(): void
+    {
+        $cache = $this->helpers()->miniCacheDirectory();
+
+        $this->assertMatchesRegularExpression(
+            '~^(/|[A-Za-z]:[\\\\/])~',
+            $cache,
+            "The cache path resolved to the relative path [{$cache}], which would land in the current directory."
+        );
+    }
+
+    /**
+     * The directory name is namespaced, so it cannot collide in a shared `/tmp`.
+     *
+     * A bare `wp-cli.phar` directly in the system temporary directory would be
+     * shared with every other application on the machine, and the first writer to
+     * arrive would decide what the other one executes. The uniqueness is carried
+     * entirely by this name.
+     */
+    public function test_the_cache_directory_name_is_namespaced(): void
+    {
+        $cache = $this->helpers()->miniCacheDirectory();
+
+        $this->assertStringEndsWith(
+            DIRECTORY_SEPARATOR . self::CACHE_DIRECTORY,
+            $cache,
+            'The cache directory must be the namespaced name, not a bare `wp-cli.phar` location.'
+        );
+
+        $this->assertStringContainsString('wp-mini-laravel', self::CACHE_DIRECTORY);
+    }
+
+    /**
+     * The name asserted above is the name the script actually declares.
+     *
+     * The constant is defined in this test rather than extracted, so without this
+     * the whole class would keep passing against a `mini` that had been renamed to
+     * cache somewhere else entirely — the failure mode a copied literal always has.
+     * Read from the source for the same reason `loadHelpers()` reads the functions
+     * from it: the script cannot be included without running its top level.
+     */
+    public function test_the_cache_directory_name_matches_the_one_the_script_declares(): void
+    {
+        $source = (string) file_get_contents(dirname(__DIR__, 3) . '/mini');
+
+        $this->assertMatchesRegularExpression(
+            "/const MINI_CACHE_DIRECTORY = '" . preg_quote(self::CACHE_DIRECTORY, '/') . "';/",
+            $source,
+            "`mini` no longer declares MINI_CACHE_DIRECTORY as '" . self::CACHE_DIRECTORY . "'."
+        );
+    }
+
+    /**
      * Run a callable with PATH set to the given directories, restoring it after.
      *
      * The environment is global state shared with every other test in the process,
@@ -317,6 +437,10 @@ final class MiniBinaryResolutionTest extends TestCase
         }
 
         $source = (string) file_get_contents(dirname(__DIR__, 3) . '/mini');
+
+        if (!defined('MINI_CACHE_DIRECTORY')) {
+            define('MINI_CACHE_DIRECTORY', self::CACHE_DIRECTORY);
+        }
 
         $extracted = '';
 

@@ -10,7 +10,7 @@ use Throwable;
 /**
  * A rendered PHP view file.
  *
- * ## Why output buffering rather than `include`
+ * Why output buffering rather than `include`
  *
  * A view is a PHP file that echoes. Including it directly would write straight
  * into the response, which makes three things impossible: sending a status code
@@ -18,7 +18,7 @@ use Throwable;
  * it in a larger document, and asserting on the output in a test. Buffering
  * gives all three, and costs one function call.
  *
- * ## Why the variables are not extracted blindly
+ * Why the variables are not extracted blindly
  *
  * `extract()` is what makes `$leads` available inside the view instead of
  * `$this->data['leads']`, and it is also how a view ends up overwriting the
@@ -88,7 +88,7 @@ class ViewResponse implements ResponseInterface
      * Render to a string without sending anything.
      *
      * Separated from `send()` so a view can be composed into a larger document,
-     * embedded in a JSON payload, or asserted on in a test — all of which need
+     * embedded in a JSON payload, or asserted on in a test - all of which need
      * the output without the side effects.
      *
      * @throws HttpException When the view is missing, or raises while rendering.
@@ -155,7 +155,7 @@ class ViewResponse implements ResponseInterface
      *
      * Guarded on `headers_sent()` because a view rendered after the response has
      * started cannot set either, and calling the functions anyway produces a
-     * warning — which the suite turns into a failure and a production log turns
+     * warning - which the suite turns into a failure and a production log turns
      * into noise. The body is still sent; only the headers are skipped.
      */
     private function sendHeaders(): void

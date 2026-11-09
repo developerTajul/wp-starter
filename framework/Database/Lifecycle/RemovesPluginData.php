@@ -11,16 +11,16 @@ use Throwable;
 /**
  * Removes everything this plugin put in the database, on an explicit request.
  *
- * ## Why this is not `migrate:fresh`
+ * Why this is not `migrate:fresh`
  *
  * `Migrator::dropAllTables()` is the obvious call and the wrong one, for a
  * reason that is easy to miss because the two look identical from outside. It
  * drops the *tables*, resolving each recorded migration to a table name and
- * removing it — which means it can only remove what it can still resolve. A
+ * removing it - which means it can only remove what it can still resolve. A
  * migration whose file has been deleted from disk has a row in the ledger and no
  * `down()` to call, and `dropAllTables()` **skips it silently** (it has to: the
  * table name is not derivable from a filename alone). Uninstall is the one
- * operation where a silent skip is unacceptable — the user asked for their data
+ * operation where a silent skip is unacceptable - the user asked for their data
  * to be gone, and a table left behind is the promise broken in the quietest
  * possible way.
  *
@@ -30,28 +30,28 @@ use Throwable;
  * wipe succeeded.
  *
  * The second difference is the ledger. `rollbackAll()` is `migrate:reset`, and
- * reset deliberately *keeps* the tracking table and the batch high-water mark —
+ * reset deliberately *keeps* the tracking table and the batch high-water mark -
  * a developer reversing migrations wants to migrate again and expects the
  * numbers to continue. Uninstall is the opposite case: the plugin is going away,
  * nothing will ever read that history again, and an option row left behind is
  * leftover data as surely as a table is. Both are removed explicitly below.
  *
- * ## `down()` runs, and that is the point
+ * `down()` runs, and that is the point
  *
  * Every migration's `down()` executes, newest batch first. This is what makes
  * the removal *correct* rather than merely destructive: a `down()` is the
  * author's statement of how to undo their own `up()`, including the parts that
- * are not tables — a row in `wp_options`, an index, a rename. A `DROP TABLE`
+ * are not tables - a row in `wp_options`, an index, a rename. A `DROP TABLE`
  * sweep knows none of that.
  *
- * ## The failure contract
+ * The failure contract
  *
  * A `down()` that throws stops the sweep, and the exception propagates to the
  * caller. It is deliberately *not* caught here, unlike in
  * {@see MigratesOnActivation}: an activation that fails leaves a working site
  * that will finish its schema on the next `migrate`, whereas a half-finished
- * uninstall leaves tables the user believes are gone. The caller — `uninstall.php`
- * — is where that is turned into a log line rather than a fatal, because only it
+ * uninstall leaves tables the user believes are gone. The caller - `uninstall.php`
+ * - is where that is turned into a log line rather than a fatal, because only it
  * knows that WordPress is tearing the plugin down around it.
  *
  * The half-applied state is still recoverable and still truthful: the migrations
@@ -87,7 +87,7 @@ class RemovesPluginData
 
         // Performed even when nothing was reversed, and that is not a wasted
         // statement. `rollbackAll()` on a database with an empty ledger does
-        // nothing at all — but `ensureTrackingTable()` has already run by then
+        // nothing at all - but `ensureTrackingTable()` has already run by then
         // and *created* an empty tracking table, so a plugin uninstalled from a
         // site where it never migrated anything would otherwise leave one table
         // behind. `dropTrackingTable()` is tolerant of absence by contract, so
@@ -105,7 +105,7 @@ class RemovesPluginData
      *
      * `uninstall.php` is the caller this exists for. WordPress runs it while it
      * is deleting the plugin, and an exception escaping it aborts the deletion
-     * partway — the plugin's files half-removed, the request dead, and the reason
+     * partway - the plugin's files half-removed, the request dead, and the reason
      * only visible if the host happens to have display_errors on. Reporting the
      * failure and returning lets WordPress finish the job it was doing, and the
      * message is what tells the operator that tables survived and need removing
@@ -114,7 +114,7 @@ class RemovesPluginData
      * `$reported` is set to whether a failure was reported, and `$reverted` to
      * whatever the sweep got through. Both are by-reference because a return
      * value cannot carry two answers, and the caller needs to distinguish
-     * "nothing to reverse" from "reversed some, then failed" — the first means
+     * "nothing to reverse" from "reversed some, then failed" - the first means
      * the data really is gone, the second means it is not.
      *
      * @param list<string>|null $reverted  Identifiers reversed, by reference.
@@ -135,7 +135,7 @@ class RemovesPluginData
 
             // Read off the migrator rather than from the failed call, because the
             // throw unwound the assignment. The migrator records as it goes for
-            // exactly this reason — see {@see Migrator::lastRunReverted()}.
+            // exactly this reason - see {@see Migrator::lastRunReverted()}.
             $reverted = $this->migrator->lastRunReverted();
 
             MigratesOnActivation::reportToErrorLog($e);

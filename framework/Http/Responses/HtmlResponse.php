@@ -9,24 +9,24 @@ use Framework\Http\Exceptions\HttpException;
 /**
  * A finished HTML string, sent as a page.
  *
- * ## Why this exists alongside ViewResponse
+ * Why this exists alongside ViewResponse
  *
  * {@see ViewResponse} renders a PHP file. This one carries a string that is
- * already rendered — what a controller returns when it has built markup itself,
+ * already rendered - what a controller returns when it has built markup itself,
  * or when a route's action returns a plain string and the dispatcher has to wrap
  * it in something sendable.
  *
  * That wrapping is the reason the class earns its place: without it a route
  * returning `'<p>Saved.</p>'` has nothing to send, and the alternatives are both
- * worse — coercing it to JSON emits a quoted string with the wrong content type,
+ * worse - coercing it to JSON emits a quoted string with the wrong content type,
  * and echoing it directly skips the status and the headers and leaves the
  * terminal `send()` contract unfulfilled. The HTTP contract is that a response
  * knows its own status; a bare string does not, so it is given one here.
  *
- * ## What it deliberately does not do
+ * What it deliberately does not do
  *
  * No escaping. The content is treated as finished HTML, because the caller
- * either produced markup deliberately or has already escaped its data — escaping
+ * either produced markup deliberately or has already escaped its data - escaping
  * here would double-encode a view's output and make `&amp;` render literally.
  * Escaping belongs where the data is interpolated, not at the point of sending.
  *
@@ -94,7 +94,7 @@ final class HtmlResponse implements ResponseInterface
      * A copy of this response with headers and/or a status added.
      *
      * Returns a new instance rather than mutating, matching
-     * {@see JsonResponse::with()} — a response is often held by more than one
+     * {@see JsonResponse::with()} - a response is often held by more than one
      * caller, and mutating one in place would change it for all of them.
      *
      * @param array<string, string> $headers
@@ -112,8 +112,8 @@ final class HtmlResponse implements ResponseInterface
      * Emit the status line and headers.
      *
      * Guarded on `headers_sent()` because a controller may have produced output
-     * before this response was built — a stray `echo`, a deprecation notice with
-     * display_errors on — and calling the header functions anyway raises a
+     * before this response was built - a stray `echo`, a deprecation notice with
+     * display_errors on - and calling the header functions anyway raises a
      * warning that the suite turns into a failure and a production log turns into
      * noise. The body is still sent; only the headers are skipped.
      *

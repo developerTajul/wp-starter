@@ -14,13 +14,13 @@ use RuntimeException;
  *
  *     Route::get('leads', [LeadController::class, 'index']);
  *
- * ## Why a subclass and not one facade class per service
+ * Why a subclass and not one facade class per service
  *
- * The proxying is identical for every facade — resolve, forward, repeat. What
+ * The proxying is identical for every facade - resolve, forward, repeat. What
  * differs is one string. So {@see getFacadeAccessor()} is the only method a
  * subclass has to write, and a facade is four lines.
  *
- * ## The root is resolved per call, not cached
+ * The root is resolved per call, not cached
  *
  * `resolveFacadeInstance()` deliberately does not memoise the way Laravel's does.
  * The container here holds **singletons**, so the cache would be redundant in the
@@ -28,10 +28,10 @@ use RuntimeException;
  * target is swapped around every `require` of a routes file, precisely so that
  * `routes/web.php` and `routes/api.php` write into different routers. A cached
  * instance would pin whichever was resolved first and send the other file's routes
- * into the wrong table — a whole surface that registers cleanly and is reachable
+ * into the wrong table - a whole surface that registers cleanly and is reachable
  * from nowhere.
  *
- * ## `app()` rather than an injected container
+ * `app()` rather than an injected container
  *
  * A facade is called from a routes file, which is `require`d rather than built by
  * the container, so there is nothing to inject into. `app()` is the same accessor
@@ -87,7 +87,7 @@ abstract class Facade
      * The service behind this facade, as the container currently has it.
      *
      * Resolved fresh on each call, so a swap is visible immediately to every
-     * caller — which is the whole mechanism the routing facade relies on.
+     * caller - which is the whole mechanism the routing facade relies on.
      *
      * @return mixed
      *
@@ -110,7 +110,7 @@ abstract class Facade
         if (!$container instanceof Container || !$container->bound($name)) {
             throw new RuntimeException(sprintf(
                 'Facade [%s] resolved [%s] before it was bound. A facade is only callable '
-                . 'once the service provider that binds it has registered — and, for the '
+                . 'once the service provider that binds it has registered, and, for the '
                 . 'routing facade, only from inside a routes file being loaded.',
                 static::class,
                 $name

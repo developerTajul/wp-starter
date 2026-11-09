@@ -11,15 +11,15 @@ use Throwable;
  * A result object rather than a bool plus an out-parameter, because the caller
  * genuinely has three things to distinguish and one of them is not a failure:
  *
- *  - **loaded** — the file ran and routes were collected.
- *  - **skipped** — there was nothing to load. A project with no `routes/web.php`
+ *  - **loaded** - the file ran and routes were collected.
+ *  - **skipped** - there was nothing to load. A project with no `routes/web.php`
  *    is normal and must boot quietly; reporting it as a failure would train
  *    everyone to ignore the message that matters.
- *  - **failed** — the file exists and did not load. This is the one worth a log
+ *  - **failed** - the file exists and did not load. This is the one worth a log
  *    line, a CLI warning, and the file name in the message.
  *
- * `alreadyLoaded` is a fourth state that is *not* a failure either — it is the
- * expected outcome of the second hook firing in one request — and it is kept
+ * `alreadyLoaded` is a fourth state that is *not* a failure either - it is the
+ * expected outcome of the second hook firing in one request - and it is kept
  * distinct from `skipped` so a test can tell "the guard worked" from "there was
  * no file".
  */
@@ -88,7 +88,7 @@ final class RouteLoadResult
     /**
      * Whether anything went wrong.
      *
-     * `skipped` and `alreadyLoaded` are not failures — see the class docblock.
+     * `skipped` and `alreadyLoaded` are not failures - see the class docblock.
      */
     public function failed(): bool
     {

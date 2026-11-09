@@ -7,9 +7,9 @@ use Framework\Config\Config;
 use Framework\Console\GeneratorCommand;
 
 /**
- * `wp wp_mini make:command SendDigest` — scaffold a project CLI command.
+ * `wp wp_mini make:command SendDigest` - scaffold a project CLI command.
  *
- * ## What this closes
+ * What this closes
  *
  * {@see \App\Console\Command} exists so generated commands extend something in
  * the application's own namespace, where project-wide output conventions have a
@@ -18,17 +18,17 @@ use Framework\Console\GeneratorCommand;
  * command wrote one by hand against the framework base and quietly skipped the
  * layer the framework provided.
  *
- * ## Why the stub class name drives the command name
+ * Why the stub class name drives the command name
  *
  * The generated class is `SendDigestCommand`, and the command it registers is
- * `send-digest` — derived here rather than asked for separately, because two
+ * `send-digest` - derived here rather than asked for separately, because two
  * names for one thing is a chance to disagree. The derivation is in
  * {@see commandName()}.
  *
  * The class name has a `Command` suffix stripped for the command name but kept
  * on the class, which matches how Laravel names commands and is what makes the
  * file easy to find later. A caller who genuinely wants both to read `check` can
- * name the class `CheckCommand` — the suffix is stripped from the command name,
+ * name the class `CheckCommand` - the suffix is stripped from the command name,
  * not required.
  */
 class MakeCommandCommand extends GeneratorCommand
@@ -80,7 +80,7 @@ class MakeCommandCommand extends GeneratorCommand
     protected function getReplacements(string $className): array
     {
         return [
-            // The WP-CLI verb, without the CLI prefix — the stub adds that from
+            // The WP-CLI verb, without the CLI prefix - the stub adds that from
             // config, so the two cannot disagree about which prefix is current.
             '{{ command }}' => $this->commandName($className),
             // The stub's docblock names the command that produced it. Substituted
@@ -88,8 +88,8 @@ class MakeCommandCommand extends GeneratorCommand
             // `namespace` and `class`: any other `{{ … }}` in a stub survives into
             // the generated file, and a docblock reading `{{ cli_prefix }}
             // make:command` is exactly the kind of small wrongness that makes a
-            // scaffold look broken. `MakeMigrationCommand` passes the same key for
-            // the same reason.
+            // scaffold look broken. This is the only command that passes this key:
+            // `command.stub` is the only stub whose docblock names a command.
             '{{ cli_prefix }}' => (string) config('app.cli_prefix', Config::DEFAULT_CLI_PREFIX),
         ];
     }
@@ -108,7 +108,7 @@ class MakeCommandCommand extends GeneratorCommand
      * becomes `send-http-digest`, not `send-h-t-t-p-digest`, which is unreadable
      * and was the actual bug in the first cut of this method.
      *
-     * A name that reduces to nothing — the class is literally `Command` — falls
+     * A name that reduces to nothing - the class is literally `Command` - falls
      * back to the class name lowercased rather than emitting a bare prefix, which
      * would register the *namespace* as a command and collide with every sibling.
      */

@@ -2,9 +2,10 @@
 /**
  * The leads list screen body.
  *
- * Rendered by App\Http\Controllers\Admin\LeadController::index() and handed to
- * `layout` as `$content`, which is where the page heading and the success/error
- * notices are rendered — so nothing here repeats them. Note what is *not* here:
+ * Handed to `layout` as `$content`, which is where the page heading and the
+ * success/error notices are rendered — so nothing here repeats them. The
+ * `leads.index` route that would render it is commented out in `routes/web.php`,
+ * so no live controller reaches this file today. Note what is *not* here:
  * no `isset()` guards on `$errors` or `$old`, because the renderer omits a flash
  * variable entirely when nothing was flashed, and `!empty()` covers both states
  * with one spelling.
@@ -17,8 +18,9 @@
  * @var string $createUrl
  */
 ?>
-<p>Every lead this site has captured. There is no leads table yet, so these rows
-    are the demo source in <code>LeadController::leads()</code>.</p>
+<p>Every lead this site has captured. A `leads` table exists, but no controller
+    queries it for this screen yet, so the rows rendered here are whatever the
+    caller passes in <code>$leads</code>.</p>
 
 <table class="wp-list-table widefat fixed striped">
     <thead>

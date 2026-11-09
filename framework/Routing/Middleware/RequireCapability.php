@@ -31,7 +31,7 @@ use WP_REST_Request;
  *     $container->when(RequireEditPosts::class)->needs('$capability')->give('edit_posts');
  *
  * Binding on `RequireCapability` itself, or on the controller whose route uses
- * it, does **not** — the container never sees either during resolution. Nothing
+ * it, does **not** - the container never sees either during resolution. Nothing
  * errors: the binding is simply never consulted and the capability silently
  * stays whatever the constructor default is. Prefer the subclass's own
  * constructor over a contextual binding; it fails loudly if it is wrong.

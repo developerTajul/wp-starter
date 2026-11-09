@@ -6,15 +6,15 @@ namespace WpMiniLaravel\Init;
 /**
  * The set of identifiers a rebrand will produce, and the rules they must satisfy.
  *
- * ## Why identity and validity live in one class
+ * Why identity and validity live in one class
  *
  * Because the derived values are only correct if the identity they came from is,
- * and splitting the two means validation has to be re-run after derivation —
+ * and splitting the two means validation has to be re-run after derivation -
  * the point at which it is easiest to forget. A `RebrandPlan` either exists and
  * is valid or does not exist at all; there is no half-checked state for the
  * rebrander to be handed.
  *
- * ## Why the derived defaults are what they are
+ * Why the derived defaults are what they are
  *
  * The README's table gives the convention for each identifier, and the defaults
  * here implement it: a REST namespace of `<slug>/v1`, a CLI prefix that is the
@@ -24,7 +24,7 @@ namespace WpMiniLaravel\Init;
  * were.
  *
  * That matters more than it looks. Every one of these names is *derived* from
- * something the user did think about — the slug, the namespace — so the derived
+ * something the user did think about - the slug, the namespace - so the derived
  * value is spelled correctly by construction. The alternative is a user inventing
  * `--option-prefix=LeadBridge_` on a Tuesday, which works until the first
  * `strtolower()` comparison somewhere.
@@ -34,13 +34,13 @@ final class RebrandPlan
     /**
      * Identifiers that must not survive into a rebranded project.
      *
-     * ## Why this list is enforced rather than trusted
+     * Why this list is enforced rather than trusted
      *
      * A rebrand to `--namespace=App` is a rebrand that does nothing: every
      * replacement is a no-op, the script reports success, and the project keeps
      * the default identity that two other plugins in the same site may also
-     * have. It is the single most likely mistake — "App" is what the README's
-     * own table calls the default — and it fails completely silently.
+     * have. It is the single most likely mistake - "App" is what the README's
+     * own table calls the default - and it fails completely silently.
      *
      * The same reasoning applies to every default identifier: rebranding to the
      * value you are replacing means the four globally-unique names the README
@@ -92,15 +92,15 @@ final class RebrandPlan
     /**
      * Build a plan from parsed command-line options, deriving what was omitted.
      *
-     * ## Why the layers are prefixed rather than replaced
+     * Why the layers are prefixed rather than replaced
      *
-     * `App` and `Core` name *layers* — delivery and domain — and those names are
+     * `App` and `Core` name *layers* - delivery and domain - and those names are
      * part of the architecture the starter teaches, not part of its identity. A
      * rebrand therefore moves the root and keeps the layers: `App\Database`
      * becomes `Acme\App\Database`, not `Acme\Database`. Flattening them would make
      * every rebranded project's namespace scheme disagree with every hexagonal
      * reference the README points at, and it would erase the `core/` ↔ `app/`
-     * distinction from the namespace itself — the one place a reader of a `use`
+     * distinction from the namespace itself - the one place a reader of a `use`
      * statement can see which zone a class belongs to.
      *
      * @param array<string, string|bool> $options
@@ -145,7 +145,7 @@ final class RebrandPlan
      * Every way this plan is unusable, as human-readable sentences.
      *
      * Returns a list rather than throwing on the first problem, so a user sees
-     * every mistake in one pass. The rules are all about *silent* failures —
+     * every mistake in one pass. The rules are all about *silent* failures -
      * nothing here would produce an error at rebrand time, only a plugin that
      * does not load or two plugins that overwrite each other's options.
      *
@@ -182,7 +182,7 @@ final class RebrandPlan
         if (preg_match('/^[a-z0-9]+(-[a-z0-9]+)*$/', $this->slug) !== 1) {
             return [sprintf(
                 '--slug "%s" is not a valid plugin slug. Use lowercase letters, digits and single '
-                . 'hyphens — e.g. "lead-bridge". WordPress uses this as a directory name, and it '
+                . 'hyphens, e.g. "lead-bridge". WordPress uses this as a directory name, and it '
                 . 'is compared case-sensitively on Linux hosts.',
                 $this->slug
             )];
@@ -198,7 +198,7 @@ final class RebrandPlan
     {
         if (preg_match('/^[a-z0-9]+(-[a-z0-9]+)*$/', $this->vendor) !== 1) {
             return [sprintf(
-                '--vendor "%s" is not valid. Composer vendors are lowercase, hyphenated — e.g. "acme".',
+                '--vendor "%s" is not valid. Composer vendors are lowercase, hyphenated, e.g. "acme".',
                 $this->vendor
             )];
         }
@@ -217,7 +217,7 @@ final class RebrandPlan
             if (preg_match('/^[A-Z][A-Za-z0-9]*(\\\\[A-Z][A-Za-z0-9]*)*$/', $value) !== 1) {
                 $problems[] = sprintf(
                     '%s "%s" is not a valid PHP namespace root. Each segment must start with a '
-                    . 'capital letter and contain only letters and digits — e.g. "LeadBridge" or '
+                    . 'capital letter and contain only letters and digits, e.g. "LeadBridge" or '
                     . '"Acme\\Plugin".',
                     $flag,
                     $value
@@ -227,11 +227,11 @@ final class RebrandPlan
 
         // The core namespace must be *under* the app namespace, because
         // `composer.json` maps both and a core namespace outside it would be a
-        // second PSR-4 root pointing at the same directory — which Composer
+        // second PSR-4 root pointing at the same directory - which Composer
         // accepts and which then resolves whichever prefix matches first.
         if (!str_starts_with($this->coreNamespace, $this->namespace . '\\')) {
             $problems[] = sprintf(
-                '--core-namespace "%s" must sit under --namespace "%s" — e.g. "%s\\Core". It maps '
+                '--core-namespace "%s" must sit under --namespace "%s", e.g. "%s\\Core". It maps '
                 . 'to the same PSR-4 directory, and a namespace outside that root is a prefix '
                 . 'Composer resolves against the wrong path.',
                 $this->coreNamespace,
@@ -242,7 +242,7 @@ final class RebrandPlan
 
         // The root must not already name a layer. The rules *append* the layer
         // to the root, so `--namespace=LeadBridge\App` yields
-        // `LeadBridge\App\App\...` — namespaces no file declares, which
+        // `LeadBridge\App\App\...` - namespaces no file declares, which
         // Composer therefore cannot resolve, and which fail exactly as quietly
         // as a wrong PSR-4 map. The flag means "root"; the usage text says so,
         // and this makes the mistake impossible to make anyway.
@@ -256,7 +256,7 @@ final class RebrandPlan
 
             $problems[] = sprintf(
                 '--namespace "%s" already ends with a layer name. It is the *root* the layers are '
-                . 'prefixed with, so `App\` becomes "<root>\App\" — passing "%s" produces "%s\App\". '
+                . 'prefixed with, so `App\` becomes "<root>\App\", passing "%s" produces "%s\App\". '
                 . 'Pass "%s" instead.',
                 $this->namespace,
                 $lastSegment,
@@ -319,7 +319,7 @@ final class RebrandPlan
         if (preg_match('#^[a-z0-9-]+(/[a-z0-9.-]+)+$#', $this->restNamespace) !== 1) {
             return [sprintf(
                 '--rest-namespace "%s" is not valid. WordPress requires at least a vendor and a '
-                . 'version — e.g. "lead-bridge/v1".',
+                . 'version, e.g. "lead-bridge/v1".',
                 $this->restNamespace
             )];
         }
@@ -353,7 +353,7 @@ final class RebrandPlan
                 if (strcasecmp($value, $forbidden) === 0) {
                     $problems[] = sprintf(
                         '%s is still the default value "%s". Rebranding to the value being replaced '
-                        . 'changes nothing — the project would keep the identity this script exists '
+                        . 'changes nothing, the project would keep the identity this script exists '
                         . 'to remove, and two copies of the starter in one site would share options, '
                         . 'CLI commands and REST routes.',
                         $flag,
@@ -375,7 +375,7 @@ final class RebrandPlan
      *
      * A user copying `\App\` out of a `use` statement into `--namespace` would
      * otherwise get a plan whose every replacement produced `\\LeadBridge\`, and
-     * PHP resolves that to the global namespace — which is where a class named
+     * PHP resolves that to the global namespace - which is where a class named
      * `LeadBridge\Core\Note\Domain\NoteEntity` would not be.
      */
     private static function trimNamespace(string $namespace): string
@@ -396,24 +396,24 @@ final class RebrandPlan
      *
      * `LeadBridge` -> `Lead_Bridge`; `lead-bridge` -> `lead_bridge`.
      *
-     * ## Why the result is not upper- or lowercased here
+     * Why the result is not upper- or lowercased here
      *
      * Because two different prefixes are derived from this stem and they need
      * **opposite** cases: the constant prefix is `LEAD_BRIDGE_` and the option
      * prefix is `lead_bridge_`. A helper that picked a case would have to be
      * called twice with a flag, which is the shape that gets called once with the
      * wrong one. Returning the neutral stem means the caller states the case it
-     * wants — see {@see upperSnake()} and {@see lowerSnake()}.
+     * wants - see {@see upperSnake()} and {@see lowerSnake()}.
      *
-     * ## The two normalizations, and what each protects against
+     * The two normalizations, and what each protects against
      *
      *  - **Hyphens, backslashes and spaces become underscores.** This is the rule
      *    that matters: a slug is the common input, and `lead-bridge` naively
-     *    handled produces `LEAD-BRIDGE_` — a valid-looking string that is not a
+     *    handled produces `LEAD-BRIDGE_` - a valid-looking string that is not a
      *    valid PHP constant prefix, because `define('LEAD-BRIDGE_BOOTED')` is
      *    parsed as the subtraction `LEAD - BRIDGE_BOOTED`.
      *  - **A lower-to-upper boundary gains an underscore**, so a namespace
-     *    segment with an internal capital — `LeadBridge` — becomes `Lead_Bridge`
+     *    segment with an internal capital - `LeadBridge` - becomes `Lead_Bridge`
      *    rather than `LeadBridge`. Both uppercase to a valid prefix; only one
      *    gives `LEAD_BRIDGE_`, which is the convention the README's table shows
      *    and which a person reading `config/app.php` will expect.

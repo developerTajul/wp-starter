@@ -16,7 +16,7 @@ use Framework\Http\Responses\JsonResponse;
  * through the same `current_user_can()` call; they differ in **where the
  * capability comes from**, and that difference is the whole reason both exist:
  *
- *     // Configured once, in the class — reusable, and reusable *safely*.
+ *     // Configured once, in the class - reusable, and reusable *safely*.
  *     final class RequireLeadAccess extends Authorize
  *     {
  *         public function __construct()
@@ -28,41 +28,41 @@ use Framework\Http\Responses\JsonResponse;
  *     // Configured per route, at the call site.
  *     ->middleware('capability:' . LeadController::CAPABILITY)
  *
- * ## Which to reach for
+ * Which to reach for
  *
- * `Authorize` when the capability is a property of the *class's meaning* — a
+ * `Authorize` when the capability is a property of the *class's meaning*, a
  * guard that is always the same guard, named once, and whose name is what a
  * reader looks for. A subclass like the one above is self-documenting.
  *
- * This one when the capability is a property of the *route* — several routes
+ * This one when the capability is a property of the *route* - several routes
  * that differ only in which capability they need, where a subclass each would be
  * boilerplate, and where the parameter sitting next to the route is easier to
  * audit than a class defined elsewhere.
  *
- * ## Why the parameters are read from `$arguments`, not the constructor
+ * Why the parameters are read from `$arguments`, not the constructor
  *
  * The pipeline splits `'capability:manage_options'` and passes the tail as extra
  * arguments; the constructor is not involved, because the middleware is built by
  * the container before its parameters are known. See
  * {@see \Framework\Http\Middleware\Pipeline::parseEntry()}.
  *
- * ## All of them, or none
+ * All of them, or none
  *
- * Several capabilities may be given — `'capability:edit_posts,edit_others_posts'`
- * — and **every one must be held**. That is deliberate and matches
+ * Several capabilities may be given - `'capability:edit_posts,edit_others_posts'`
+ * - and **every one must be held**. That is deliberate and matches
  * {@see Authorize}, and it is the opposite of WordPress's own
  * `authorize() => 'edit_posts'` on a REST route, which accepts an array and
  * grants access if **any** is held. Passing a list here expecting OR semantics
  * would silently be stricter than intended, which fails closed and is therefore
  * the safe direction to be wrong in.
  *
- * ## No capability is refused, unlike Authorize
+ * No capability is refused, unlike Authorize
  *
  * {@see Authorize} logs and *allows* when it was constructed with no
  * capabilities, on the grounds that denying would make a misconfiguration
  * invisible. That reasoning does not transfer here. An empty `Authorize` is a
  * class someone wrote and can go and read; an empty parameter is
- * `'capability:'` in a routes file, which is a typo with nothing to inspect — and
+ * `'capability:'` in a routes file, which is a typo with nothing to inspect - and
  * a guard that silently allows every request because of one is exactly the
  * failure this middleware exists to prevent. So it is a 403, and the message
  * names the mistake.
@@ -80,7 +80,7 @@ class CheckCapability implements Middleware
         if ($capabilities === []) {
             return $this->reject($request, sprintf(
                 'This route requires a capability but none was configured. '
-                . 'Write it as [capability:manage_options] — the part after the colon is missing.'
+                . 'Write it as [capability:manage_options], the part after the colon is missing.'
             ));
         }
 
@@ -126,7 +126,7 @@ class CheckCapability implements Middleware
     /**
      * Whether the current user holds one capability.
      *
-     * Separated from the loop so a subclass has a seam to override — for a
+     * Separated from the loop so a subclass has a seam to override - for a
      * capability this middleware should always grant, or for a test that needs to
      * answer differently per capability without reaching into WordPress.
      */
@@ -145,7 +145,7 @@ class CheckCapability implements Middleware
      * Answer a rejected request in the shape the client asked for.
      *
      * A headless caller gets a 403 document it can parse. A browser gets a
-     * `wp_die()` page — WordPress's own "this request cannot proceed" mechanism —
+     * `wp_die()` page - WordPress's own "this request cannot proceed" mechanism -
      * rather than a bare JSON body rendered as text, which is what a form post
      * would otherwise show. The status is 403 either way: a permission failure
      * that reached this middleware has already been authenticated (or is on a

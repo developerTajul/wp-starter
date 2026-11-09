@@ -10,12 +10,12 @@ use Throwable;
 /**
  * Brings the schema up to date when the plugin is activated.
  *
- * ## Why this is not one line in the entry file
+ * Why this is not one line in the entry file
  *
  * The activation callback is the worst possible place to put logic. It runs
  * inside WordPress's plugin-activation request, where an uncaught throwable
  * produces a fatal that WordPress reports as "the plugin could not be activated"
- * with nothing else — the operator sees a white screen and no plugin, and the
+ * with nothing else - the operator sees a white screen and no plugin, and the
  * cause is nowhere. It also runs *once*, on a code path no test can reach
  * without a live WordPress install, so logic written there is logic nothing
  * verifies.
@@ -23,14 +23,14 @@ use Throwable;
  * So the entry file registers a callback that does nothing but delegate here,
  * and every decision lives in a class this suite can drive directly.
  *
- * ## Treating activation as pending-only, not as a rebuild
+ * Treating activation as pending-only, not as a rebuild
  *
  * `runPending()` applies what has not been applied and records it under one new
  * batch. It deliberately does not do the two things that sound reasonable at
  * activation and are not:
  *
  *  - **It does not drop anything.** A `migrate:fresh` would destroy the data of
- *    an install that is being re-activated — which is what happens when a site
+ *    an install that is being re-activated - which is what happens when a site
  *    is restored from a backup, when a plugin is deactivated and reactivated
  *    during debugging, or when a host toggles plugins during a migration. The
  *    whole point of the ledger is that the second activation finds nothing
@@ -38,11 +38,11 @@ use Throwable;
  *  - **It does not reverse anything.** `down()` is compensating logic, and
  *    activation is not a compensation.
  *
- * ## Failure is reported, never fatal
+ * Failure is reported, never fatal
  *
  * A migration that throws stops the batch, and the exception is caught here and
  * handed to the configured reporter. Left uncaught it would abort the activation
- * request — and the state it leaves behind is one the framework already knows
+ * request - and the state it leaves behind is one the framework already knows
  * how to recover from: the tracking table records only the migrations that
  * genuinely completed, every later one is still pending, and `migrate` resumes
  * from where the run stopped. Swallowing the exception is therefore not a
@@ -50,11 +50,11 @@ use Throwable;
  * state. What the operator must not be left without is the *message*, which is
  * what the reporter is for.
  *
- * ## Why the reporter is injected
+ * Why the reporter is injected
  *
  * Because a framework class cannot know where a given project wants to be told
- * about a failed deploy. The default writes to the error log — present on every
- * real install, and read by whoever is looking at the site afterwards — and a
+ * about a failed deploy. The default writes to the error log - present on every
+ * real install, and read by whoever is looking at the site afterwards - and a
  * project that has a real channel passes its own callable.
  */
 class MigratesOnActivation
@@ -77,7 +77,7 @@ class MigratesOnActivation
      * Apply every pending migration.
      *
      * @return list<string> Identifiers applied, in execution order. Empty when the
-     *                      schema was already up to date — the state a second
+     *                      schema was already up to date - the state a second
      *                      activation is expected to find.
      */
     public function __invoke(): array
@@ -90,7 +90,7 @@ class MigratesOnActivation
             return $this->migrator->lastRunApplied();
         } catch (Throwable $e) {
             // A `Throwable` that is not a `MigrationException` is not a failing
-            // migration — the migrator wraps every one of those. It is a failure
+            // migration - the migrator wraps every one of those. It is a failure
             // of the *migrator*, and the likeliest of those is the database
             // handle: activation runs before the plugin's own `plugins_loaded`
             // has fired, and an install where `$wpdb` is unreachable, or where
@@ -123,22 +123,37 @@ class MigratesOnActivation
      * Wrapped rather than guarded with `function_exists()` on its own, because
      * the whole point of this method is to be the *last* thing that runs when
      * something has already gone wrong. A reporter that could itself throw would
-     * turn a reported failure into an unreported fatal — the exact outcome this
+     * turn a reported failure into an unreported fatal - the exact outcome this
      * class exists to prevent. `error_log()` is also the same fallback
      * {@see \App\Providers\RouteServiceProvider} uses for the same reason.
+     *
+     * Why the wording is a parameter
+     *
+     * This method is no longer only activation's. `uninstall.php` reports
+     * through it too, and the line it produced said "activation could not
+     * complete the database migrations", which is not merely imprecise on an
+     * uninstall, it points the reader in the wrong direction entirely. Someone
+     * debugging a plugin that would not delete would be told to go and look at
+     * activation, where nothing is wrong. A log line that names the wrong
+     * operation is worse than one that names none, because it is *acted on*.
+     *
+     * `$operation` is the phrase that goes between the prefix and the colon, so
+     * the two call sites each describe what they were doing. It is not
+     * interpolated from user input and has two literal values.
      */
-    public static function reportToErrorLog(Throwable $e): void
+    public static function reportToErrorLog(Throwable $e, string $operation = 'activation could not complete the database migrations'): void
     {
         try {
             error_log(sprintf(
-                'WP Mini Laravel: activation could not complete the database migrations: %s: %s',
+                'WP Mini Laravel: %s: %s: %s',
+                $operation,
                 $e::class,
                 $e->getMessage()
             ));
         } catch (Throwable) {
-            // Nothing left to report *through*. The activation request must still
-            // finish: the schema change the migration got through is applied and
-            // recorded, and `migrate` will resume from there.
+            // Nothing left to report *through*. The request must still finish: the
+            // schema change the migration got through is applied and recorded, and
+            // `migrate` will resume from there.
         }
     }
 }

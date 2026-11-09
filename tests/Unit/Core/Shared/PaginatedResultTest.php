@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Core\Shared;
 
-use Core\Shared\PaginatedResult;
+use Core\Shared\Domain\DataObjects\PaginatedResult;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 

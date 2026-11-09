@@ -22,11 +22,11 @@ use WP_REST_Request;
  * which fires well after every plugin has loaded. Keeping those apart is what
  * lets one plugin's routes coexist with another's.
  *
- * ## This is the REST adapter, under its original name
+ * This is the REST adapter, under its original name
  *
  * It predates {@see RouterInterface} and the two web adapters, and it keeps its
- * own spelling — `add()` rather than `addRoute()`, `registerRoutes()` rather than
- * `flush()` — because both are load-bearing for this repository's own provider
+ * own spelling - `add()` rather than `addRoute()`, `registerRoutes()` rather than
+ * `flush()` - because both are load-bearing for this repository's own provider
  * and tests. The interface is implemented *additively*: the new names are thin
  * aliases over the old ones, so a caller written against either spelling drives
  * exactly the same route table. Renaming the originals would be a breaking change
@@ -58,8 +58,8 @@ class Router implements RouterInterface
         /**
          * Where named routes are recorded for URL generation.
          *
-         * Optional, so the existing constructions — the framework provider, tests,
-         * probes — keep working. When omitted a private registry is used and this
+         * Optional, so the existing constructions - the framework provider, tests,
+         * probes - keep working. When omitted a private registry is used and this
          * router's names are unreachable from `route()`, which is correct for a
          * caller that never generates a URL; the providers always pass the shared
          * one.
@@ -127,7 +127,7 @@ class Router implements RouterInterface
     {
         $this->add($route);
 
-        // Handed back so the fluent shorthand composes — see the contract. `add()`
+        // Handed back so the fluent shorthand composes - see the contract. `add()`
         // stores this exact instance, so configuring what comes back configures
         // what will be published.
         return $route;
@@ -136,7 +136,7 @@ class Router implements RouterInterface
     /**
      * Register one GET route on this router.
      *
-     * Convenience for a caller holding the router rather than its registrar —
+     * Convenience for a caller holding the router rather than its registrar -
      * a provider wiring a route in code, or a test. The registrar is the
      * preferred surface inside a routes file, because it carries the group
      * prefix and middleware.
@@ -175,6 +175,16 @@ class Router implements RouterInterface
      *
      * @throws RouteRegistrationException
      */
+    public function patch(string $path, string|array|callable|null $controller = null, ?string $action = null): Route
+    {
+        return $this->registrar()->patch($path, $controller, $action);
+    }
+
+    /**
+     * @param string|array{0: string, 1: string}|callable|null $controller
+     *
+     * @throws RouteRegistrationException
+     */
     public function delete(string $path, string|array|callable|null $controller = null, ?string $action = null): Route
     {
         return $this->registrar()->delete($path, $controller, $action);
@@ -185,7 +195,7 @@ class Router implements RouterInterface
      *
      * Deliberately **not** the interface's `flush()`. In this class `flush()`
      * would have to mean "publish", to match {@see registerRoutes()} and the
-     * adapters — but "flush" reads to most callers as "discard", and a method
+     * adapters - but "flush" reads to most callers as "discard", and a method
      * whose name suggests clearing and whose effect is publishing is a trap. So
      * the destructive operation is named for what it does and the publishing one
      * keeps the name it has always had; the interface's `flush()` is bound to
@@ -200,8 +210,8 @@ class Router implements RouterInterface
     /**
      * Publish, as {@see RouterInterface} declares it.
      *
-     * The namespace is not part of the interface — it is this mechanism's own
-     * concern — so `flush()` is a thin wrapper that resolves it from config and
+     * The namespace is not part of the interface - it is this mechanism's own
+     * concern - so `flush()` is a thin wrapper that resolves it from config and
      * defers to {@see registerRoutes()}. A project that wants a different
      * namespace per call still calls `registerRoutes()` directly, exactly as the
      * framework's own provider does.
@@ -237,7 +247,7 @@ class Router implements RouterInterface
 
         // Validated in full before anything is handed to WordPress. Registration
         // is the last moment a route can still be fixed, so a handler that never
-        // arrived is reported here — naming the path, which is what a developer
+        // arrived is reported here - naming the path, which is what a developer
         // needs to find the mistake.
         //
         // Validating up front rather than inside the loop is what keeps a single
@@ -265,7 +275,7 @@ class Router implements RouterInterface
         $this->registeredNamespaces[$namespace] = true;
 
         // Recorded for URL generation, after registration rather than before,
-        // because that is the moment the routes are actually reachable — a
+        // because that is the moment the routes are actually reachable - a
         // `route()` call that resolves a name this router has not published yet
         // would produce a URL to an endpoint WordPress does not answer.
         //
@@ -286,7 +296,7 @@ class Router implements RouterInterface
         // Everything below runs with Framework\Http\Request resolving to the
         // request WordPress just handed us, rather than to the instance captured
         // from the superglobals at plugin load. Bound *before* the controller is
-        // resolved, because a constructor may type-hint it too — resolving first
+        // resolved, because a constructor may type-hint it too - resolving first
         // and binding afterwards would leave the constructor holding the wrong one.
         return $this->withHttpRequest($request, function () use ($route, $request): mixed {
             return $this->dispatchTo($route, $request);
@@ -296,10 +306,10 @@ class Router implements RouterInterface
     /**
      * Run a callback with `Framework\Http\Request` bound to this REST request.
      *
-     * ## Why the binding has to be scoped
+     * Why the binding has to be scoped
      *
-     * `Container::instance()` is permanent — it sets a shared instance and does
-     * not offer an unset — so binding and walking away would leave the REST
+     * `Container::instance()` is permanent - it sets a shared instance and does
+     * not offer an unset - so binding and walking away would leave the REST
      * request in the container for the rest of the process. That is harmless
      * under a classic one-request-per-process PHP setup and wrong everywhere
      * else: under a persistent worker, or when something dispatches a second
@@ -308,10 +318,10 @@ class Router implements RouterInterface
      * `finally` keeps the binding confined to the dispatch, which is what the
      * "scoped to the current request lifecycle" rule asks for.
      *
-     * ## Why a framework Request at all
+     * Why a framework Request at all
      *
      * A controller type-hinting the native `WP_REST_Request` keeps working
-     * untouched — {@see RouteResolver} still hands that one over for a parameter
+     * untouched - {@see RouteResolver} still hands that one over for a parameter
      * typed as such. This binding is only what makes the *framework's* Request
      * mean the REST request instead of a stale superglobal capture, and it
      * carries two things a capture cannot: the URL-matched parameters, and a body
@@ -323,7 +333,7 @@ class Router implements RouterInterface
      */
     private function withHttpRequest(WP_REST_Request $request, callable $callback): mixed
     {
-        // Nothing to bind against without the framework's HTTP layer loaded — a
+        // Nothing to bind against without the framework's HTTP layer loaded, a
         // consuming project may have dropped HttpServiceProvider from its
         // providers, in which case routing must keep working exactly as before.
         if (!class_exists(Request::class)) {
@@ -340,7 +350,7 @@ class Router implements RouterInterface
         } finally {
             // `instance()` only ever sets, so restoring means either putting the
             // old instance back or forgetting the binding entirely when there was
-            // none — leaving it bound would be a permanent leak of this request.
+            // none - leaving it bound would be a permanent leak of this request.
             if ($hadPrevious) {
                 $this->container->instance(Request::class, $previous);
             } else {
@@ -365,9 +375,9 @@ class Router implements RouterInterface
                 // request under a persistent-object-cache or long-running setup.
                 $instance = $this->container->resolve($controller);
             } catch (Throwable $e) {
-                // Catches everything the container throws — EntryNotFoundException
+                // Catches everything the container throws - EntryNotFoundException
                 // for a class that does not exist, BindingResolutionException when
-                // a constructor dependency cannot be built — plus anything the
+                // a constructor dependency cannot be built - plus anything the
                 // controller's own constructor raises. None of these is a caller
                 // error, and none was caught here before: a renamed or mistyped
                 // controller escaped the REST callback as an unhandled throwable,
@@ -410,8 +420,8 @@ class Router implements RouterInterface
     /**
      * Re-assert the URL-matched placeholders on the request.
      *
-     * WordPress resolves `get_param()` by source priority — JSON, body, query,
-     * then URL last — so a POST body carrying `{"id": 999}` outranks the `123`
+     * WordPress resolves `get_param()` by source priority - JSON, body, query,
+     * then URL last - so a POST body carrying `{"id": 999}` outranks the `123`
      * the URL matched against `posts/{id}`. A controller reading
      * `$request->get_param('id')` would then act on a value the client chose
      * rather than the one the route matched, and an ownership check written
@@ -454,7 +464,7 @@ class Router implements RouterInterface
                 // the whole reason `return $allowed ? true : null;` is such a
                 // common idiom in permission callbacks. Treating only `false`
                 // as a denial would let that idiom fall through to the
-                // middleware loop and then be reported as allowed — turning a
+                // middleware loop and then be reported as allowed - turning a
                 // deliberately protected route into a public one.
                 //
                 // A WP_Error is returned as-is rather than converted, so a
@@ -482,7 +492,7 @@ class Router implements RouterInterface
      * The callback is named by string, in one of the three forms the container's
      * `call()` understands:
      *
-     *  - a plain function name, `my_permission_check` — the common case;
+     *  - a plain function name, `my_permission_check` - the common case;
      *  - a static method, `MyChecks::canEdit`;
      *  - an instance method on a resolvable class, `MyChecks@canEdit`, which the
      *    container constructs so its own dependencies are injected.
@@ -499,7 +509,7 @@ class Router implements RouterInterface
      * caller still gets 401 and a logged-in one 403, exactly as a callback that
      * returned false would produce. Because that is indistinguishable from a real
      * authorization failure, the message names the callback and carries the
-     * underlying reason — an unresolvable or misspelled callback is a wiring bug,
+     * underlying reason - an unresolvable or misspelled callback is a wiring bug,
      * and the operator should be able to tell it apart from a locked-down route.
      */
     private function runPermissionCallback(Route $route, string $callback, WP_REST_Request $request): mixed
@@ -524,8 +534,8 @@ class Router implements RouterInterface
      * Run one middleware, converting any failure into a denial.
      *
      * WordPress calls the permission callback with no error handling of its own
-     * (`class-wp-rest-server.php`), so a middleware that throws — a database
-     * blip, a null dereference, a third-party call — would surface as an
+     * (`class-wp-rest-server.php`), so a middleware that throws - a database
+     * blip, a null dereference, a third-party call - would surface as an
      * unhandled fatal rather than a response, and any unauthenticated client
      * could trigger it on demand.
      *
@@ -547,7 +557,7 @@ class Router implements RouterInterface
         }
 
         // A middleware may only answer with a WP_Error (deny) or null (no
-        // opinion). Anything else — a bool, a string, an array — is a contract
+        // opinion). Anything else - a bool, a string, an array - is a contract
         // violation, and a truthy value would otherwise be indistinguishable
         // from the final "allowed" return below.
         if ($result !== null && !$result instanceof WP_Error) {
@@ -570,8 +580,8 @@ class Router implements RouterInterface
      * against.
      *
      * Delegates to {@see RouteCompiler}, which owns the parser. This method is
-     * kept as the historical entry point — the tests and the REST adapter both
-     * call it — and it is the REST spelling of `RouteCompiler::toPattern()`.
+     * kept as the historical entry point - the tests and the REST adapter both
+     * call it - and it is the REST spelling of `RouteCompiler::toPattern()`.
      */
     public static function toWordPressRoute(string $path): string
     {

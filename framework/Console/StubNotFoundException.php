@@ -22,8 +22,8 @@ final class StubNotFoundException extends RuntimeException
     public static function notFound(string $name, array $searched): self
     {
         // Both paths are printed, and both are printed the way this framework
-        // prints paths everywhere else. The alternative — naming only the
-        // project path — produces "Stub file not found at: /site/stubs/x.stub",
+        // prints paths everywhere else. The alternative - naming only the
+        // project path - produces "Stub file not found at: /site/stubs/x.stub",
         // which reads as "the file you should have written is missing" and sends
         // the reader to create a stub that the framework already ships.
         $paths = implode(

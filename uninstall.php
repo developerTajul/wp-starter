@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * Uninstall: remove the plugin's data, but only when the site owner asked.
+ * Uninstall: remove the plugin's data, as the delete prompt said it would.
  *
  * ## Why a file rather than register_uninstall_hook()
  *
@@ -32,7 +32,7 @@ declare(strict_types=1);
  * a state from earlier in the same request. Both are handled the same way:
  * include the entry file if it has not run, which binds the paths, loads the
  * config and registers the providers, and then let
- * {@see \App\Lifecycle\PluginLifecycle::uninstall()} boot the container itself
+ * {@see \Framework\Lifecycle\PluginLifecycle::uninstall()} boot the container itself
  * once it knows the wipe has actually been requested.
  *
  * Requiring the entry file rather than repeating its bootstrap here is
@@ -81,4 +81,53 @@ if (!function_exists('app')) {
     return;
 }
 
-app()->resolve(\App\Lifecycle\PluginLifecycle::class)->uninstall(app());
+// Everything below this line runs inside a `try`, and that is the whole point of
+// the block rather than defensive habit.
+//
+// ## What WordPress is doing while this file runs
+//
+// `delete_plugins()` calls `uninstall_plugin()` — which includes this file —
+// *before* it removes a single byte from disk. The recursive delete comes after.
+// So a throwable that escapes here does not merely fail the wipe: it propagates
+// out of the include, out of `delete_plugins()`, and aborts the request with the
+// plugin's files still in place. The operator sees WordPress's generic
+// "Could not fully remove the plugin" and a half-deleted directory, and nothing
+// anywhere connects that to a database problem.
+//
+// ## Which of the calls below can actually throw
+//
+// {@see \Framework\Database\Lifecycle\RemovesPluginData::runWithoutThrowing()}
+// already catches `Throwable` around the *removal* — that half was written for
+// exactly this caller. But it guards only itself, and three things happen
+// outside it:
+//
+//  1. `app()->resolve(PluginLifecycle::class)` — a binding failure throws.
+//  2. `$container->boot()` — every provider's `boot()` runs here, and a
+//     provider that resolves a service off a database or a remote API that is
+//     gone will throw. On the uninstall path that is not an exotic case: the
+//     site may be being torn down precisely *because* something is broken.
+//  3. The second resolve, for `RemovesPluginData`, inside `uninstall()`.
+//
+// Any of the three escaping means the data is not removed *and* the files are
+// not removed, which is the worst of both outcomes: the user believes the plugin
+// is gone, its tables are still there, and the directory that would have told
+// them otherwise is still on disk failing to delete.
+//
+// Catching `Throwable` rather than `Exception`, because a `TypeError` from a
+// provider wired against a service that no longer matches its signature is just
+// as fatal to the request and just as uninteresting to the operator.
+//
+// `MigratesOnActivation::reportToErrorLog()` is reused rather than writing a
+// second logger: it already handles the WP_DEBUG guard and the "a reporter must
+// not itself throw" problem. Its operation phrase is passed explicitly, because
+// its default names activation — and a line reading "activation could not
+// complete the database migrations" on an uninstall would send whoever reads it
+// to the wrong subsystem entirely.
+try {
+    app()->resolve(\Framework\Lifecycle\PluginLifecycle::class)->uninstall(app());
+} catch (\Throwable $e) {
+    \Framework\Database\Lifecycle\MigratesOnActivation::reportToErrorLog(
+        $e,
+        'uninstall could not remove the plugin\'s data, so its tables may still exist'
+    );
+}

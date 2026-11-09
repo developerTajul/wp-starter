@@ -7,54 +7,27 @@ use Framework\Routing\Adapters\WordPressRouterAdapter;
 use Framework\Routing\Exceptions\RouteRegistrationException;
 
 /**
- * The registrar handed to `routes/web.php`: Laravel's route syntax, mapped onto
- * WordPress's mechanisms.
+ * Registrar handed to `routes/web.php`. A web route's mechanism is not implied by
+ * its path (`leads` could be an admin screen or a front-end page), so the surface
+ * is decided from the verb:
  *
- * ## The surface is inferred from the verb
+ * `get()` -> `admin_menu`; `post()` and `put`/`patch`/`delete` (via `_method`) ->
+ * `admin_post_{action}`; `page()` -> `template_redirect`. A bare GET is an admin
+ * screen because WordPress has no general front-end router, so a front-end page
+ * has to be asked for by name. The inverse inference was the older behaviour: the
+ * majority of GET routes in a WordPress plugin are admin screens, and a slug that
+ * silently becomes an unreachable front-end URL is a worse failure than one that
+ * has to say `page()`. The explicit helpers `adminPage()`, `adminAction()` and
+ * `page()` remain for what the verb cannot express.
  *
- * A web route's mechanism is not implied by its path — `leads` could be an admin
- * screen or a front-end page — so this class decides from the verb, which is the
- * one thing a Laravel-shaped routes file always states:
+ * Grouping, the two action spellings and the fluent chain come from
+ * {@see RouteRegistrar}; every spelling funnels through {@see RouteRegistrar::route()}.
  *
- * | you write | WordPress mechanism | what it is |
- * | --- | --- | --- |
- * | `get($slug, ...)` | `admin_menu` | a wp-admin screen |
- * | `post($slug, ...)` | `admin_post_{action}` | a form handler |
- * | `put`/`patch`/`delete` | `admin_post_{action}` | a form handler (via `_method`) |
- * | `page($url, ...)` | `template_redirect` | a front-end page |
- *
- * A `get()` is an admin screen because that is what a GET means in a *web* routes
- * file: WordPress has no general front-end router, so a front-end request is the
- * case that has to be asked for by name. **Use `page()` for one.** Before this
- * class existed the inference was the other way round — a bare GET was a
- * front-end page — and the change is deliberate: the overwhelming majority of GET
- * routes in a WordPress plugin are admin screens, and a slug that silently
- * becomes an unreachable front-end URL is a worse failure than a URL that has to
- * say `page()`.
- *
- * The three explicit helpers remain, both as documentation and as the way to say
- * something the verb cannot: `adminPage()`, `adminAction()` and `page()`.
- *
- * ## Everything else is inherited
- *
- * `group()` — prefix and shared middleware — the two action spellings
- * (`LeadController::class, 'index'` and `[LeadController::class, 'index']`), and
- * the fluent `->name()`, `->middleware()`, `->withOptions()` chain all come from
- * {@see RouteRegistrar}. Every spelling here funnels through
- * {@see RouteRegistrar::route()}, so the surface is the only thing that differs
- * between them — a group prefix joins onto a slug exactly as it joins onto a URI,
- * and group middleware is never dropped.
- *
- * ## Why this class has to exist at all
- *
- * `RouteLoader` hands a routes file a *registrar*, not the router, because that is
- * what gives a routes file `group()` and what makes `web.php` and `api.php` the
- * same shape over two mechanisms. But a plain registrar has no notion of a
- * surface, so a web routes file could not say "admin screen" — and when the file
- * was typed against the adapter instead, it died on a `TypeError` the moment it
- * loaded and the whole admin surface silently failed to register. This class is
- * the seam that satisfies both: still a `RouteRegistrar`, with the web surfaces
- * on top.
+ * `RouteLoader` hands a routes file a registrar rather than the router, which is
+ * what gives the file `group()` and makes `web.php` and `api.php` the same shape
+ * over two mechanisms. A plain registrar has no notion of a surface, so a web
+ * routes file typed against the adapter died on a `TypeError` as it loaded and the
+ * whole admin surface silently failed to register. This class is that seam.
  */
 class WebRouteRegistrar extends RouteRegistrar
 {
@@ -74,7 +47,7 @@ class WebRouteRegistrar extends RouteRegistrar
     /**
      * A wp-admin screen, published on `admin_menu`.
      *
-     * The path is the menu slug — what appears in `admin.php?page={slug}` — and
+     * The path is the menu slug - what appears in `admin.php?page={slug}` - and
      * the rest of what WordPress wants arrives through `->withOptions([...])`.
      *
      * @param string|array{0: string, 1: string}|callable|null $controller
@@ -143,7 +116,7 @@ class WebRouteRegistrar extends RouteRegistrar
     /**
      * A front-end page, matched on `template_redirect`.
      *
-     * The path is a URL on the site — `thank-you` matches `/thank-you` — and may
+     * The path is a URL on the site - `thank-you` matches `/thank-you` - and may
      * carry placeholders with the same grammar the REST router uses.
      *
      * **This is how a GET route stops being an admin screen**, which is the one

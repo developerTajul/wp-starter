@@ -10,14 +10,14 @@ use Framework\Routing\Exceptions\RouteRegistrationException;
  * The fluent route-registration surface handed to a routes file.
  *
  * This is what `$router` is inside `routes/api.php`, and the base of what
- * `routes/web.php` receives — see {@see WebRouteRegistrar}, which adds the web
+ * `routes/web.php` receives - see {@see WebRouteRegistrar}, which adds the web
  * surfaces and the verb-to-surface mapping on top of everything here.
  *
  * Group state (prefix, shared middleware) is stored per registrar instance and
  * applied to each route as it is created, so a group cannot leak into routes
  * declared outside it.
  *
- * ## Two action spellings
+ * Two action spellings
  *
  * Every verb method and `controller()` accepts the action either way:
  *
@@ -53,7 +53,7 @@ class RouteRegistrar
 
     /**
      * Typed against the interface rather than {@see Router}, so the same fluent
-     * surface — and every group, prefix and middleware rule below — serves the
+     * surface - and every group, prefix and middleware rule below - serves the
      * REST router and both web adapters. `Router` implements it, so a routes file
      * that types its parameter as `RouteRegistrar` is unchanged.
      */
@@ -69,7 +69,7 @@ class RouteRegistrar
      *     });
      *     // -> the route is named "leads.index"
      *
-     * ## `as` is a *name* prefix, and it composes
+     * `as` is a *name* prefix, and it composes
      *
      * `['prefix' => 'leads', 'as' => 'leads.']` is the ordinary pairing, and the
      * two are deliberately independent: a project may group names without grouping
@@ -78,7 +78,7 @@ class RouteRegistrar
      * The prefix is applied through the callback's own `->name()` calls rather than
      * after the fact, because {@see Route::name()} *replaces* the name and the
      * route is not yet named at the moment {@see route()} returns it. So the group
-     * has to be in scope when the author names the route — which is what makes
+     * has to be in scope when the author names the route - which is what makes
      * names compose across nesting: `['as' => 'admin.']` around `['as' =>
      * 'leads.']` yields `admin.leads.index`, the same way nested path prefixes
      * concatenate.
@@ -86,9 +86,9 @@ class RouteRegistrar
      * A nested group is entered while the outer one is still in effect, so the
      * middle `as` is *prefixed* onto the outer rather than replacing it.
      *
-     * ## The group state is restored in a `finally`
+     * The group state is restored in a `finally`
      *
-     * A callback that throws — a duplicate route, an unsupported verb — must not
+     * A callback that throws - a duplicate route, an unsupported verb - must not
      * leave the registrar stuck in the group's context, or every route declared
      * after it in the same file would silently inherit a prefix nobody gave it.
      *
@@ -163,8 +163,11 @@ class RouteRegistrar
      * group-middleware handling as one declared imperatively in a routes file.
      *
      * @param array<int, string>                             $methods
+     * @param string                                         $path
      * @param class-string                                   $controller
+     * @param string                                         $action
      * @param array<int, class-string<Contracts\Middleware>> $middleware
+     * @param string|null                                    $permissionCallback
      *
      * @throws RouteRegistrationException
      */
@@ -278,7 +281,7 @@ class RouteRegistrar
      * **The single place a route is created.** Every spelling in this class and in
      * {@see WebRouteRegistrar} funnels here, which is what makes the group's prefix
      * and shared middleware impossible to apply from one spelling and forget from
-     * another — the failure mode being a route that registers fine and silently
+     * another - the failure mode being a route that registers fine and silently
      * runs no guard.
      *
      * Protected rather than private so a subclass can add routes of its own shape
@@ -311,7 +314,7 @@ class RouteRegistrar
 
         // Handed the group's name prefix rather than named here, because the
         // author names the route from the fluent chain *after* this method
-        // returns — see Route::$namePrefix for why the registrar cannot simply
+        // returns - see Route::$namePrefix for why the registrar cannot simply
         // rename it afterwards.
         if ($this->namePrefix !== '') {
             $route->namePrefix($this->namePrefix);
@@ -334,17 +337,17 @@ class RouteRegistrar
      * Three shapes are accepted, and the order of the checks is what keeps them
      * from overlapping:
      *
-     *  - `[Controller::class, 'method']` — a pair of strings, and **only** that.
+     *  - `[Controller::class, 'method']` - a pair of strings, and **only** that.
      *    Laravel's array-callable spelling, and always a controller action: the
      *    class is resolved from the container at dispatch, so its constructor
      *    dependencies are injected exactly as they are for the three-argument
      *    form. A static action given this way is therefore resolved too, rather
      *    than called statically.
-     *  - any other callable — a closure, or `[$object, 'method']`, which is a
+     *  - any other callable - a closure, or `[$object, 'method']`, which is a
      *    *handler*, registered through {@see Route::handle()}.
      *  - a class-name string, with the action name alongside it.
      *
-     * Anything else — a three-element array, a string-keyed array — is refused
+     * Anything else - a three-element array, a string-keyed array - is refused
      * here rather than at dispatch, where the same mistake would surface as a
      * missing-method error naming no route.
      *

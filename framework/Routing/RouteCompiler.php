@@ -19,10 +19,10 @@ namespace Framework\Routing;
  *    that matches and `posts/{id}` registered before `posts/latest` would
  *    dispatch `show` with `id="latest"`.
  *
- * ## Why this is one class and not a method on each router
+ * Why this is one class and not a method on each router
  *
  * The REST router and the web adapter must agree on what `{id}` means. Two
- * implementations of the same grammar drift — and they drift *silently*, because
+ * implementations of the same grammar drift - and they drift *silently*, because
  * each one still works for the cases its own tests cover while the two disagree
  * on the awkward ones. The symptom is a route that 404s in one domain and
  * resolves in the other, with nothing raised at registration. So the parser has
@@ -30,16 +30,16 @@ namespace Framework\Routing;
  * second copy.
  *
  * **This class is that home, and every other module delegates to it.** Three
- * callers used to carry their own regex for the same grammar —
+ * callers used to carry their own regex for the same grammar -
  * `Route::getParameterNames()`, `UrlGenerator::substitute()` and
- * `WordPressRouterAdapter::actionName()` — and they disagreed. On `posts/{id:}`
+ * `WordPressRouterAdapter::actionName()` - and they disagreed. On `posts/{id:}`
  * (a placeholder with an empty constraint, which this compiler reads as "no
  * constraint" and compiles to a working `(?P<id>[^/]+)`), the two
  * `\{...(?::[^}]+)?\}` regexes matched *nothing at all*: the route dispatched
  * correctly while `getParameterNames()` reported no parameters, so parameter
  * binding silently dropped the argument and `UrlGenerator` rejected a value it
  * had been given as unused. The adapter's `\{[^}]*\}` was wrong differently and
- * more quietly — it mangled a compiled `(?P<id>…)` path into an action name
+ * more quietly - it mangled a compiled `(?P<id>…)` path into an action name
  * containing `p_id`, and got the quantifier case right only because the stray
  * brace it left behind happened to normalise to a separator. A green suite did
  * not catch any of it, because nothing compared the answers.
@@ -59,7 +59,7 @@ final class RouteCompiler
      * `[` or `+` corrupts the pattern so `preg_match` fails and the route is
      * silently dead.
      *
-     * Placeholder constraints are left as written — they are regex by design.
+     * Placeholder constraints are left as written - they are regex by design.
      */
     public static function toPattern(string $path): string
     {
@@ -72,7 +72,7 @@ final class RouteCompiler
      * The counterpart to {@see toPattern()}: the names it compiles are the names
      * this returns, because both walk the path with {@see findPlaceholderEnd()}.
      * That is the point of the method existing here rather than at each call site
-     * — a caller that extracted names with its own regex would be asserting a
+     * - a caller that extracted names with its own regex would be asserting a
      * reading of the grammar that the compiler does not share.
      *
      * Names are returned once per occurrence, so `posts/{id}/comments/{id}` yields
@@ -80,7 +80,7 @@ final class RouteCompiler
      * step feeds each to a positional argument, where a repeat is legitimate,
      * while `UrlGenerator` only ever asks which names are *known*.
      *
-     * An empty list means the path has no placeholders — including the case where
+     * An empty list means the path has no placeholders - including the case where
      * it has something that merely looks like one, such as a `{` that never
      * closes or a body that is not a name.
      *
@@ -121,8 +121,8 @@ final class RouteCompiler
      * Whether a path contains any placeholder at all.
      *
      * Prefer this to `parameterNames($path) !== []` on a hot path: it stops at the
-     * first one rather than collecting all of them, and for the common caller —
-     * "does this route take an argument?" — the answer is needed once.
+     * first one rather than collecting all of them, and for the common caller -
+     * "does this route take an argument?" - the answer is needed once.
      */
     public static function hasParameters(string $path): bool
     {
@@ -136,15 +136,15 @@ final class RouteCompiler
      * {@see UrlGenerator}, so a URL is built from the same reading of the grammar
      * that compiled the route it points at.
      *
-     * ## Why the compiled spelling is accepted as well as the declared one
+     * Why the compiled spelling is accepted as well as the declared one
      *
      * Because both are legal in a path that reaches here. `{id}` is what an
      * author writes; `(?P<id>[^/]+)` is what `toPattern()` produced from it. A
-     * route whose path was replaced by its compiled form — the state a REST route
-     * is in after registration — still has to generate a URL, and a replacement
+     * route whose path was replaced by its compiled form - the state a REST route
+     * is in after registration - still has to generate a URL, and a replacement
      * that understood only braces would leave the regex in the output.
      *
-     * ## Why it is driven by a callback
+     * Why it is driven by a callback
      *
      * The two callers want different things from the same match. `toPattern()`
      * wants a capture group and no escaping; `UrlGenerator` wants an encoded
@@ -153,7 +153,7 @@ final class RouteCompiler
      * scanners; a callback keeps one.
      *
      * The callback receives the placeholder name and its constraint (null when
-     * none was written — including the empty-constraint spelling `{id:}`, which
+     * none was written - including the empty-constraint spelling `{id:}`, which
      * is normalised to null rather than passed through as `''`).
      *
      * @param callable(string, string|null): string $replace
@@ -197,7 +197,7 @@ final class RouteCompiler
 
             $name = self::placeholderName($path, $i, $end);
 
-            // Not a name — leave the text alone so the caller's escaping deals
+            // Not a name - leave the text alone so the caller's escaping deals
             // with it, rather than swallowing a malformed placeholder.
             if ($name === null) {
                 $result .= substr($path, $i, $end - $i + 1);
@@ -219,7 +219,7 @@ final class RouteCompiler
      * The placeholder name a `{`…`}` span declares, or null when it is not one.
      *
      * Shared by {@see parameterNames()} and {@see substitute()} so the two agree
-     * on what counts as a name — the failure mode being a name the compiler
+     * on what counts as a name - the failure mode being a name the compiler
      * substitutes but no extractor reports, which is invisible until a value goes
      * missing at dispatch.
      */
@@ -234,7 +234,7 @@ final class RouteCompiler
     /**
      * A constraint as written, or null when none was given.
      *
-     * `{id:}` splits to an empty string, which is *not* null — so a `?? '[^/]+'`
+     * `{id:}` splits to an empty string, which is *not* null - so a `?? '[^/]+'`
      * would not catch it, and the group would compile to `(?P<id>)`. That matches
      * the empty string rather than a path segment, and since WordPress anchors
      * every pattern, such a route would also shadow any sibling it is registered
@@ -251,7 +251,7 @@ final class RouteCompiler
      *
      * WordPress tries every registered pattern in insertion order and takes the
      * first that matches, so `posts/{id}` registered before `posts/latest` would
-     * dispatch `show` with id="latest" — a silent wrong-action dispatch, not a
+     * dispatch `show` with id="latest" - a silent wrong-action dispatch, not a
      * 404. Counting literal segments rather than comparing patterns keeps this
      * predictable: the more of a path an author spelled out, the earlier it is
      * matched.
@@ -259,7 +259,7 @@ final class RouteCompiler
      * The sort is stable in effect for equally-specific routes because usort is
      * given a total order here: the second key breaks every tie the first leaves,
      * and two routes identical on both keys keep their relative order only by
-     * accident of the sort — which is why the duplicate guard in the adapters
+     * accident of the sort - which is why the duplicate guard in the adapters
      * refuses a same-method-same-path pair rather than relying on this.
      *
      * @param array<int|string, Route> $routes
@@ -285,7 +285,7 @@ final class RouteCompiler
     }
 
     /**
-     * The literal segments in a path — the ones an author spelled out.
+     * The literal segments in a path - the ones an author spelled out.
      *
      * A segment containing a placeholder does not count, because it matches more
      * than the one thing it says. `/posts/latest` scores 2, `/posts/{id}` scores
@@ -312,7 +312,7 @@ final class RouteCompiler
      *
      * The scan reuses `findPlaceholderEnd()`, which is the only parser that
      * agrees with `substitutePlaceholders()` about where a placeholder ends. It
-     * is not that a `[^}]+` match gets the common cases wrong — on
+     * is not that a `[^}]+` match gets the common cases wrong - on
      * `a/{x:[0-9]{1,3}}/b/{y}` it happens to return the same answer, because it
      * can only ever match the inner `{1,3}` fragment and so counts that one
      * placeholder once. The two diverge on the *empty* constraint: `{x:}` is a
@@ -359,16 +359,16 @@ final class RouteCompiler
      * Scanned with `findPlaceholderEnd()` rather than split on a regex, because
      * this is the same "where does a placeholder end" question
      * `substitutePlaceholders()` answers, and a second, weaker parser here
-     * silently produces dead routes: a constraint containing a nested group —
-     * `{id:((\d+))}`, `{id:(?:a(b))}`, `{a:[^}]+}` — is a perfectly ordinary
+     * silently produces dead routes: a constraint containing a nested group -
+     * `{id:((\d+))}`, `{id:(?:a(b))}`, `{a:[^}]+}` - is a perfectly ordinary
      * regex, but a `\([^()]*\)` splitter cannot span its parens, so it fails to
      * recognise the group at all and `preg_quote`s the whole `(?P<id>...)` into
      * literal text. WordPress then 404s every request to the route, with nothing
      * raised at registration.
      *
      * The group is found by matching the `(?P<name>` opener and then counting
-     * parens — including ones inside a character class, which PHP's own compiler
-     * treats as literal — to the paren that closes the group. If the group never
+     * parens - including ones inside a character class, which PHP's own compiler
+     * treats as literal - to the paren that closes the group. If the group never
      * closes, the remainder is quoted as literal text, which is what an
      * unescaped `(` deserves.
      */
@@ -407,8 +407,8 @@ final class RouteCompiler
      * The index of the `)` closing the capture group whose body starts at
      * $start, or null when it never closes.
      *
-     * Parens inside a character class are literal to PCRE — `[(]` matches a
-     * paren, it does not open a group — so a class is skipped whole rather than
+     * Parens inside a character class are literal to PCRE - `[(]` matches a
+     * paren, it does not open a group - so a class is skipped whole rather than
      * counted. An escaped paren is skipped too. Bailing out on an unterminated
      * class or a trailing backslash leaves the caller to treat the text as
      * literal, which is the safe direction: quoting a stray `(` produces a
@@ -465,12 +465,12 @@ final class RouteCompiler
      * Replace `{name}` and `{name:constraint}` with a named capture group.
      *
      * A thin wrapper over {@see substitute()}, which owns the scanning. This
-     * method exists to name the direction — the public API is "substitute with
+     * method exists to name the direction - the public API is "substitute with
      * whatever you like", and the compiler's own use of it is "with a capture
      * group".
      *
      * Scanned rather than matched with a regex, because a constraint is itself a
-     * regex and can contain braces — `{id:[0-9]{1,3}}` is a natural way to bound a
+     * regex and can contain braces - `{id:[0-9]{1,3}}` is a natural way to bound a
      * numeric id, and a `[^}]+` character class stops at the quantifier's closing
      * brace. That truncation is silent: the compiled pattern then contains
      * `[0-9]{1,3)\}`, which matches nothing, so the route is dead and WordPress
@@ -499,7 +499,7 @@ final class RouteCompiler
      * when there is no such brace (or the body is not a plausible placeholder).
      *
      * A `:` splits the name from the constraint, and everything after it is
-     * treated as regex — where a `{` opens a quantifier that must be closed before
+     * treated as regex - where a `{` opens a quantifier that must be closed before
      * the placeholder itself can close. Before the `:` a brace cannot legitimately
      * appear, so one there means this was never a placeholder.
      */

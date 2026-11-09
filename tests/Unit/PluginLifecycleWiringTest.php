@@ -142,7 +142,7 @@ final class PluginLifecycleWiringTest extends TestCase
 
         // The option that gates the *uninstall* wipe, turned on. Deactivation
         // must ignore it entirely.
-        \App\Lifecycle\PluginLifecycle::setDeleteDataOnUninstall(true);
+        \Framework\Lifecycle\PluginLifecycle::setDeleteDataOnUninstall(true);
 
         WpStub::deactivatePlugin($this->basename());
 

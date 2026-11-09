@@ -10,62 +10,37 @@ use wpdb;
 /**
  * {@see DatabaseAdapterInterface} for WordPress, over `$wpdb` and `dbDelta()`.
  *
- * ## Why dbDelta() is used only for CREATE TABLE
+ * `dbDelta()` is used for `CREATE TABLE` only. It diffs the live table against
+ * the table the statement *creates*, so a re-run of a partly-applied create
+ * converges instead of failing on the first duplicate. It cannot diff an
+ * `ALTER`: a column being added is not named by any `CREATE TABLE`, so dbDelta
+ * over an ALTER either does nothing or re-asserts an older shape. Plain SQL
+ * therefore goes through {@see statement()} and dbDelta is reached only from
+ * {@see createTable()}.
  *
- * `dbDelta()` is WordPress's schema-diffing helper: it parses a `CREATE TABLE`
- * statement, compares it against the live table, and issues whatever `ALTER`s
- * are needed to make the live table match. Applied to the right statement it is
- * a real feature, and this adapter leans on it for exactly one case — a
- * migration that creates a table, so a re-run against a table that partly exists
- * converges instead of failing on the first duplicate.
- *
- * It is never used for anything else, because it can only compare tables the
- * statement *creates*. A column being added to an existing table is not
- * mentioned by any `CREATE TABLE`, so a `dbDelta()` over an `ALTER` is not a
- * diff at all: it either does nothing or, worse, re-asserts an older shape. That
- * is why {@see statement()} issues plain SQL and `dbDelta()` is reached only
- * through {@see createTable()}.
- *
- * ## Why the CREATE is rewritten before dbDelta() sees it
- *
- * `dbDelta()` is line-oriented, and its parser has rules that a `CREATE TABLE`
- * which is valid MySQL can still violate:
- *
- *  - the table name must not be backtick-quoted, and the statement must end in
- *    a semicolon;
- *  - the `PRIMARY KEY` and each `KEY` must be on their own line;
- *  - there must be exactly **two** spaces between `PRIMARY KEY` and its
- *    parenthesised column list, and the key's own name must be written out
- *    (`PRIMARY KEY (id)`, not MySQL's equally valid `PRIMARY KEY(id)`).
- *
- * A statement that breaks one of these is not rejected — it is *misparsed*, so
- * the table is created without the key, and the failure surfaces later as
- * duplicated rows rather than as an error. {@see toDbDeltaStatement()} therefore
- * normalises the statement rather than trusting the caller to have written it
- * in dbDelta's dialect; the blueprint emits ordinary MySQL and this one place
- * converts.
- *
- * ## Why upgrade.php is required, not assumed
+ * dbDelta is line-oriented and its parser has rules that valid MySQL can still
+ * violate: the table name must not be backtick-quoted, the statement must end in
+ * a semicolon, each key must be on its own line, and `PRIMARY KEY` must be
+ * followed by exactly two spaces (`PRIMARY KEY (id)`, not `PRIMARY KEY(id)`). A
+ * statement that breaks a rule is not rejected, it is misparsed: the table is
+ * created without the key and the failure surfaces later as duplicated rows.
+ * {@see toDbDeltaStatement()} normalises the statement rather than trusting the
+ * caller to have written dbDelta's dialect.
  *
  * `dbDelta()` lives in `wp-admin/includes/upgrade.php`, which WordPress loads
- * for admin requests and does not load under WP-CLI's default bootstrap or
- * during a cron run. Requiring it here — guarded, once per process — is what
- * makes `wp <prefix> migrate` work at all, and it is the single most common
- * reason a hand-written migration works in the admin and not from the CLI.
+ * for admin requests but not under WP-CLI's default bootstrap or a cron run.
+ * Requiring it here is what makes `wp <prefix> migrate` work at all, and its
+ * absence is the usual reason a migration works in the admin and not from the
+ * CLI.
  */
 class WpDatabaseAdapter implements DatabaseAdapterInterface
 {
-    /**
-     * The longest identifier MySQL accepts, which is what a prefixed table name
-     * must fit inside.
-     */
+    /** The longest identifier MySQL accepts. A prefixed table name must fit. */
     private const MAX_IDENTIFIER_LENGTH = 64;
 
     private ?wpdb $wpdb;
 
-    /**
-     * Whether statements are being recorded rather than run.
-     */
+    /** Whether statements are being recorded rather than run. */
     private bool $pretending = false;
 
     /**
@@ -76,10 +51,9 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
     private array $recorded = [];
 
     /**
-     * @param wpdb|null $wpdb WordPress database handle. Defaults to the `$wpdb`
-     *                        global, resolved lazily so constructing the adapter
-     *                        during a provider's `register()` — before
-     *                        WordPress has finished loading — does not fail.
+     * @param wpdb|null $wpdb Handle to use. Defaults to the `$wpdb` global,
+     *                        resolved lazily so constructing the adapter during
+     *                        a provider's `register()` does not fail.
      */
     public function __construct(?wpdb $wpdb = null)
     {
@@ -109,22 +83,18 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
     /**
      * The table name as it exists in the database.
      *
-     * WordPress prefixes every table — its own core tables included — with
-     * `$wpdb->prefix`, whatever it is. On a site whose `$table_prefix` is
-     * `leadbridge_`, the core user table is `leadbridge_users`; a foreign key
-     * written as `REFERENCES users` points at a table that does not exist and
-     * fails at `CREATE TABLE`. So the prefix is prepended unconditionally, and
-     * only skipped when the caller has already spelled the qualified name
-     * (which protects `constrained()` against double-prefixing).
+     * WordPress prefixes every table with `$wpdb->prefix`, core tables included.
+     * On a site with `$table_prefix = 'leadbridge_'`, a foreign key written as
+     * `REFERENCES users` points at a table that does not exist. The prefix is
+     * prepended unless the caller already spelled the qualified name, which keeps
+     * `constrained()` from double-prefixing.
      */
     public function tableName(string $table): string
     {
         $prefix = $this->db()->prefix;
 
-        // An empty prefix is a real configuration (`$table_prefix = ''`), and
-        // `str_starts_with($any, '')` is always true — testing it would report
-        // every name as already qualified. The result is the same either way,
-        // but the intent is worth spelling out.
+        // An empty prefix is a real configuration, and `str_starts_with($any, '')`
+        // is always true, so testing it would report every name as qualified.
         if ($prefix === '') {
             return $table;
         }
@@ -135,16 +105,14 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
     /**
      * Whether a table is present in the database.
      *
-     * Needed by {@see \Framework\Database\Schema\Schema::hasTable()}, and
-     * deliberately offered as a real probe rather than as "try it and catch":
-     * a migration that asks whether a table exists is usually deciding whether
-     * to create it, and a statement that failed for a *different* reason —
-     * permissions, a dropped connection — must not be read as an absence.
+     * A real probe rather than "try it and catch": a migration asking whether a
+     * table exists is usually deciding whether to create it, and a statement that
+     * failed for a different reason (permissions, a dropped connection) must not
+     * be read as absence.
      *
-     * The pattern is escaped before it reaches `LIKE`, because `_` and `%` are
-     * metacharacters and WordPress's own table prefix is full of underscores:
-     * an unescaped `wp_` matches `wpx`, and a missing table would be reported as
-     * present.
+     * The pattern is escaped before it reaches `LIKE` because `_` and `%` are
+     * metacharacters and WordPress's prefix is full of underscores: an unescaped
+     * `wp_` matches `wpx`.
      */
     public function hasTable(string $table): bool
     {
@@ -162,19 +130,13 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
     /**
      * Whether a table carries a column of the given name.
      *
-     * Read from `SHOW COLUMNS`, which is scoped to a table that must exist and
-     * therefore answers "no such table" with an error rather than with an empty
-     * result. That error is the reason {@see hasTable()} runs first: the contract
-     * says an absent table is `false`, and asking `SHOW COLUMNS` about a table
-     * that is not there would raise instead — turning the most ordinary use of
-     * this probe (a migration guarding an `ADD COLUMN` on a table an earlier
-     * migration in the same batch has just created) into a hard failure.
-     *
-     * `SHOW COLUMNS` over `information_schema.COLUMNS` for the same reason
-     * `hasTable()` uses `SHOW TABLES`: `%s` binds the table name as a *value*,
-     * which is what the table list expects, whereas `information_schema` wants
-     * the bare name compared literally and a prefix carries no wildcards to
-     * escape. The result is a list either way, so absence is "the list is empty".
+     * `SHOW COLUMNS` is scoped to a table that must exist and raises on a missing
+     * one rather than returning an empty result, which is why {@see hasTable()}
+     * runs first: the contract says an absent table is `false`, and a migration
+     * guarding an `ADD COLUMN` on a table an earlier migration just created would
+     * otherwise get a hard failure. `SHOW COLUMNS` over `information_schema` for
+     * the same reason as `hasTable()`: `%s` binds the name as a value, and the
+     * table list expects that.
      */
     public function hasColumn(string $table, string $column): bool
     {
@@ -195,24 +157,18 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
     /**
      * Whether a table carries an index of the given name.
      *
-     * Asked of `information_schema.STATISTICS` rather than `SHOW INDEX`, because
-     * `SHOW INDEX` has no name filter — it returns every key on the table for the
-     * caller to sift, and the sifting is exactly where a `_` in a name would be
-     * taken for a wildcard. Matched with `=` here, so nothing is escaped and
-     * nothing is interpreted: the comparison is the literal string.
+     * Asked of `information_schema.STATISTICS` rather than `SHOW INDEX`, which
+     * has no name filter and would leave a `_` in a name to be read as a
+     * wildcard. Matched with `=` here, so the comparison is the literal string.
      *
-     * `TABLE_SCHEMA = DATABASE()` pins the lookup to the database the connection
-     * is already on, which is the one `SHOW TABLES` reads. Without it the query
-     * would answer `true` for an index that exists on a same-named table in some
-     * *other* database on the server — and a `DROP`/`ADD` built on that answer
-     * would run against an index this migration does not own.
+     * `TABLE_SCHEMA = DATABASE()` pins the lookup to the connection's own
+     * database: without it the query answers `true` for a same-named table in
+     * another database, and a `DROP`/`ADD` built on that answer would run against
+     * an index this migration does not own. The table must exist for the question
+     * to mean anything, hence the {@see hasTable()} check, as in `hasColumn()`.
      *
-     * The table still has to exist for the question to mean anything, and it is
-     * checked first for the same reason as in {@see hasColumn()}.
-     *
-     * Reports a `PRIMARY` key as present when asked for `PRIMARY`: MySQL records
-     * the primary key in this table under that name, and no other key may take
-     * it. Anything else is the name the index was declared with.
+     * A `PRIMARY` key is reported as present when asked for `PRIMARY`: MySQL
+     * records it under that name and no other key may take it.
      */
     public function hasIndex(string $table, string $index): bool
     {
@@ -242,16 +198,15 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
 
         $db = $this->db();
 
-        // WordPress 6.7+ can roll back the next failing statement, which cleans
-        // up a partially-written DDL. Probed rather than called outright: the
-        // plugin's floor is WordPress 6.0, where calling it is a fatal error.
+        // WordPress 6.7+ can roll back the next failing statement, cleaning up a
+        // partially-written DDL. The plugin's floor is 6.0, where calling it is
+        // fatal, so it is probed.
         if (method_exists($db, 'set_transaction_rollback')) {
             $db->set_transaction_rollback(true);
         }
 
-        // A DDL statement returns `false` for "the statement failed", never for
-        // "zero rows affected" — which is what makes this check meaningful here
-        // in a way it is not for a DELETE.
+        // DDL returns `false` only for a failed statement, never for "zero rows",
+        // which is what makes this check meaningful here.
         if ($db->query($sql) === false) {
             throw SchemaException::statementFailed($operation, $this->reason($db));
         }
@@ -259,11 +214,10 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
 
     public function createTable(string $table, string $sql): void
     {
-        // Recorded as the two statements a real run issues, not as the raw
-        // blueprint output: the constraint lift-out below is the adapter's own
-        // doing, and a `--pretend` that showed the CREATE with its foreign keys
-        // still inside would be showing SQL that is never executed — dbDelta's
-        // field parser would misread it as a column named CONSTRAINT.
+        // Recorded as the two statements a real run issues, not the raw blueprint
+        // output: the constraint lift-out is the adapter's own doing, and a
+        // `--pretend` showing the CREATE with its foreign keys still inside would
+        // be showing SQL that is never executed.
         if ($this->pretending) {
             [$create, $constraints] = $this->separateConstraints($sql);
 
@@ -282,7 +236,6 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
 
         $db = $this->db();
 
-        // Guarded rather than checked with function_exists() after the fact:
         // `require_once` is idempotent, so this costs one stat() per create and
         // cannot race two concurrent migrations into a double declaration.
         if (!function_exists('dbDelta')) {
@@ -308,28 +261,25 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
 
         // Foreign keys are taken out of the CREATE and applied afterwards.
         //
-        // dbDelta() has no concept of a constraint: its field parser treats a
-        // line beginning `CONSTRAINT` as a *column* named `CONSTRAINT`, because
-        // only primary/index/unique/fulltext/spatial are in its list of things
-        // that are not columns. On a table it has not seen before that is
-        // harmless — the original CREATE is executed verbatim — but on the
-        // second run of the same statement it diffs that phantom column and
-        // emits `ALTER TABLE ... ADD COLUMN CONSTRAINT ... FOREIGN KEY ...`,
-        // which is a syntax error. The result is a migration that succeeds once
-        // and can never be re-run.
+        // dbDelta has no concept of a constraint: its field parser reads a line
+        // beginning `CONSTRAINT` as a *column* named CONSTRAINT, since only
+        // primary/index/unique/fulltext/spatial count as non-columns. On a new
+        // table that is harmless (the CREATE runs verbatim), but on a second run
+        // it diffs that phantom column and emits `ADD COLUMN CONSTRAINT ...
+        // FOREIGN KEY ...`, a syntax error. The migration would succeed once and
+        // never re-run.
         [$create, $constraints] = $this->separateConstraints($sql);
 
-        // `dbDelta()` returns an array of the statements it ran. It does not
-        // throw and does not set `last_error` on a parse failure, so a
-        // non-array return is the only structural failure it reports.
+        // `dbDelta()` returns the statements it ran. It does not throw and does
+        // not set `last_error` on a parse failure, so a non-array return is the
+        // only structural failure it reports.
         //
         // The adapter announces itself for the duration of the call because
         // `dbDelta()` takes no connection argument and would otherwise reach for
-        // the `$wpdb` global — a different connection, or none, when this adapter
-        // was constructed with an explicit handle. See
-        // {@see \Tests\Support\SchemaAdapterRegistry}. The class is a test
-        // double's seam, so it is probed with `class_exists()` rather than
-        // required: production has no such class and must not.
+        // the `$wpdb` global, a different connection than the handle this adapter
+        // was constructed with. See {@see \Tests\Support\SchemaAdapterRegistry},
+        // a test double's seam, probed with `class_exists()`; production has no
+        // such class.
         $result = $this->throughDbDelta(fn () => dbDelta($this->toDbDeltaStatement($create)));
 
         if (!is_array($result)) {
@@ -340,10 +290,10 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
             );
         }
 
-        // A failed statement inside dbDelta() surfaces here and nowhere else: it
-        // swallows the query's return value. Re-reading `last_error` and
-        // comparing it against what it was before the call is what turns a
-        // silently-empty diff into a reported failure.
+        // A statement that failed inside dbDelta surfaces here and nowhere else:
+        // it swallows the query's return value. Re-reading `last_error` and
+        // comparing it against the pre-call value turns a silently-empty diff
+        // into a reported failure.
         if ($db->last_error !== $before && $db->last_error !== '') {
             throw SchemaException::statementFailed(
                 sprintf('create the [%s] table', $table),
@@ -351,8 +301,8 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
             );
         }
 
-        // Only after the table exists — a constraint cannot name a table that
-        // has not been created yet.
+        // Only after the table exists: a constraint cannot name a table that has
+        // not been created yet.
         $this->applyConstraints($table, $constraints);
     }
 
@@ -367,30 +317,24 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
     /**
      * Rebuild a column's definition from what `SHOW COLUMNS` reports.
      *
-     * `SHOW COLUMNS` returns the definition already decomposed — `Type` is
-     * `varchar(191)`, `Null` is `YES`/`NO`, `Default` is the default or null,
-     * `Extra` carries `auto_increment` — and this puts it back together in the
-     * order MySQL's grammar requires after `CHANGE COLUMN`: type, then null,
-     * then default, then extra. That order is not negotiable; MySQL rejects
-     * `DEFAULT` before `NOT NULL`.
+     * `SHOW COLUMNS` returns the definition decomposed (`Type`, `Null`, `Default`,
+     * `Extra`); this reassembles it in the order MySQL's grammar requires after
+     * `CHANGE COLUMN`: type, null, default, extra. That order is not negotiable,
+     * MySQL rejects `DEFAULT` before `NOT NULL`.
      *
      * Three details are load-bearing:
      *
-     * - **`Default` is itself nullable, and the distinction matters.** A column
-     *   with no default and a column whose default is `NULL` are different
-     *   schemas, and `SHOW COLUMNS` reports both as null — with the column's
-     *   nullability as the only discriminator. So `NULL DEFAULT NULL` is emitted
-     *   only for a nullable column, and a `NOT NULL` column with no default gets
-     *   no clause at all.
-     * - **`Default` is unquoted by the server** for numeric and string defaults
-     *   alike, so it is re-quoted as a string. A column defaulting to the string
-     *   `0` and one defaulting to the number `0` are equivalent in MySQL, so
-     *   quoting it is correct and does not change meaning. The exception is a
-     *   default the server reports as a function — `CURRENT_TIMESTAMP` — which is
-     *   emitted bare, since quoting it would compare a literal string against a
-     *   timestamp column.
-     * - **`Extra` is appended verbatim**, because it is already the syntax —
-     *   `auto_increment`, `on update CURRENT_TIMESTAMP`, or empty.
+     * - A column with no default and one defaulting to `NULL` are different
+     *   schemas, and `SHOW COLUMNS` reports both as null with nullability as the
+     *   only discriminator. So `DEFAULT NULL` is emitted only for a nullable
+     *   column, and a `NOT NULL` column with no default gets no clause.
+     * - `Default` is unquoted by the server for numeric and string defaults
+     *   alike, so it is re-quoted as a string. The string `0` and the number `0`
+     *   are equivalent in MySQL, so quoting changes no meaning. The exception is a
+     *   server-reported function such as `CURRENT_TIMESTAMP`, emitted bare, since
+     *   quoting it would compare a literal string against a timestamp column.
+     * - `Extra` is appended verbatim, being already the syntax: `auto_increment`,
+     *   `on update CURRENT_TIMESTAMP`, or empty.
      *
      * Returns null when there is no such column, leaving the caller to decide
      * whether that is an error.
@@ -398,10 +342,9 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
     public function columnDefinition(string $table, string $column): ?string
     {
         // No `hasColumn()` guard first: the row read below answers the same
-        // question, so guarding would be a second round trip to learn nothing.
-        // The distinction the contract cares about — absent versus failed — is
-        // already carried by `SHOW COLUMNS` itself, which raises on a missing
-        // table rather than quietly returning nothing.
+        // question, and the distinction the contract cares about (absent versus
+        // failed) is carried by `SHOW COLUMNS` itself, which raises on a missing
+        // table.
         if (! $this->hasTable($table)) {
             return null;
         }
@@ -425,8 +368,7 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
 
         // `array_key_exists`, not `isset`: a null default is a real value here,
         // and `isset` would report it absent and drop the clause.
-        if (array_key_exists('Default', $row) && $row['Default'] !== null) {
-            $default = (string) $row['Default'];
+        if (array_key_exists('Default', $row) && $row['Default'] !== null) {            $default = (string) $row['Default'];
 
             $definition .= ' DEFAULT ' . ($this->isFunctionDefault($default)
                 ? $default
@@ -463,16 +405,13 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
     /**
      * Rename a table, addressing both names through the prefix.
      *
-     * `RENAME TABLE a TO b` rather than `ALTER TABLE a RENAME TO b`: the two are
-     * equivalent for a single table and the former is what WordPress's own schema
-     * migration has always used, so it is the spelling that reads as expected in
-     * a `SHOW PROCESSLIST` or a slow query log on a WordPress host.
+     * `RENAME TABLE a TO b` rather than `ALTER TABLE a RENAME TO b`: equivalent
+     * for a single table, and the former is what WordPress's own schema migration
+     * has always used, so it reads as expected in a `SHOW PROCESSLIST`.
      *
      * MySQL raises "Table '...' doesn't exist" for a missing source, which is the
-     * behaviour this wants — the statement is left to fail and the adapter
-     * reports it, rather than pre-checking with {@see hasTable()} and inventing a
-     * message. The check would be a TOCTOU gap for no gain: the failure is
-     * already the right failure.
+     * wanted behaviour; the statement is left to fail rather than pre-checked
+     * with {@see hasTable()}, which would be a TOCTOU gap for no gain.
      */
     public function renameTable(string $from, string $to): void
     {
@@ -490,9 +429,9 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
     {
         $db = $this->db();
 
-        // Nothing is invented when the handle cannot answer: an empty clause is
-        // omitted by the builder, so the table inherits the database default
-        // rather than being forced onto a collation the host did not choose.
+        // An empty clause is omitted by the builder, so the table inherits the
+        // database default rather than being forced onto a collation the host did
+        // not choose.
         if (!method_exists($db, 'get_charset_collate')) {
             return '';
         }
@@ -505,16 +444,13 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
     /**
      * Every table in the database, sorted.
      *
-     * Read through `SHOW TABLES` rather than by listing the plugin's own tracking
-     * table, because the point of the dumper is to report what is *there* —
-     * including a table an earlier developer created by hand, which no migration
-     * would mention.
+     * Read through `SHOW TABLES` rather than by listing the plugin's tracking
+     * table: the dumper reports what is *there*, including a table an earlier
+     * developer created by hand.
      *
-     * No `LIKE` narrowing: the caller decides what to dump, and a filter applied
-     * here would silently hide the table someone is trying to find. The WordPress
-     * core tables come back too, for the same reason — excluding them would be
-     * this class deciding what is interesting, and a plugin that legitimately
-     * extends a core table has no way to say so.
+     * No `LIKE` narrowing and no exclusion of WordPress core tables: the caller
+     * decides what to dump, and a filter here would hide a table someone is trying
+     * to find, including a core table a plugin legitimately extends.
      *
      * @return list<string>
      */
@@ -535,11 +471,11 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
     /**
      * A table's columns in declaration order, with the attributes a dump needs.
      *
-     * `SHOW COLUMNS` is the source, and each row's four fields map to one
-     * blueprint concern: `Type` chooses the builder method, `Null` decides
-     * `nullable()`, `Default` decides `default()`/`useCurrent()`, and `Extra`
-     * carries the `auto_increment` marker that identifies a primary key the
-     * builder spells `id()`.
+     * `SHOW COLUMNS` is the source; each row's four fields map to one blueprint
+     * concern: `Type` chooses the builder method, `Null` decides `nullable()`,
+     * `Default` decides `default()`/`useCurrent()`, and `Extra` carries the
+     * `auto_increment` marker that identifies a primary key the builder spells
+     * `id()`.
      *
      * Returns an empty list for a table that does not exist, which the dumper
      * reports rather than turning into a column-less `create`.
@@ -573,13 +509,13 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
      * A table's keys, primary first, each with its columns in index order.
      *
      * `SHOW INDEX` returns one row per column *per key*, so a composite index
-     * arrives as several rows that have to be gathered by name and ordered by
-     * `Seq_in_index`. Reading it as a flat list would report a two-column index
-     * as two one-column indexes — which compiles, and produces the wrong schema.
+     * arrives as several rows to be gathered by name and ordered by
+     * `Seq_in_index`. Reading it as a flat list reports a two-column index as two
+     * one-column indexes, which compiles and produces the wrong schema.
      *
      * The primary key is included under `PRIMARY` rather than filtered out: a
-     * caller has to be able to see that a table has one, and it is the caller
-     * that decides not to emit it as an `index()`.
+     * caller has to be able to see it, and it is the caller that decides not to
+     * emit it as an `index()`.
      *
      * @return list<array{name: string, columns: list<string>, unique: bool, primary: bool}>
      */
@@ -606,18 +542,18 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
 
             $gathered[$name]['columns'][$position] = $column;
 
-            // `Non_unique` is 0 for a unique index — the field is named for the
-            // opposite of what a reader wants, so it is inverted once, here.
+            // `Non_unique` is 0 for a unique index, the field being named for the
+            // opposite of what a reader wants. Inverted once, here.
             $gathered[$name]['unique'] = (string) ($row['Non_unique'] ?? '1') === '0';
         }
 
         $indexes = [];
 
         foreach ($gathered as $name => $details) {
-            // Sorted by sequence rather than trusted from row order, because a
-            // composite key's column order is part of its definition: the same
-            // columns in the other order are a different index, and only one of
-            // them serves the query the migration was written for.
+            // Sorted by sequence rather than trusted from row order: a composite
+            // key's column order is part of its definition, and the same columns
+            // in the other order are a different index that serves a different
+            // query.
             $columns = $details['columns'];
             ksort($columns);
 
@@ -644,11 +580,9 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
     /**
      * A `SHOW COLUMNS` default as the schema language spells it.
      *
-     * `NULL` — the database's "no default" — has to become PHP `null` so the
-     * dumper can tell it apart from the *string* `'NULL'`, which is a legitimate
-     * default for a nullable column and would otherwise be emitted as no default
-     * at all. The two are different schemas and only one of them is what the
-     * database holds.
+     * The database's `NULL` ("no default") has to become PHP `null` so the dumper
+     * can tell it apart from the *string* `'NULL'`, a legitimate default for a
+     * nullable column that would otherwise be emitted as no default at all.
      */
     private function normaliseDefault(mixed $default): ?string
     {
@@ -666,15 +600,12 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
      * key clauses it cannot.
      *
      * Every top-level `CONSTRAINT ...` item is removed from the column list and
-     * returned separately; when there are none the statement is returned
-     * unchanged, so a table without foreign keys still costs one pass and no
-     * rebuild.
+     * returned separately; with none present the statement is returned unchanged.
      *
-     * The split is paren- and backtick-aware rather than a `explode(',')`
-     * because a constraint's own column list contains commas, and a default
-     * value could contain one too. Splitting naively would cut a clause in half
-     * and hand dbDelta a statement it misparses in a way that is far harder to
-     * read than this method is.
+     * The split is paren- and backtick-aware rather than an `explode(',')`,
+     * because a constraint's column list contains commas and a default value
+     * could too. Splitting naively would cut a clause in half and hand dbDelta a
+     * statement it misparses.
      *
      * @return array{0: string, 1: list<string>}
      */
@@ -767,8 +698,7 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
                 if ($char === "'") {
                     // `''` is an escaped quote inside a string literal, not the
                     // end of one.
-                    if ($i + 1 < $length && $body[$i + 1] === "'") {
-                        $current .= "'";
+                    if ($i + 1 < $length && $body[$i + 1] === "'") {                        $current .= "'";
                         $i++;
 
                         continue;
@@ -828,11 +758,10 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
     /**
      * Apply each foreign key the CREATE could not carry.
      *
-     * Idempotent, because dbDelta() is: a `Schema::create()` whose table already
-     * exists with the constraint in place must not fail, and a rerun after a
-     * part-finished create must still add the keys it is missing. The
-     * constraint registry is asked rather than MySQL's error text, which differs
-     * between servers and between languages.
+     * Idempotent, because dbDelta() is: a create whose table already carries the
+     * constraint must not fail, and a rerun after a part-finished create must
+     * still add the keys it is missing. The constraint registry is asked rather
+     * than MySQL's error text, which differs between servers and languages.
      *
      * @param list<string> $constraints
      */
@@ -877,37 +806,34 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
     /**
      * Rewrite a `CREATE TABLE` into the dialect `dbDelta()` parses.
      *
-     * The three transforms below are each a rule of dbDelta's parser rather than
-     * a preference — see the class docblock. They are applied to the statement
-     * *text*, which is safe here only because every identifier in it was already
-     * validated as `[A-Za-z0-9_$]+` before it was assembled; a table name
-     * containing a backtick could otherwise have a line injected into the body.
+     * The transforms below are each a rule of dbDelta's parser rather than a
+     * preference; see the class docblock. They are applied to the statement
+     * *text*, safe here only because every identifier was already validated as
+     * `[A-Za-z0-9_$]+` before assembly: a table name containing a backtick could
+     * otherwise inject a line into the body.
      */
     private function toDbDeltaStatement(string $sql): string
     {
-        // 1. Unquote the table name. dbDelta() matches `CREATE TABLE <name>`,
-        //    so a quoted one is not recognised as a CREATE at all and the
-        //    statement is dropped without comment.
+        // 1. Unquote the table name. dbDelta() matches `CREATE TABLE <name>`, so a
+        //    quoted one is not recognised and the statement is dropped silently.
         $sql = preg_replace('/^(CREATE TABLE)\s+`([A-Za-z0-9_$]+)`/i', '$1 $2', $sql) ?? $sql;
 
-        // 2. `PRIMARY KEY(` becomes `PRIMARY KEY  (` — two spaces, which is the
-        //    literal dbDelta searches for. One space is read as a column named
-        //    `PRIMARY`, which then fails as an unknown type.
+        // 2. `PRIMARY KEY(` becomes `PRIMARY KEY  (`: two spaces is the literal
+        //    dbDelta searches for. One space is read as a column named `PRIMARY`,
+        //    which fails as an unknown type.
         $sql = preg_replace('/PRIMARY KEY\s*\(/i', 'PRIMARY KEY  (', $sql) ?? $sql;
 
         // 3. Named keys are left named, deliberately.
         //
-        //    An earlier version of this method stripped the name to reach the
-        //    `KEY (col)` form, on the belief that dbDelta() only understood the
-        //    unnamed spelling. It does not require it — its index regex makes the
-        //    name optional — but it does *normalise* to whichever spelling it
-        //    found, and an unnamed clause becomes `KEY `` (`col`)` with an empty
-        //    name. That empty name can never equal the real `SHOW INDEX` name
-        //    (`email`, say), so on the second and every later run of the same
-        //    migration dbDelta() fails to recognise the index as present and
-        //    re-issues `ADD` for it. A named clause round-trips exactly instead,
-        //    and is also what `Schema::table()->dropIndex()` needs in order to
-        //    name the index it is dropping.
+        //    An earlier version stripped the name to reach `KEY (col)`, believing
+        //    dbDelta() only understood the unnamed spelling. It does not require
+        //    it, its index regex makes the name optional, but it *normalises* to
+        //    whichever spelling it found, and an unnamed clause becomes
+        //    `KEY `` (`col`)` with an empty name. That empty name can never equal
+        //    the real `SHOW INDEX` name (`email`, say), so on the second and every
+        //    later run dbDelta() does not recognise the index and re-issues `ADD`
+        //    for it. A named clause round-trips exactly, and `dropIndex()` needs
+        //    the name to drop it.
 
         // 4. dbDelta() splits on the semicolon and expects it present.
         return rtrim(rtrim($sql), ';') . ';';
@@ -916,12 +842,12 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
     /**
      * The prefixed table name, validated so it can be interpolated safely.
      *
-     * A table name cannot be bound as a parameter — `prepare()` quotes values,
-     * and a quoted table name is a syntax error — so it is checked instead. The
-     * name is built from `$wpdb->prefix` and a literal in every real call, so
-     * this is belt-and-braces rather than a live injection path; it exists so no
-     * caller has to reason about that, and so a prefix set to something odd in
-     * `wp-config.php` fails loudly at the migration rather than at the database.
+     * A table name cannot be bound as a parameter, `prepare()` quotes values and a
+     * quoted table name is a syntax error, so it is checked instead. Every real
+     * call builds the name from `$wpdb->prefix` and a literal, making this
+     * belt-and-braces rather than a live injection path; it exists so a prefix set
+     * to something odd in `wp-config.php` fails loudly at the migration rather
+     * than at the database.
      */
     private function qualify(string $table): string
     {
@@ -947,9 +873,9 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
     /**
      * Make an identifier safe inside backticks.
      *
-     * Reached only by {@see dropTableIfExists()}, whose statement is not passed
-     * through the regex rewrites above — so doubling a backtick is correct and
-     * sufficient here, where it would not be inside a dbDelta body.
+     * Reached only by {@see dropTableIfExists()}, whose statement skips the regex
+     * rewrites above, so doubling a backtick is correct and sufficient here where
+     * it would not be inside a dbDelta body.
      */
     private function escape(string $identifier): string
     {
@@ -959,13 +885,13 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
     /**
      * Neutralise the `LIKE` metacharacters in a string bound to a pattern.
      *
-     * WordPress's table prefix is nearly always `wp_`, and `_` in a `LIKE` pattern
-     * matches any single character — so an unescaped `wp_notes` also matches
-     * `wpXnotes`, and a probe asked about the first can be answered by the second.
+     * WordPress's prefix is nearly always `wp_`, and `_` in a `LIKE` pattern
+     * matches any single character, so an unescaped `wp_notes` also matches
+     * `wpXnotes` and a probe asked about the first can be answered by the second.
      * `%` matching any run is the same hazard with a wider reach.
      *
      * The backslash is escaped *first*, necessarily: done after, it would double
-     * the backslashes this method had just added and unescape the metacharacters
+     * the backslashes this method just added and unescape the metacharacters
      * again.
      */
     private function escapeLike(string $value): string
@@ -976,9 +902,9 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
     /**
      * The database's own explanation of the last failure, or a stand-in.
      *
-     * Never returns an empty string: a failure reported with no reason reads as
-     * "no error", and sends the reader to the database log to find out whether
-     * the problem was a duplicate table or a dropped connection.
+     * Never empty: a failure reported with no reason reads as "no error" and sends
+     * the reader to the database log to find out whether the problem was a
+     * duplicate table or a dropped connection.
      */
     private function reason(wpdb $db): string
     {
@@ -990,9 +916,9 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
     /**
      * The WordPress database handle, resolved on first use.
      *
-     * Lazy rather than eager for the same reason the migrator's is: an adapter
-     * is constructed while a provider registers, which runs before the global
-     * `$wpdb` is guaranteed to be the one this process will use.
+     * Lazy for the same reason the migrator's is: an adapter is constructed while
+     * a provider registers, before the global `$wpdb` is guaranteed to be the one
+     * this process will use.
      */
     private function db(): wpdb
     {
@@ -1013,12 +939,11 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
     /**
      * Run a callback with this adapter visible to `dbDelta()`.
      *
-     * `dbDelta()` is WordPress's and takes no connection argument, so the only
-     * way to tell it which handle to write to is to announce it around the call.
-     * In a real WordPress the announcement is unnecessary — the global is the
-     * connection — and there is no registry class to announce to, which is why
-     * this is a `class_exists()` probe rather than a hard dependency. The
-     * production path is the `return $callback();` at the end.
+     * `dbDelta()` is WordPress's and takes no connection argument, so the only way
+     * to tell it which handle to write to is to announce it around the call. In a
+     * real WordPress the announcement is unnecessary (the global is the
+     * connection) and there is no registry class, hence the `class_exists()` probe
+     * rather than a hard dependency. The production path is `return $callback();`.
      *
      * @template T
      * @param callable(): T $callback
@@ -1038,13 +963,12 @@ class WpDatabaseAdapter implements DatabaseAdapterInterface
     /**
      * The database handle this adapter is using, resolved.
      *
-     * Exists because `dbDelta()` is a global function that takes no connection
-     * argument — it reaches for the `$wpdb` global itself, which is right inside
-     * WordPress and wrong anywhere the adapter was handed a handle directly. A
-     * caller that constructs this adapter with an explicit `$wpdb` (every test,
-     * and `MigrateDumpCommand` in production) would otherwise have `dbDelta()`
-     * operate on a *different* connection than the one the adapter just compiled
-     * the statement for, or on none at all.
+     * `dbDelta()` is a global function that takes no connection argument and
+     * reaches for the `$wpdb` global itself, which is right inside WordPress and
+     * wrong anywhere the adapter was handed a handle directly: a caller that
+     * constructs this adapter with an explicit `$wpdb` (every test, and
+     * `MigrateDumpCommand` in production) would have `dbDelta()` operate on a
+     * different connection than the statement was compiled for, or on none.
      *
      * The framework does not read this; it is the seam a `dbDelta()` replacement
      * uses to find the connection the statement was meant for.

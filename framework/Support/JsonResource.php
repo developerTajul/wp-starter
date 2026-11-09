@@ -9,12 +9,12 @@ use Traversable;
 /**
  * Maps domain data onto the shape an API client receives.
  *
- * ## The problem it exists to solve
+ * The problem it exists to solve
  *
  * A controller that returns an entity directly has quietly made every one of that
  * entity's fields part of its public contract. Adding a `password_hash` column,
  * renaming `created` to `created_at`, or introducing an internal `legacy_id` all
- * change the response — and nothing warns you, because serializing an object has
+ * change the response - and nothing warns you, because serializing an object has
  * no opinion about what *should* be in it.
  *
  * A resource is that opinion, written down in one place:
@@ -35,18 +35,18 @@ use Traversable;
  * that arrived yesterday is absent because nobody added it. This is the whole
  * point of the class; everything below is the mechanics of making it pleasant.
  *
- * ## Reading the wrapped data
+ * Reading the wrapped data
  *
  * Inside `toArray()`, `$this->email` resolves in this order:
  *
  *  1. a public property of the wrapped object;
- *  2. a getter — `email()`, then `getEmail()`;
+ *  2. a getter - `email()`, then `getEmail()`;
  *  3. a key on the wrapped array.
  *
  * Plain property syntax rather than `$this->data['email']` because the second
  * spelling is the reason API code ends up with a different vocabulary from the
  * rest of the project, and because it keeps a resource readable when the source
- * changes shape — swapping an array for an entity edits the resource's accessor
+ * changes shape - swapping an array for an entity edits the resource's accessor
  * paths, not every line.
  *
  * A field that does not exist throws rather than resolving to null. A silently
@@ -55,10 +55,10 @@ use Traversable;
  * developer. {@see whenLoaded()} and {@see when()} are the ways to *say* a field
  * is conditional, so there is no reason to want the silent version.
  *
- * ## Collections
+ * Collections
  *
  * {@see collection()} wraps many items and applies the same mapping to each, with
- * the envelope a client can iterate. Pagination is deliberately not here — see
+ * the envelope a client can iterate. Pagination is deliberately not here - see
  * {@see JsonResource::paginate()} for what is, and why the rest is not.
  */
 abstract class JsonResource implements JsonSerializable
@@ -116,7 +116,7 @@ abstract class JsonResource implements JsonSerializable
      * Wrap many items as a collection resource.
      *
      * The return type is {@see JsonResource} rather than a static, because a
-     * collection is a *different* resource class — one that maps many — and
+     * collection is a *different* resource class - one that maps many - and
      * pretending otherwise would mean `LeadResource::collection($leads)` handing
      * back something whose `toArray()` is called per item.
      *
@@ -167,7 +167,7 @@ abstract class JsonResource implements JsonSerializable
 
         throw new \LogicException(sprintf(
             'Field [%s] does not exist on the data wrapped by %s. Use when() or whenLoaded() for a '
-            . 'field that is genuinely optional — an absent field is a mistake worth seeing, and a '
+            . 'field that is genuinely optional, an absent field is a mistake worth seeing, and a '
             . 'null that silently reaches a client never gets reported.',
             $name,
             static::class
@@ -177,7 +177,7 @@ abstract class JsonResource implements JsonSerializable
     /**
      * Whether a field resolves, without throwing.
      *
-     * The escape hatch for a resource that legitimately maps a variable shape —
+     * The escape hatch for a resource that legitimately maps a variable shape -
      * a union of two payloads, a value that may be a scalar or an object. It
      * cannot distinguish "absent" from "null", so it is not a substitute for
      * `when()` on a field the client should be told about conditionally.
@@ -196,7 +196,7 @@ abstract class JsonResource implements JsonSerializable
     /**
      * The raw wrapped value.
      *
-     * For the cases a resource genuinely needs the original — mapping a
+     * For the cases a resource genuinely needs the original - mapping a
      * collection's items, handing a nested resource its subject, testing whether
      * the thing is empty at all.
      */
@@ -257,10 +257,10 @@ abstract class JsonResource implements JsonSerializable
      * Add a key to the output, from outside the resource.
      *
      * The seam for a controller that needs to attach something the resource has
-     * no business knowing — a request id, a debug flag gated on capability, a
+     * no business knowing - a request id, a debug flag gated on capability, a
      * `meta` block. Merged **after** the mapped fields, so an added key cannot be
      * silently dropped by a field of the same name, and it wins rather than
-     * losing — an explicit addition is the more deliberate statement.
+     * losing - an explicit addition is the more deliberate statement.
      *
      * @param mixed $value
      */
@@ -286,9 +286,9 @@ abstract class JsonResource implements JsonSerializable
     /**
      * Restrict the output to the fields the client asked for.
      *
-     * ## What this is and is not
+     * What this is and is not
      *
-     * It is a **filter over the fields the resource already decided to emit** —
+     * It is a **filter over the fields the resource already decided to emit** -
      * a sparse fieldset, per the JSON:API convention. It is *not* a permission
      * mechanism, and that distinction is the one thing to get right here: a
      * client asking for `?fields=password_hash` is asking for a field the
@@ -335,7 +335,7 @@ abstract class JsonResource implements JsonSerializable
         }
 
         // Additional keys go on last so they cannot be lost to a field of the
-        // same name — an explicit with() is the more deliberate statement of the
+        // same name - an explicit with() is the more deliberate statement of the
         // two, and losing it would be silent.
         return array_replace($mapped, $this->additional);
     }
@@ -401,7 +401,7 @@ abstract class JsonResource implements JsonSerializable
     /**
      * Keep only the requested keys, always retaining `id`.
      *
-     * The comparison is on the *output* keys — after mapping — which is the whole
+     * The comparison is on the *output* keys - after mapping - which is the whole
      * point: the client names the fields it was told about, and a name it was
      * never told about simply is not among them.
      *
@@ -428,7 +428,7 @@ abstract class JsonResource implements JsonSerializable
      * Normalize an iterable into a list, for {@see JsonResourceCollection}.
      *
      * Public because the collection needs it and cannot reach a protected method
-     * on another instance. Returns a list rather than preserving keys — see
+     * on another instance. Returns a list rather than preserving keys - see
      * `collection()` for why non-sequential keys are a bug in JSON.
      *
      * @return list<mixed>

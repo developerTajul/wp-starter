@@ -8,15 +8,15 @@ class Config
     /**
      * The values the library falls back to when configuration has not loaded.
      *
-     * ## Why a fallback needs one home rather than being written at each call
+     * Why a fallback needs one home rather than being written at each call
      *
-     * Every one of these appears as a literal default inside a `config()` call —
+     * Every one of these appears as a literal default inside a `config()` call -
      * `config('app.cli_prefix', self::DEFAULT_CLI_PREFIX)`. That is fine while
      * there is one caller, and stops being fine the moment a second one needs
      * the same value: a test double, a generator stub, a debugging screen.
      *
      * The failure this prevents is quiet. Two copies of a fallback agree exactly
-     * as long as nobody edits either one — and the configuration they stand in
+     * as long as nobody edits either one - and the configuration they stand in
      * for is absent under PHPUnit, WP-CLI and anything running before the entry
      * file boots, so the fallback is frequently the value *actually in use*
      * rather than a defensive branch that never runs. Two copies then disagree

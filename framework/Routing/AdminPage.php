@@ -6,9 +6,9 @@ namespace Framework\Routing;
 /**
  * A typed view over an admin route's WordPress-specific options.
  *
- * ## Why a value object rather than more methods on Route
+ * Why a value object rather than more methods on Route
  *
- * `Route` is shared by both domains and must not know what `menu_title` is —
+ * `Route` is shared by both domains and must not know what `menu_title` is -
  * a REST endpoint has no menu. The options bag is the escape hatch that keeps
  * `add_menu_page()`'s nine positional arguments from becoming nine first-class
  * methods on a DTO that mostly serves REST, and it works.
@@ -18,23 +18,23 @@ namespace Framework\Routing;
  *
  *     (string) $route->getOption('menu_title', $route->getOption('page_title', 'Untitled'))
  *
- * — a default chain, a cast, and a string key, at every call site, with no
+ * - a default chain, a cast, and a string key, at every call site, with no
  * single place where the set of understood keys is written down. This class is
  * that place. It is what the adapter, `route:list` and a view rendering the
  * menu all read through, so they cannot disagree about what a key means or fall
  * back to different defaults.
  *
- * ## Read-only, and derived on construction
+ * Read-only, and derived on construction
  *
  * Built from a route, never written back to it. A value object that could write
  * would need a way to report a partial success, and an admin page whose title
  * was set but whose capability was not is a state nothing can reason about. The
  * route keeps its options exactly as declared.
  *
- * ## Defaults are the ones WordPress would use
+ * Defaults are the ones WordPress would use
  *
- * Where a default is not simply this framework's choice — `manage_options` for
- * the capability, `''` for the icon — it is what `add_menu_page()` itself
+ * Where a default is not simply this framework's choice, `manage_options` for
+ * the capability, `''` for the icon - it is what `add_menu_page()` itself
  * defaults to, so an unset option and an omitted argument behave identically.
  * That equivalence is what makes the options bag safe to leave partially filled.
  */
@@ -63,7 +63,7 @@ final class AdminPage
     }
 
     /**
-     * The menu slug — what appears in `admin.php?page={slug}`.
+     * The menu slug - what appears in `admin.php?page={slug}`.
      *
      * Returned separately from the options because it is the route's path, not an
      * option: the path is what identifies the screen, and duplicating it into the
@@ -79,14 +79,14 @@ final class AdminPage
      *
      * Falls back to the menu title before falling back to the slug, because a
      * page that declares only `menu_title` has said what it wants the header to
-     * say — humanizing the slug over the top of that would ignore a deliberate
+     * say - humanizing the slug over the top of that would ignore a deliberate
      * choice.
      */
     public function pageTitle(): string
     {
         // Both branches go through `string()`, which is what rejects a non-string
         // value rather than casting it. Testing `has()` first and then reading with
-        // a `''` default — as the naive form does — returns the empty string for a
+        // a `''` default - as the naive form does - returns the empty string for a
         // title given as an array, because `has()` is true and the read fails: the
         // page then renders with a blank heading instead of falling back.
         $title = $this->string('page_title');
@@ -119,7 +119,7 @@ final class AdminPage
      * to register would make the common case the broken one.
      *
      * Note that this is WordPress's check, made before the route's own middleware
-     * runs. It is the outer gate — middleware is for what capabilities cannot
+     * runs. It is the outer gate - middleware is for what capabilities cannot
      * express, such as a per-record ownership check.
      */
     public function capability(): string
@@ -151,7 +151,7 @@ final class AdminPage
         }
 
         // A position is often written as a string in a config file. Accepted when
-        // it is a clean integer, refused otherwise rather than cast — `(int)
+        // it is a clean integer, refused otherwise rather than cast - `(int)
         // 'top'` is 0, which would silently pin the entry to the top of the menu.
         return is_string($position) && preg_match('/^-?\d+$/', $position) === 1
             ? (int) $position
@@ -195,7 +195,7 @@ final class AdminPage
      * Whether a key was given a usable value.
      *
      * A key present but null, or present as an empty string, counts as not given
-     * — that is how a config that writes `'icon' => ''` means "no icon", and
+     * - that is how a config that writes `'icon' => ''` means "no icon", and
      * treating it as given would let an empty string beat a real default.
      */
     public function has(string $key): bool
@@ -218,7 +218,7 @@ final class AdminPage
     /**
      * The title-case label for a slug, when nothing else was given.
      *
-     * `lead-reports` becomes `Lead reports` — only the first word capitalised,
+     * `lead-reports` becomes `Lead reports` - only the first word capitalised,
      * because an unset label is a fallback and over-capitalising "Reports And
      * Settings" reads worse than the plain sentence case. An author who wants
      * different words sets `menu_title`.
@@ -229,7 +229,7 @@ final class AdminPage
         $words = array_values(array_filter($words, static fn (string $w): bool => $w !== ''));
 
         if ($words === []) {
-            // A slug of only separators — `---` — would otherwise produce an
+            // A slug of only separators - `---` - would otherwise produce an
             // empty title, which WordPress renders as a blank menu entry with no
             // way to tell which route made it.
             return $slug === '' ? 'Untitled' : $slug;
@@ -244,7 +244,7 @@ final class AdminPage
      * A string option, or $default when it is absent or not a string.
      *
      * Not cast: a `menu_title` given as an array is a mistake, and `(string)`
-     * on it raises a notice and yields "Array" — a menu entry literally labelled
+     * on it raises a notice and yields "Array" - a menu entry literally labelled
      * "Array". Falling back to the default keeps the menu renderable while the
      * wrong value goes nowhere.
      */

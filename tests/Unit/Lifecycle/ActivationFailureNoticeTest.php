@@ -3,8 +3,8 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Lifecycle;
 
-use App\Lifecycle\ActivationFailureNotice;
-use App\Lifecycle\PluginLifecycle;
+use Framework\Lifecycle\ActivationFailureNotice;
+use Framework\Lifecycle\PluginLifecycle;
 use Framework\Database\Adapters\WpDatabaseAdapter;
 use Framework\Database\Lifecycle\MigratesOnActivation;
 use Framework\Database\Lifecycle\RemovesPluginData;

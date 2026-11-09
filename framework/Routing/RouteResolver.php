@@ -19,8 +19,8 @@ use WP_REST_Request;
  * and their tests already call, and supplies the REST seams to the binder.
  *
  * Nothing here is REST-specific except the type it accepts and the parameter
- * source it builds. A web route goes through the binder directly — see
- * {@see \Framework\Routing\Adapters\WordPressRouterAdapter} — rather than being
+ * source it builds. A web route goes through the binder directly - see
+ * {@see \Framework\Routing\Adapters\WordPressRouterAdapter} - rather than being
  * funnelled through a signature that would have to pretend to take a
  * `WP_REST_Request`.
  */
@@ -53,7 +53,7 @@ class RouteResolver
      * Invoke a closure handler with its parameters filled from the request.
      *
      * A closure route is not a controller, but its parameters are written the
-     * same way and must be filled the same way — `fn (WP_REST_Request $r)` and
+     * same way and must be filled the same way - `fn (WP_REST_Request $r)` and
      * `fn (int $id)` both work on a closure route, and byte-for-byte the same
      * rules decide what each receives.
      *
@@ -74,7 +74,7 @@ class RouteResolver
      *
      * Present so the web adapter has a resolver-shaped entry point too, and so
      * the `Request` type appearing here is what a caller reads to know this is
-     * the web path — the REST signatures above are untouched.
+     * the web path - the REST signatures above are untouched.
      *
      * @return mixed
      */
@@ -99,7 +99,7 @@ class RouteResolver
      * Delegates to the container, so the same three forms it accepts for any
      * callback apply here: a plain function name (`my_check`), a static method
      * (`Checks::canEdit`), or an instance method on a resolvable class
-     * (`Checks@canEdit`). A bare method name such as `canEdit` is not among them —
+     * (`Checks@canEdit`). A bare method name such as `canEdit` is not among them -
      * nothing associates it with the route's controller, so it is reflected as a
      * plain function and does not resolve.
      *

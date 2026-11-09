@@ -1,98 +1,147 @@
 <?php
+
 declare(strict_types=1);
 
 namespace App\Providers;
 
+use App\Cache\WpCacheStore;
+use App\Database\AtomicDatabaseRateLimiter;
 use App\Database\WpTransactionManager;
-use App\Repositories\WpNoteAuditRepository;
-use App\Repositories\WpNoteRepository;
-use Core\Note\Domain\NoteAuditContract;
-use Core\Note\Domain\NoteRepositoryContract;
-use Core\Shared\Contracts\TransactionManagerContract;
+use Core\Lead\Application\Contracts\LeadQueryContract;
+use Core\Lead\Domain\Contracts\LeadRepositoryContract;
+use Core\Lead\Infrastructure\Mappers\LeadEntityMapper;
+use Core\Shared\Domain\Contracts\CacheInterface;
+use Core\Shared\Domain\Contracts\RateLimiterContract;
+use Core\Shared\Domain\Contracts\TransactionManagerContract;
+use Core\Shared\Domain\Contracts\TranslatorContract;
+use Core\Shared\Infrastructure\Localization\WpTranslator;
+use Core\Shared\Infrastructure\Logging\WpLogger;
 use DevLinkStudios\WPServiceContainer\ServiceProvider;
+use Framework\Config\Config;
+use Framework\Database\Query\QueryBuilderInterface;
+use Psr\Log\LoggerInterface;
 
 /**
- * Binds the note module's adapters to its ports.
- *
- * ## Why this is a provider of its own
- *
- * The bindings are three lines, and they still belong here rather than in
- * {@see AppServiceProvider}. The container resolves `NoteService` by
- * type-hinting {@see NoteRepositoryContract}, {@see NoteAuditContract} and
- * {@see TransactionManagerContract}, so *something* has to answer all three
- * names before the first use case runs — and putting them in a provider named
- * for the module they serve means a project can drop the notes module by
- * removing one entry from `config('app.providers')`, rather than by editing a
- * general-purpose file that also wires unrelated things.
- *
- * `AppServiceProvider` is deliberately left alone. It is the file a project
- * edits on day one, and bindings that arrive with the framework — and are
- * replaced when a project swaps a driver — do not belong in it.
- *
- * ## Why two are `bind()` and one is `singleton()`
- *
- * The two repositories hold no state: a `$wpdb` handle and nothing else. Binding
- * them non-shared keeps a per-request `$wpdb` from being captured in a long-lived
- * object, which is the failure mode that appears only under a persistent process
- * — the same reasoning as {@see \Framework\Http\HttpServiceProvider}'s non-shared
- * `Pipeline`. The cost is that `NoteService` builds them per resolve, and a
- * `$wpdb` wrapper is cheap enough for that to be the right trade.
- *
- * The transaction manager is the exception, and it must be: it holds the nesting
- * depth, and a fresh instance per resolve would count every frame from zero. An
- * `NoteService` handed its own manager would see `recordAudit()`'s nested call as
- * outermost and issue a real `START TRANSACTION` inside the service's — the exact
- * bug the depth rule exists to prevent. Sharing it is what makes the join work,
- * so the two are not inconsistent; they are chosen for opposite reasons.
- *
- * The `wpdb` handle is *not* injected by the container. WordPress owns that
- * object, and a type-hint on `wpdb` would resolve through the container's
- * auto-wiring to a freshly constructed bare instance rather than the global one —
- * a second handle that is not connected to the site's database. Each adapter
- * therefore resolves the global lazily, in its own constructor default, which is
- * the same seam {@see \Framework\Database\Migrator} uses.
- *
- * ## Configure it
- *
- * Add this class to the `providers` array in `config/app.php`:
- *
- *     \App\Providers\RepositoryServiceProvider::class,
- *
- * It must be listed **before** anything that resolves `NoteService` during
- * `boot()`. Registration order is provider-list order, and a `boot()` that
- * resolves the service before this has registered would fail to build it.
+ * Container bindings for the lead module's adapters and shared infrastructure.
  */
 final class RepositoryServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
-        // The port => adapter bindings the container answers `NoteService`'s
-        // constructor type-hints from. All three are needed: the service declares
-        // three ports, and a container that can build two of them still fails on
-        // the third. Without these, resolving NoteService fails with "cannot
-        // instantiate interface", which is the intended failure — an unbound port
-        // should be loud rather than silently defaulted.
-        $this->container->bind(
-            NoteRepositoryContract::class,
-            static fn (): WpNoteRepository => new WpNoteRepository()
-        );
-
-        $this->container->bind(
-            NoteAuditContract::class,
-            static fn (): WpNoteAuditRepository => new WpNoteAuditRepository()
-        );
-
-        // A *singleton*, unlike the two repositories. The depth counter is what
-        // makes a nested `transaction()` join rather than open a second, and a
-        // fresh manager per resolve would mean every injection point counted from
-        // zero — so the audit write inside `NoteService::create()` would look
-        // outermost to its own manager and issue a real `START TRANSACTION`
-        // inside the service's. That is the exact bug the depth rule exists to
-        // prevent, and it would be invisible except as a note that commits when
-        // its transaction rolled back.
+        // Single instance so the nesting depth counter is shared. A fresh
+        // instance per resolve would treat each nested call as the outermost
+        // transaction and issue START TRANSACTION inside the outer one.
         $this->container->singleton(
             TransactionManagerContract::class,
             static fn (): WpTransactionManager => new WpTransactionManager()
+        );
+
+        // Rate limiter adapter. Non‑shared, matching the repositories: it
+        // holds a $wpdb handle and nothing else, so a per-request binding
+        // avoids capturing one request's handle in a long-lived instance.
+        $this->container->bind(
+            RateLimiterContract::class,
+            static fn (): AtomicDatabaseRateLimiter => new AtomicDatabaseRateLimiter()
+        );
+
+        $this->registerLeadRepository();
+        $this->registerTranslator();
+        $this->registerLogger();
+    }
+
+    /**
+     * Bind the translator the Core services read wording through.
+     *
+     * `lang/` sits at the plugin root, so the path is the plugin directory
+     * rather than the application's. The framework's `base_path()` helper is
+     * not used because it may not be defined while providers register.
+     */
+    private function registerTranslator(): void
+    {
+        $this->container->singleton(
+            TranslatorContract::class,
+            static fn (): TranslatorContract => new WpTranslator(
+                dirname(__DIR__, 2) . '/lang'
+            )
+        );
+    }
+
+    /**
+     * Bind the PSR-3 logger Core services report failures through.
+     *
+     * The threshold comes from config rather than `env()`, because environment
+     * variables are read once at config load and nowhere else.
+     */
+    private function registerLogger(): void
+    {
+        $this->container->singleton(
+            LoggerInterface::class,
+            static fn (): LoggerInterface => new WpLogger(
+                (string) config('app.log_level', 'error')
+            )
+        );
+    }
+
+    /**
+     * Bind the lead repositories and cache store.
+     */
+    private function registerLeadRepository(): void
+    {
+        // Write repository, bound by concrete class. Takes the mapper and an
+        // optional $wpdb; the container builds it and the handle is resolved
+        // lazily inside.
+        $this->container->bind(
+            \Core\Lead\Infrastructure\Repositories\LeadWriteRepository::class,
+            static fn (): \Core\Lead\Infrastructure\Repositories\LeadWriteRepository
+                => new \Core\Lead\Infrastructure\Repositories\LeadWriteRepository(new LeadEntityMapper())
+        );
+
+        // Read repository, bound by concrete class. Takes the fluent builder and
+        // the mapper; the builder resolves the connection lazily inside, so
+        // constructing this during register() is safe.
+        $this->container->bind(
+            \Core\Lead\Infrastructure\Repositories\LeadReadRepository::class,
+            fn ($container): \Core\Lead\Infrastructure\Repositories\LeadReadRepository
+                => new \Core\Lead\Infrastructure\Repositories\LeadReadRepository(
+                    $container->resolve(QueryBuilderInterface::class),
+                    new LeadEntityMapper()
+                )
+        );
+
+        // Bound by interface as well, because the services type-hint the
+        // contracts rather than the concrete classes.
+        $this->container->bind(
+            LeadRepositoryContract::class,
+            fn ($container): LeadRepositoryContract => $container->resolve(
+                \Core\Lead\Infrastructure\Repositories\LeadWriteRepository::class
+            )
+        );
+
+        $this->container->bind(
+            LeadQueryContract::class,
+            fn ($container): LeadQueryContract => $container->resolve(
+                \Core\Lead\Infrastructure\Repositories\LeadReadRepository::class
+            )
+        );
+
+        $this->registerLeadCache();
+    }
+
+    /**
+     * Bind the lead module's cache store.
+     */
+    private function registerLeadCache(): void
+    {
+        // Reads app.prefix via config() because the framework requires
+        // configuration to be read through Config and passed in. Falls back
+        // to the framework's DEFAULT_PREFIX because WpCacheStore refuses an
+        // empty prefix; passing '' would turn "config not yet loaded" into a
+        // hard failure at resolve time.
+        $this->container->bind(
+            CacheInterface::class,
+            static fn (): CacheInterface => new WpCacheStore(
+                (string) config('app.prefix', Config::DEFAULT_PREFIX)
+            )
         );
     }
 }

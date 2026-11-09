@@ -3,13 +3,13 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Lifecycle;
 
-use App\Lifecycle\PluginLifecycle;
-use App\Lifecycle\UninstallSettings;
+use Framework\Lifecycle\PluginLifecycle;
+use Framework\Lifecycle\UninstallSettings;
 use PHPUnit\Framework\TestCase;
 use Tests\Support\WpStub;
 
 /**
- * The opt-in screen for the uninstall wipe.
+ * The opt-out screen for the uninstall wipe.
  *
  * ## What these tests are actually protecting
  *
@@ -18,8 +18,9 @@ use Tests\Support\WpStub;
  *
  *  - **It writes when it should not.** `save()` runs on every `admin_init`, so a
  *    plain visit to the Reading screen reaches it. If it wrote unconditionally,
- *    merely *looking* at the settings page would turn the wipe off — or, on a
- *    form that posts a different screen's fields, leave a stale `true` behind.
+ *    merely *looking* at the settings page would overwrite the operator's stored
+ *    choice — and on a site that had opted out, that is the difference between
+ *    keeping the schema and losing it.
  *  - **It does not write when it should.** The classic checkbox bug: WordPress
  *    does not submit an unchecked box at all, so a save path that only writes
  *    values *present* in `$_POST` cannot record "unchecked". The setting would
@@ -100,19 +101,34 @@ final class UninstallSettingsTest extends TestCase
 
     // -------------------------------------------------------------- rendering
 
-    public function test_it_renders_unchecked_by_default(): void
+    /**
+     * The box renders **ticked** by default, because that is what will actually
+     * happen: the wipe is on unless the operator turns it off. A checkbox whose
+     * state disagreed with the behaviour it controls would be the same class of
+     * lie as the hidden opt-in this replaced — it would read "off" while the
+     * tables were being dropped.
+     */
+    public function test_it_renders_checked_by_default(): void
     {
         $html = $this->rendered();
 
-        $this->assertStringNotContainsString('checked="checked"', $html, 'The destructive toggle defaulted to on.');
+        $this->assertStringContainsString(
+            'checked="checked"',
+            $html,
+            'The wipe runs by default, so the box must render as on.'
+        );
         $this->assertStringContainsString('This cannot be undone.', $html);
     }
 
-    public function test_it_renders_checked_when_the_option_is_on(): void
+    /**
+     * ...and unticked once the operator has opted out, which is the state the
+     * screen must show them so they can see their choice was recorded.
+     */
+    public function test_it_renders_unchecked_when_the_operator_opted_out(): void
     {
-        PluginLifecycle::setDeleteDataOnUninstall(true);
+        PluginLifecycle::setDeleteDataOnUninstall(false);
 
-        $this->assertStringContainsString('checked="checked"', $this->rendered());
+        $this->assertStringNotContainsString('checked="checked"', $this->rendered());
     }
 
     /**
@@ -121,37 +137,63 @@ final class UninstallSettingsTest extends TestCase
      */
     public function test_it_renders_a_nonce_the_save_path_can_verify(): void
     {
+        $settings = $this->settings();
+        $field = $settings->nonceField();
+
         $html = $this->rendered();
 
-        $this->assertStringContainsString('wp_mini_laravel_uninstall_nonce', $html);
+        $this->assertStringContainsString($field, $html);
 
         // The rendered nonce is the one that verifies, rather than merely being
         // present — a hardcoded string in a view would satisfy the assertion
         // above while failing this one.
-        preg_match('/name="wp_mini_laravel_uninstall_nonce" value="([^"]+)"/', $html, $matches);
+        preg_match('/name="' . preg_quote($field, '/') . '" value="([^"]+)"/', $html, $matches);
         $this->assertNotEmpty($matches, 'No nonce value was rendered.');
-        $this->assertNotFalse(wp_verify_nonce($matches[1], UninstallSettings::NONCE_ACTION));
+        $this->assertNotFalse(wp_verify_nonce($matches[1], $settings->nonceAction()));
     }
 
     /**
-     * The toggle describes what it does to the plugin's tables and settings, and
-     * says plainly that deactivation is unaffected — the one thing a nervous user
-     * needs to read before checking it.
+     * The toggle describes what it does to the plugin's tables and settings, says
+     * which way the default falls, and says plainly that deactivation is
+     * unaffected — the three things a user needs to read before touching it.
+     *
+     * The default has to be *stated* rather than implied: the box is ticked, and
+     * a ticked box next to "cannot be undone" with no explanation of why it
+     * started that way reads as a trap rather than as a setting.
      */
     public function test_the_description_names_what_is_deleted_and_what_is_not(): void
     {
         $html = $this->rendered();
 
         $this->assertStringContainsString('migration', $html);
-        $this->assertStringContainsString('Deactivating the plugin never deletes anything', $html);
+        $this->assertStringContainsString('On by default', $html);
+        $this->assertStringContainsString('deactivating the plugin never deletes anything', $html);
+    }
+
+    /**
+     * The description must tell the operator how to *keep* their data, since the
+     * default is now to delete it. "Off by default" was true and is not any more;
+     * a screen that no longer says how to opt out leaves the only route to
+     * keeping a schema looking like not deleting the plugin at all.
+     */
+    public function test_the_description_explains_the_opt_out(): void
+    {
+        $this->assertStringContainsString('keep your tables', $this->rendered());
     }
 
     // ------------------------------------------------------------------ saving
 
     /**
      * A plain page load — no nonce — must not write. This is the case that runs
-     * on *every* admin request, so getting it wrong would mean the option could
-     * never hold `true` for more than one screen view.
+     * on *every* admin request, so getting it wrong would mean the operator's
+     * stored choice survived only until they next opened the Reading screen.
+     *
+     * Asserted as "the option was not written" rather than "the reader says
+     * false", because those stopped being the same thing when the default became
+     * `true`: on an install that has opted out, `false` is a *stored value*, and
+     * a refused write leaves the option absent. Testing the reader would pass for
+     * the wrong reason and would keep passing if `save()` started writing `false`
+     * over an operator's choice.
      */
     public function test_a_request_with_no_nonce_writes_nothing(): void
     {
@@ -178,7 +220,7 @@ final class UninstallSettingsTest extends TestCase
 
         $this->settings()->save();
 
-        $this->assertFalse(PluginLifecycle::shouldDeleteDataOnUninstall());
+        $this->assertNothingWasWritten();
     }
 
     /**
@@ -193,7 +235,7 @@ final class UninstallSettingsTest extends TestCase
 
         $this->settings()->save();
 
-        $this->assertFalse(PluginLifecycle::shouldDeleteDataOnUninstall());
+        $this->assertNothingWasWritten();
     }
 
     /**
@@ -209,7 +251,7 @@ final class UninstallSettingsTest extends TestCase
 
         $this->settings()->save();
 
-        $this->assertFalse(PluginLifecycle::shouldDeleteDataOnUninstall());
+        $this->assertNothingWasWritten();
         $this->assertContains(
             'manage_options',
             WpStub::$capabilitiesAsked,
@@ -238,7 +280,7 @@ final class UninstallSettingsTest extends TestCase
         PluginLifecycle::setDeleteDataOnUninstall(true);
         $this->assertTrue(PluginLifecycle::shouldDeleteDataOnUninstall(), 'Precondition: the option was not on.');
 
-        $_POST['wp_mini_laravel_uninstall_nonce'] = wp_create_nonce(UninstallSettings::NONCE_ACTION);
+        $_POST[$this->settings()->nonceField()] = wp_create_nonce($this->settings()->nonceAction());
         // Deliberately no `[option]` key — that is what an unchecked box posts.
 
         $this->settings()->save();
@@ -300,6 +342,27 @@ final class UninstallSettingsTest extends TestCase
     }
 
     /**
+     * The write was refused, asserted at the storage layer.
+     *
+     * Reading the value back through
+     * {@see PluginLifecycle::shouldDeleteDataOnUninstall()} cannot answer this
+     * question any more. Since the default became `true`, a refused write on an
+     * install that has never been configured and a *successful* write of `true`
+     * are indistinguishable through the reader — and, worse, a refused write on
+     * a site that had opted out would read `false` and look like success. The
+     * presence of the key in the stub's option table is the thing that actually
+     * separates them, so the "writes nothing" tests assert on that.
+     */
+    private function assertNothingWasWritten(): void
+    {
+        $this->assertArrayNotHasKey(
+            PluginLifecycle::deleteDataOption(),
+            WpStub::$options,
+            'The save path wrote the option despite the request being refused.'
+        );
+    }
+
+    /**
      * Capture what {@see UninstallSettings::render()} echoes.
      */
     private function rendered(): string
@@ -321,7 +384,9 @@ final class UninstallSettingsTest extends TestCase
      */
     private function submit(string $value): void
     {
+        $settings = $this->settings();
+
         $_POST[PluginLifecycle::deleteDataOption()] = $value;
-        $_POST['wp_mini_laravel_uninstall_nonce'] = wp_create_nonce(UninstallSettings::NONCE_ACTION);
+        $_POST[$settings->nonceField()] = wp_create_nonce($settings->nonceAction());
     }
 }

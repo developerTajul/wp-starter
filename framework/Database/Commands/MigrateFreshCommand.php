@@ -10,10 +10,10 @@ use Framework\Database\Migrator;
 use Throwable;
 
 /**
- * `wp wp_mini migrate:fresh` — drop everything the migrations built, then build it
+ * `wp wp_mini migrate:fresh` - drop everything the migrations built, then build it
  * again.
  *
- * ## The confirmation flag is required, and that is not friction
+ * The confirmation flag is required, and that is not friction
  *
  * `--force` is not a style choice. This is the only command in the framework that
  * destroys data without a reverse path, and it destroys it in the one place where
@@ -25,7 +25,7 @@ use Throwable;
  * `--force` rather than an interactive prompt because WP-CLI commands are run in
  * CI and in scripts, where a prompt blocks forever. A flag works in both.
  *
- * ## What "fresh" means here
+ * What "fresh" means here
  *
  * It drops the tables **the tracked migrations' `down()` methods** remove, then
  * drops the tracking table, then migrates. It does not touch anything else in the
@@ -33,12 +33,12 @@ use Throwable;
  * WordPress install shares its database with WordPress, and a command that ran
  * `DROP DATABASE` would be a command that takes the site with it.
  *
- * ## Why `down()` is not called
+ * Why `down()` is not called
  *
  * {@see Migrator::dropAllTables()} explains this at length. In short: reversing
  * is compensating logic, a fresh start is not a compensation, and going through
- * `down()` would run real destructive data operations — renaming columns back,
- * archiving rows — immediately before dropping the table that holds them. It
+ * `down()` would run real destructive data operations - renaming columns back,
+ * archiving rows - immediately before dropping the table that holds them. It
  * would also make the command fail whenever a `down()` was broken, which defeats
  * the point of having a command that always produces a known schema.
  *
@@ -126,7 +126,7 @@ class MigrateFreshCommand extends Command
             // the database is empty. `dropAllTables()` succeeded above, so it is.
             $this->warning(sprintf(
                 'Everything was dropped, but only %d migration(s) were re-applied. '
-                . 'The database is empty or partial — fix the failure and run `migrate`.',
+                . 'The database is empty or partial, fix the failure and run `migrate`.',
                 count($landed)
             ));
 

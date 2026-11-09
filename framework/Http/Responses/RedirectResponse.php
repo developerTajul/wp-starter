@@ -13,17 +13,17 @@ use Framework\Http\Request;
  *
  * Wraps `wp_safe_redirect()`, which validates the destination against
  * `allowed_redirect_hosts` and falls back to `wp_validate_redirect()`. That is
- * the right default — an unvalidated redirect to a client-supplied URL is an
- * open redirect — so this class does not offer a way to bypass it. A destination
+ * the right default - an unvalidated redirect to a client-supplied URL is an
+ * open redirect - so this class does not offer a way to bypass it. A destination
  * that genuinely leaves the site has to be added to `allowed_redirect_hosts`
  * explicitly, which is a deliberate act rather than a parameter.
  *
- * ## Why flash messages live here and not in the session
+ * Why flash messages live here and not in the session
  *
  * `$_SESSION` does not exist in WordPress. Core has no session layer at all, and
  * starting a PHP session inside a plugin is a well-known source of bugs: it
  * breaks page caching, collides with other plugins doing the same, and needs
- * `session_start()` to run before any output — which is not guaranteed at the
+ * `session_start()` to run before any output - which is not guaranteed at the
  * point a redirect is created.
  *
  * Transients are the supported mechanism. `set_transient()` backs onto the
@@ -31,10 +31,10 @@ use Framework\Http\Request;
  * readable by the request that lands. That is exactly the flash-message
  * lifecycle, and it needs no session.
  *
- * ## The key is client-scoped
+ * The key is client-scoped
  *
  * Transients are global to the site, so a fixed key would let one visitor's
- * flash message appear on another visitor's page — or be consumed by them. The
+ * flash message appear on another visitor's page, or be consumed by them. The
  * key is therefore derived from the user id when logged in, and from a cookie
  * the client carries otherwise. The cookie is set alongside the transient and
  * read back by {@see readFlash()}.
@@ -45,7 +45,7 @@ final class RedirectResponse implements ResponseInterface
      * Cookie carrying the client's flash key.
      *
      * A constant rather than config: two plugins each wanting their own key is a
-     * reason to change the *value*, not the name — and the name must be stable
+     * reason to change the *value*, not the name - and the name must be stable
      * for {@see readFlash()} to find a key written by an earlier request.
      */
     public const FLASH_COOKIE = 'wp_mini_laravel_flash';
@@ -60,17 +60,17 @@ final class RedirectResponse implements ResponseInterface
     /**
      * The option prefix used when configuration has not loaded, or has no value.
      *
-     * ## Why this is public, and why it is not just a default argument
+     * Why this is public, and why it is not just a default argument
      *
      * The flash transient key is `{prefix}flash_{scope}`, and the prefix comes
-     * from `config('app.prefix')`. When the config layer is absent — PHPUnit, a
-     * WP-CLI command, any code running before the entry file boots — that call
+     * from `config('app.prefix')`. When the config layer is absent - PHPUnit, a
+     * WP-CLI command, any code running before the entry file boots - that call
      * returns null and this fallback is what the key is actually built from.
      *
      * That made the fallback load-bearing rather than decorative, and it had to
      * be published. A test double that reconstructs the key is a second
      * implementation of this convention, and the two agree only as long as they
-     * name the same literal. They did — but only because both spelled out the
+     * name the same literal. They did - but only because both spelled out the
      * library's own name by hand, so neither moved when the project's prefix
      * did. The suite passed while storing under one key and reading from
      * another, because the project's real prefix is not this one.
@@ -86,7 +86,7 @@ final class RedirectResponse implements ResponseInterface
      *
      * WordPress's list, not HTTP's: `wp_redirect()` rejects everything outside
      * 300-399, so 304 is technically permitted by the range check while this
-     * class does not offer it — a 304 is not a redirect a caller means to send.
+     * class does not offer it - a 304 is not a redirect a caller means to send.
      *
      * @var list<int>
      */
@@ -96,7 +96,7 @@ final class RedirectResponse implements ResponseInterface
 
     /**
      * Declared rather than promoted, because the constructor validates it before
-     * it is assigned — a promoted `readonly` parameter must be initialised
+     * it is assigned - a promoted `readonly` parameter must be initialised
      * before the body runs, which would leave the guard unreachable.
      */
     private readonly int $status;
@@ -184,7 +184,7 @@ final class RedirectResponse implements ResponseInterface
      *
      * What makes `redirect()->route('leads.index')` read the way it does in
      * Laravel. The name is resolved through {@see route()}, so an unknown name
-     * fails here with the same message it fails with in a template — one lookup
+     * fails here with the same message it fails with in a template - one lookup
      * path, one ambiguity check, one exception.
      *
      * Resolution happens *now* rather than at `send()`. A route table is built
@@ -245,8 +245,8 @@ final class RedirectResponse implements ResponseInterface
     /**
      * Read the flash values left by a previous request, consuming them.
      *
-     * Call this once, early in the request that lands after a redirect — a
-     * controller or a `template_redirect` handler — and hand the result to the
+     * Call this once, early in the request that lands after a redirect - a
+     * controller or a `template_redirect` handler - and hand the result to the
      * view. Reading is destructive by design: a flash message that could be read
      * twice would reappear on a refresh, which is the bug the whole mechanism
      * exists to avoid.
@@ -279,8 +279,8 @@ final class RedirectResponse implements ResponseInterface
     /**
      * The option prefix the flash key is built from.
      *
-     * Public so that anything reconstructing a flash key — a test double, a
-     * debugging tool, an admin screen listing pending messages — derives it the
+     * Public so that anything reconstructing a flash key - a test double, a
+     * debugging tool, an admin screen listing pending messages - derives it the
      * same way rather than re-implementing the rule. Two implementations of a
      * key convention are two things that can disagree, and the disagreement is
      * invisible: the message is written under one key, read from another, and
@@ -288,8 +288,8 @@ final class RedirectResponse implements ResponseInterface
      *
      * A `config()` that returns null is treated as absent, not as an empty
      * string. `config('app.prefix', $default)` only returns the default when the
-     * key is missing entirely; a key present and set to `''` — which is what an
-     * unloaded config layer leaves behind — falls through as an empty string and
+     * key is missing entirely; a key present and set to `''` - which is what an
+     * unloaded config layer leaves behind - falls through as an empty string and
      * would build the key `flash_7`, shared by every site using this library.
      */
     public static function resolvePrefix(): string
@@ -310,10 +310,10 @@ final class RedirectResponse implements ResponseInterface
      * hand one visitor's "Your form was rejected" to the next visitor to load a
      * page. A logged-in user is identified by id; an anonymous one by a cookie
      * issued on the redirect. When neither exists the message is dropped rather
-     * than written to a shared key — losing a flash message is a cosmetic
+     * than written to a shared key - losing a flash message is a cosmetic
      * failure, showing it to the wrong person is a leak.
      *
-     * Static because {@see readFlash()} has no instance either — it runs at the
+     * Static because {@see readFlash()} has no instance either - it runs at the
      * start of the *next* request, before any response exists. That is also why
      * `$secure` is a parameter: the only caller that issues a cookie is
      * `writeFlash()`, which knows whether the request was made over HTTPS, and a
@@ -335,7 +335,7 @@ final class RedirectResponse implements ResponseInterface
             ? $_COOKIE[self::FLASH_COOKIE]
             : null;
 
-        // A token from the client is not trusted as an identifier on its own —
+        // A token from the client is not trusted as an identifier on its own -
         // it is only used to look up a key this site wrote. Constrained to the
         // shape this class issues so a crafted cookie cannot address an
         // arbitrary transient or inject into the key.
@@ -369,7 +369,7 @@ final class RedirectResponse implements ResponseInterface
      * Delegates to the Request when one was supplied, which is the only version
      * that sees `X-Forwarded-Proto` and therefore the only correct one behind a
      * proxy. The `$_SERVER` fallback is for a redirect constructed without a
-     * Request, where the header is unreachable — it matches `Request::isSecure()`'s
+     * Request, where the header is unreachable - it matches `Request::isSecure()`'s
      * first branch, minus the forwarded check it cannot perform.
      */
     private function isSecure(): bool

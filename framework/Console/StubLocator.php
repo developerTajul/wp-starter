@@ -6,11 +6,11 @@ namespace Framework\Console;
 /**
  * Finds the stub a `make:*` command should render.
  *
- * ## Why this is not `base_path('stubs/…')`
+ * Why this is not `base_path('stubs/…')`
  *
  * The framework ships its default stubs beside its own source, inside the
  * `Framework\` package. `base_path()` points at *the project that consumes the
- * framework*, which is the plugin root in a normal install — so resolving a stub
+ * framework*, which is the plugin root in a normal install - so resolving a stub
  * through it assumes the two directories are the same. They are not once the
  * framework is a Composer dependency: the stubs live under `vendor/`, the base
  * path does not, and `base_path('stubs/controller.stub')` names a file that was
@@ -19,14 +19,14 @@ namespace Framework\Console;
  *
  * So a stub has two possible homes and this class knows both:
  *
- *   1. `<base path>/stubs/<name>` — the project's own copy, which wins when it
+ *   1. `<base path>/stubs/<name>` - the project's own copy, which wins when it
  *      exists so a project can customize generated code without patching a
  *      vendored file (which the next `composer update` would discard anyway);
  *   2. the framework's directory, resolved relative to this file rather than to
  *      any bound path, which is what makes the fallback independent of where the
  *      package was installed.
  *
- * ## Why overriding is deliberate rather than incidental
+ * Why overriding is deliberate rather than incidental
  *
  * PHP's own `include_path`/`file_exists` convention is to prefer the first match
  * and stay silent about it, which is fine for a lookup and wrong for a generator:
@@ -35,10 +35,10 @@ namespace Framework\Console;
  * the choice, and {@see source()} exists so a command *can* say where a stub came
  * from when the answer is not obvious.
  *
- * ## Why a missing stub is an exception and not a null
+ * Why a missing stub is an exception and not a null
  *
  * Every caller turns "not found" into the same message, and every one of them is
- * a packaging bug rather than user input — there is no recovery path to branch
+ * a packaging bug rather than user input - there is no recovery path to branch
  * on. Throwing here means the message is written once, names both paths that were
  * searched, and cannot be forgotten by a caller that only checked one.
  */
@@ -56,12 +56,12 @@ final class StubLocator
      * the framework package, which is what makes the fallback work when that
      * package is installed under `vendor/`.
      *
-     * ## Why the stubs live in the framework package and not at the plugin root
+     * Why the stubs live in the framework package and not at the plugin root
      *
      * They used to sit at the plugin root, beside `app/`, and that is the layout
      * this whole class exists to stop depending on. `base_path()` resolves to the
      * *consuming* project, so a stub at the project root is a stub that exists
-     * only in the project that happens to be the template — the framework's own
+     * only in the project that happens to be the template - the framework's own
      * package shipped none, and `__DIR__`-relative resolution would have looked
      * in `vendor/devlinkstudios/wp-mini-laravel-framework/stubs/` and found
      * nothing. Shipping them here means the default is always present, and the
@@ -77,8 +77,8 @@ final class StubLocator
      * Where the project's stubs live.
      *
      * Injected rather than read through `base_path()` so the locator stays usable
-     * outside a booted plugin — a test, or a project that bound its base path
-     * differently — and so the two candidates are symmetrical: both are just
+     * outside a booted plugin - a test, or a project that bound its base path
+     * differently - and so the two candidates are symmetrical: both are just
      * directories this class was told about.
      */
     public function __construct(private readonly string $projectPath)
@@ -114,7 +114,7 @@ final class StubLocator
      *
      * Null when neither exists. Reported as a word rather than a boolean because
      * the useful question is not *whether* a project stub is in play but *which*
-     * one is — the answer to "why did my edit do nothing" is exactly this value.
+     * one is - the answer to "why did my edit do nothing" is exactly this value.
      */
     public function source(string $name): ?string
     {
@@ -147,7 +147,7 @@ final class StubLocator
 
     private function resolvePreferred(string $name): ?string
     {
-        // Project first, then framework — the order is the contract, not an
+        // Project first, then framework - the order is the contract, not an
         // implementation detail: it is what lets a project override a stub.
         foreach ($this->candidates($name) as $candidate) {
             if ($this->isUsable($candidate)) {
@@ -174,7 +174,7 @@ final class StubLocator
      * `is_file` rather than `file_exists`: a directory named `controller.stub`
      * would satisfy `file_exists` and then fail at `file_get_contents`, which
      * reports "failed to open stream" instead of naming the real problem. The
-     * readability check catches the other half — a vendored package installed
+     * readability check catches the other half - a vendored package installed
      * without read permission.
      */
     private function isUsable(string $path): bool

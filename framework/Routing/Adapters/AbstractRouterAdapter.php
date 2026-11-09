@@ -22,28 +22,28 @@ use Throwable;
  * same everywhere; what happens during it is not.** Collection, duplicate
  * detection, the fluent verbs, controller resolution and the scoped `Request`
  * binding are identical whether the route ends up on `admin_menu` or
- * `register_rest_route()` — only the publication step differs. Two adapters each
+ * `register_rest_route()` - only the publication step differs. Two adapters each
  * reimplementing the collection half would be two places for the duplicate guard
  * to drift.
  *
  * Subclasses implement {@see publish()} and {@see domain()}, and get everything
  * else.
  *
- * ## Why the routes live here rather than in a shared collection object
+ * Why the routes live here rather than in a shared collection object
  *
  * A route table shared between adapters would make "which router owns this route"
  * unanswerable, and the answer is what decides the hook, the URI shape and the
  * response type. Each adapter owning its own table is what keeps `routes/web.php`
- * and `routes/api.php` from silently merging — a web route registered into the
+ * and `routes/api.php` from silently merging - a web route registered into the
  * API adapter would be published as a REST endpoint and 404 as a page, with
  * nothing raised at registration.
  *
- * ## Controllers are not built until dispatch
+ * Controllers are not built until dispatch
  *
  * Resolution is deferred to the moment a route is dispatched rather than done at
  * flush() time. A controller resolved during flush would be constructed on every
- * request that merely *loads* the hooks — including the admin pages that will
- * never touch the route — and would carry request-scoped state into the next
+ * request that merely *loads* the hooks - including the admin pages that will
+ * never touch the route - and would carry request-scoped state into the next
  * request under a persistent worker.
  */
 abstract class AbstractRouterAdapter implements RouterInterface
@@ -60,7 +60,7 @@ abstract class AbstractRouterAdapter implements RouterInterface
      * Whether flush() has already published.
      *
      * Per-instance and checked before touching WordPress, because several of the
-     * hooks these adapters bind — `admin_menu`, `rest_api_init` — can fire more
+     * hooks these adapters bind - `admin_menu`, `rest_api_init` - can fire more
      * than once in a process. A second pass would re-register every route, and
      * `register_rest_route()` would collide with the first while `add_menu_page()`
      * would silently add a duplicate screen.
@@ -73,8 +73,8 @@ abstract class AbstractRouterAdapter implements RouterInterface
         /**
          * Where named routes are recorded for URL generation.
          *
-         * Optional so the dozens of existing constructions — tests, probes, a
-         * project building an adapter by hand — keep working. When it is omitted a
+         * Optional so the dozens of existing constructions - tests, probes, a
+         * project building an adapter by hand - keep working. When it is omitted a
          * private registry is used, which means that adapter's names are
          * unreachable from `route()`: correct for a caller that never generates a
          * URL, and the reason the service providers always pass the shared one.
@@ -93,7 +93,7 @@ abstract class AbstractRouterAdapter implements RouterInterface
     /**
      * Hand every collected route to WordPress.
      *
-     * Implementations may assume they are called at most once per instance —
+     * Implementations may assume they are called at most once per instance -
      * the guard is {@see flush()}'s job, not theirs.
      */
     abstract protected function publish(): void;
@@ -111,8 +111,8 @@ abstract class AbstractRouterAdapter implements RouterInterface
     public function addRoute(Route $route): Route
     {
         // Handlers are deliberately not validated here. A route is stored the
-        // moment it is created so the caller can keep configuring it fluently —
-        // `$router->get('leads')->middleware(...)` holds this object — which means
+        // moment it is created so the caller can keep configuring it fluently -
+        // `$router->get('leads')->middleware(...)` holds this object - which means
         // it is legitimately handler-less right now. The check belongs in
         // publish(), by which point every route has been handed back.
         foreach ($route->getMethods() as $method) {
@@ -127,7 +127,7 @@ abstract class AbstractRouterAdapter implements RouterInterface
 
         // The same instance that was stored, so fluent configuration lands on the
         // route the router is actually holding. Returning a copy would silently
-        // configure an object nobody publishes — the route would register with no
+        // configure an object nobody publishes - the route would register with no
         // middleware and no name, and nothing would report it.
         return $route;
     }
@@ -146,7 +146,7 @@ abstract class AbstractRouterAdapter implements RouterInterface
      * The fluent verbs, as the router itself exposes them.
      *
      * Each one delegates to a fresh registrar, so a caller holding an adapter gets
-     * exactly the routes a routes file would — including the domain's surface
+     * exactly the routes a routes file would - including the domain's surface
      * decision, since a web adapter's registrar is a {@see \Framework\Routing\WebRouteRegistrar}.
      * A REST router's `get()` is therefore an endpoint and a web router's is an
      * admin screen, which is the one place the two domains' `get()` differ.
@@ -188,6 +188,16 @@ abstract class AbstractRouterAdapter implements RouterInterface
      *
      * @throws RouteRegistrationException
      */
+    public function patch(string $path, string|array|callable|null $controller = null, ?string $action = null): Route
+    {
+        return $this->registrar()->patch($path, $controller, $action);
+    }
+
+    /**
+     * @param string|array{0: string, 1: string}|callable|null $controller
+     *
+     * @throws RouteRegistrationException
+     */
     public function delete(string $path, string|array|callable|null $controller = null, ?string $action = null): Route
     {
         return $this->registrar()->delete($path, $controller, $action);
@@ -199,14 +209,14 @@ abstract class AbstractRouterAdapter implements RouterInterface
      * Publish once, then no-op.
      *
      * The guard lives here rather than in each subclass because "a hook fired
-     * twice" is a property of WordPress, not of the mechanism — every adapter
+     * twice" is a property of WordPress, not of the mechanism, every adapter
      * needs it, and forgetting it is a silent duplicate registration rather than
      * an error.
      *
-     * ## Why the named-route registry is fed from here
+     * Why the named-route registry is fed from here
      *
      * `publish()` is where the adapter decides the things a URL needs and writes
-     * them back onto the routes — the `admin_post_{action}` name in particular,
+     * them back onto the routes - the `admin_post_{action}` name in particular,
      * which is derived from the route and recorded as an option. Registering with
      * {@see NamedRoutes} *after* that means the generator reads the same final
      * names WordPress was hooked on, rather than re-deriving them and risking a
@@ -242,8 +252,8 @@ abstract class AbstractRouterAdapter implements RouterInterface
      *
      * The framework `Request` is bound for the duration of the call, so a
      * controller type-hinting it receives the request being dispatched rather
-     * than the superglobal capture taken at plugin load. The binding is scoped —
-     * installed before the controller is resolved, restored in a `finally` —
+     * than the superglobal capture taken at plugin load. The binding is scoped -
+     * installed before the controller is resolved, restored in a `finally` -
      * because `Container::instance()` has no unset, and leaving it behind would
      * hand the *finished* request to whatever asks next. Under a persistent
      * worker that is routine rather than hypothetical.
@@ -268,22 +278,29 @@ abstract class AbstractRouterAdapter implements RouterInterface
      */
     private function dispatchTo(Route $route, callable $destination): mixed
     {
-        try {
-            return $destination();
-        } catch (RouteRegistrationException | RouteResolutionException $e) {
-            // A bad route definition is a programmer error, but it must not
-            // escape into a WordPress hook: WordPress calls these callbacks with
-            // no error handling of its own, so an uncaught throwable here is an
-            // opaque fatal rather than a message naming the route.
-            return $this->failed($route, $e->getMessage());
-        }
+        // Deliberately no catch any more. This used to convert the two routing
+        // exception types into a `failed()` response here, which was a second,
+        // narrower error path: anything else - the `RuntimeException` both
+        // repositories throw on a failed statement, a `TypeError`, a
+        // `LogicException` from a resource reading an absent field - escaped
+        // straight into a WordPress hook.
+        //
+        // Both adapters now wrap their own invocation and translate through
+        // {@see \Framework\Http\Exceptions\Handler}, which is the only layer that
+        // knows the client *and* can roll back an open transaction. Converting
+        // here would hard-code one response shape for two domains, and the REST
+        // domain cannot send a framework response at all.
+        //
+        // The signature keeps `$route` because subclasses pass it and the
+        // parameter documents the frame's context, but nothing here reads it.
+        return $destination();
     }
 
     /**
      * Run a callback with `Framework\Http\Request` bound to $request.
      *
      * Public because a subclass's publish() may need to establish the binding
-     * around code of its own — the web adapter does, to match a path — and
+     * around code of its own - the web adapter does, to match a path - and
      * because the tests assert the restore behaviour directly.
      *
      * @param callable(): mixed $callback
@@ -327,7 +344,7 @@ abstract class AbstractRouterAdapter implements RouterInterface
      * mismatch rather than the route that caused it.
      *
      * Returns whatever the action returns, so each adapter decides how to render
-     * it — the REST adapter hands it back to WordPress, the web adapter turns it
+     * it - the REST adapter hands it back to WordPress, the web adapter turns it
      * into a response and sends it.
      *
      * @param array<string, mixed> $routeParameters Placeholders matched out of
@@ -367,7 +384,7 @@ abstract class AbstractRouterAdapter implements RouterInterface
      *
      * The handler receives the framework `Request` when it asks for one and
      * nothing otherwise, so both `fn () => ...` and `fn (Request $r) => ...` are
-     * valid — a closure registered on a route that has no parameters is the
+     * valid - a closure registered on a route that has no parameters is the
      * common case and should not have to declare an unused argument.
      *
      * Routed through the binder rather than the container directly so a closure
@@ -394,7 +411,7 @@ abstract class AbstractRouterAdapter implements RouterInterface
      *
      * Each adapter overrides this: a REST route answers with a `WP_Error` so
      * WordPress produces a JSON error, while a web route has to send a response
-     * itself. The default is deliberately blunt — a subclass that forgets to
+     * itself. The default is deliberately blunt - a subclass that forgets to
      * override it gets a thrown exception rather than a silently empty page.
      *
      * @return mixed

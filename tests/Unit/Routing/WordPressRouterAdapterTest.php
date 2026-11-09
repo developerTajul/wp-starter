@@ -506,8 +506,167 @@ final class WordPressRouterAdapterTest extends TestCase
         $this->assertSame([], WebRecorder::$calls, 'The controller must not run.');
     }
 
-    // --------------------------------------------------------------- pipeline
+    // ----------------------------------------------------------- admin dispatch
 
+    /**
+     * A form submission is dispatched by the action the *request* carries.
+     *
+     * The whole reason `dispatchCurrentAdminAction()` exists: WordPress resolves
+     * and fires `admin_post_{action}` in one pass, so the route is found by
+     * matching the submitted action against the published table rather than by
+     * having hooked the derived name. This asserts the match happens — and that
+     * the action came from the injected request, since `$_REQUEST` is empty in a
+     * PHPUnit process and a superglobal read would find nothing to dispatch.
+     */
+    public function test_a_form_submission_is_dispatched_by_the_action_the_request_carries(): void
+    {
+        FakeWebRequestFactory::$method = 'POST';
+        FakeWebRequestFactory::$query = ['action' => 'leads_store'];
+
+        $this->router->post('leads/store', Fixtures\StringController::class, 'store');
+        $this->router->flush();
+
+        $this->dispatchAdminAction();
+
+        $this->assertSame(['StringController@store'], WebRecorder::$calls);
+    }
+
+    /**
+     * The action is read from the request body too, not only the query string.
+     *
+     * `admin-post.php` reaches PHP either way depending on how the form is
+     * written, so a reader that consulted only one source would drop the common
+     * `<form action="admin-post.php" method="post">` with the action as a hidden
+     * field.
+     */
+    public function test_the_action_is_read_from_the_request_body_as_well_as_the_query(): void
+    {
+        FakeWebRequestFactory::$method = 'POST';
+        FakeWebRequestFactory::$body = ['action' => 'leads_store'];
+
+        $this->router->post('leads/store', Fixtures\StringController::class, 'store');
+        $this->router->flush();
+
+        $this->dispatchAdminAction();
+
+        $this->assertSame(['StringController@store'], WebRecorder::$calls);
+    }
+
+    /**
+     * A route placeholder is filled from the submission's own fields.
+     *
+     * An admin-post request carries no URL path — WordPress dispatches on
+     * `admin-post.php?action=...` regardless — so `leads/{id}/destroy` can never
+     * have its placeholder matched from the URL, and a hidden input of the same
+     * name is what fills it.
+     *
+     * The submission also has to say `_method=DELETE`, because a form can only
+     * send GET or POST: without the override the route is reached by POST and
+     * refused with a 405 before the controller runs.
+     */
+    public function test_a_route_placeholder_is_filled_from_the_submission_fields(): void
+    {
+        FakeWebRequestFactory::$method = 'POST';
+        // The action carries the verb suffix, because a non-POST route derives
+        // `leads_destroy_delete` rather than the bare path — see the
+        // different-verbs-on-one-path test above.
+        FakeWebRequestFactory::$body = [
+            'action'  => 'leads_destroy_delete',
+            'id'      => '42',
+            '_method' => 'DELETE',
+        ];
+
+        $this->router->delete('leads/{id}/destroy', Fixtures\ParameterController::class, 'show');
+        $this->router->flush();
+
+        $this->dispatchAdminAction();
+
+        $this->assertSame('42', WebRecorder::$received['id'] ?? null);
+    }
+
+    /**
+     * An action nobody published is left alone.
+     *
+     * WordPress fires `admin_post` for its own internal handlers too, and an
+     * unmatched action is not this plugin's business. Sending a response here
+     * would take over a request another handler owns.
+     */
+    public function test_an_unmatched_action_is_a_no_op(): void
+    {
+        FakeWebRequestFactory::$method = 'POST';
+        FakeWebRequestFactory::$body = ['action' => 'some_other_plugin_action'];
+
+        $this->router->post('leads/store', Fixtures\StringController::class, 'store');
+        $this->router->flush();
+
+        $this->dispatchAdminAction();
+
+        $this->assertSame([], WebRecorder::$calls);
+    }
+
+    /** A submission carrying no action at all is likewise ignored. */
+    public function test_a_submission_with_no_action_is_a_no_op(): void
+    {
+        FakeWebRequestFactory::$method = 'POST';
+
+        $this->router->post('leads/store', Fixtures\StringController::class, 'store');
+        $this->router->flush();
+
+        $this->dispatchAdminAction();
+
+        $this->assertSame([], WebRecorder::$calls);
+    }
+
+    /** An action present but empty is treated as absent, not matched. */
+    public function test_an_empty_action_is_a_no_op(): void
+    {
+        FakeWebRequestFactory::$method = 'POST';
+        FakeWebRequestFactory::$body = ['action' => ''];
+
+        $this->router->post('leads/store', Fixtures\StringController::class, 'store');
+        $this->router->flush();
+
+        $this->dispatchAdminAction();
+
+        $this->assertSame([], WebRecorder::$calls);
+    }
+
+    /**
+     * A list arriving under a placeholder's name never becomes the string
+     * `"Array"`.
+     *
+     * `?id[]=1` is a scalar-shaped attack on the binder: the value is an array,
+     * and a naive `(string)` cast would bind the literal string `Array` to a
+     * typed `string $id` and run the action on nonsense. The field is skipped
+     * instead, so the action does **not** receive a fabricated id — here it fails
+     * to bind the required parameter at all, which is the loud outcome this
+     * asserts rather than a quiet wrong value.
+     *
+     * Asserting the *absence* of `"Array"` alone would pass against a dispatch
+     * that never ran, so the recorded value is checked as a whole.
+     */
+    public function test_an_array_valued_field_is_not_bound_as_the_string_array(): void
+    {
+        FakeWebRequestFactory::$method = 'POST';
+        FakeWebRequestFactory::$body = [
+            'action'  => 'leads_destroy_delete',
+            'id'      => ['1', '2'],
+            '_method' => 'DELETE',
+        ];
+
+        $this->router->delete('leads/{id}/destroy', Fixtures\ParameterController::class, 'show');
+        $this->router->flush();
+
+        $this->dispatchAdminAction();
+
+        $this->assertArrayNotHasKey(
+            'id',
+            WebRecorder::$received,
+            'An array-valued field must not be bound as a scalar parameter.'
+        );
+    }
+
+    // --------------------------------------------------------------- pipeline
     /**
      * Web middleware runs as an onion through the HTTP pipeline — before *and*
      * after the destination, which the REST seam cannot do.
@@ -702,6 +861,25 @@ final class WordPressRouterAdapterTest extends TestCase
 
         try {
             WpStub::doAction('template_redirect');
+        } finally {
+            ob_end_clean();
+        }
+    }
+
+    /**
+     * Dispatch the current admin action with its output buffered.
+     *
+     * A matched form handler sends a real response, which echoes — the same
+     * reason {@see invokeTemplateRedirect()} buffers — and PHPUnit reports a test
+     * that prints as risky. The assertion is about what the controller recorded,
+     * not about the markup.
+     */
+    private function dispatchAdminAction(): void
+    {
+        ob_start();
+
+        try {
+            $this->router->dispatchCurrentAdminAction();
         } finally {
             ob_end_clean();
         }

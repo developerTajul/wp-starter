@@ -37,7 +37,7 @@ cp .env.example .env
 
 > **Fill it in — do not leave it blank.** The template ships the identity keys
 > with no value (`APP_NAME=`, `APP_PREFIX=`, `APP_NAMESPACE=`, `CLI_PREFIX=`,
-> `REST_NAMESPACE=`, `APP_VIEWS_PATH=`). An empty value is *present* as far as
+> `REST_NAMESPACE=`, `APP_VIEWS_PATH=`). An empty value is _present_ as far as
 > `env()` is concerned, and `env()` coerces `''` to `null` — so
 > `env('APP_NAME', 'WP Mini Laravel')` returns `null`, **not** the fallback. A
 > blank `.env` therefore erases the config defaults rather than deferring to
@@ -67,13 +67,13 @@ API_SECRET_KEY=your_secret
 The tree is split into three zones with a strict rule about which may depend on
 which. Getting this boundary right is what keeps a project upgradeable.
 
-| Zone | Namespace | Whose | Rebranded? | Depends on |
-| --- | --- | --- | --- | --- |
-| `framework/` | `Framework\` | The library's | **No** | its own Composer deps |
-| `app/` | `App\` | Yours | **Yes** | `Framework\`, `Core\` |
-| `core/` | `Core\` | Yours | **Yes** | nothing — `Core\` and PHP builtins only |
+| Zone         | Namespace    | Whose         | Rebranded? | Depends on                              |
+| ------------ | ------------ | ------------- | ---------- | --------------------------------------- |
+| `framework/` | `Framework\` | The library's | **No**     | its own Composer deps                   |
+| `app/`       | `App\`       | Yours         | **Yes**    | `Framework\`, `Core\`                   |
+| `core/`      | `Core\`      | Yours         | **Yes**    | nothing — `Core\` and PHP builtins only |
 
-The two vertical layers sit *under* the namespace root rather than beside it.
+The two vertical layers sit _under_ the namespace root rather than beside it.
 In the starter the root is empty, so they read as `App\` and `Core\`; after a
 rebrand to `--namespace=LeadBridge` they become `LeadBridge\App\` and
 `LeadBridge\Core\`. The layer names are structural — they are what a `use`
@@ -94,7 +94,7 @@ repository and depend on your fork.
 
 ### `app/` — your application
 
-Everything specific to *this* plugin: controllers, middleware, resources,
+Everything specific to _this_ plugin: controllers, middleware, resources,
 providers, console commands, repositories, and the `App\Kernel` that registers
 them. This is where most of your work happens.
 
@@ -145,7 +145,7 @@ Consequences you will meet while extending the builder:
 - **Foreign keys are lifted out of the `CREATE`** (`WpDatabaseAdapter::separateConstraints()`)
   and applied afterwards as idempotent `ALTER`s. `dbDelta()`'s field parser has
   no concept of a constraint — it reads a line beginning `CONSTRAINT` as a
-  *column* named `CONSTRAINT`. On a first run that is harmless, because the
+  _column_ named `CONSTRAINT`. On a first run that is harmless, because the
   original `CREATE` executes verbatim. On the **second** run it diffs that
   phantom column and emits `ALTER TABLE … ADD COLUMN CONSTRAINT …` — a syntax
   error. Without the lift-out, every migration with a foreign key would succeed
@@ -162,11 +162,11 @@ created without the key and the failure surfaces later as duplicated rows.
 `WpDatabaseAdapter::toDbDeltaStatement()` normalises the statement rather than
 trusting callers to write in dbDelta's dialect. The three rules:
 
-| Rule | Why |
-| --- | --- |
-| The table name must be **unquoted** | A backtick-quoted name is not recognised as a `CREATE` at all, and the statement is silently dropped. |
-| `PRIMARY KEY (` must be `PRIMARY KEY  (` — **two** spaces | That is the literal `dbDelta()` searches for. One space is read as a column named `PRIMARY` with an unknown type. |
-| **Named** keys are kept named | An unnamed clause normalises to a `KEY` with an **empty** name, which can never equal the real `SHOW INDEX` name — so every later run re-issues `ADD` for an index that already exists. On a unique index over duplicate rows that `ALTER` fails, which is the whole migration failing on its second execution. |
+| Rule                                                      | Why                                                                                                                                                                                                                                                                                                             |
+| --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The table name must be **unquoted**                       | A backtick-quoted name is not recognised as a `CREATE` at all, and the statement is silently dropped.                                                                                                                                                                                                           |
+| `PRIMARY KEY (` must be `PRIMARY KEY  (` — **two** spaces | That is the literal `dbDelta()` searches for. One space is read as a column named `PRIMARY` with an unknown type.                                                                                                                                                                                               |
+| **Named** keys are kept named                             | An unnamed clause normalises to a `KEY` with an **empty** name, which can never equal the real `SHOW INDEX` name — so every later run re-issues `ADD` for an index that already exists. On a unique index over duplicate rows that `ALTER` fails, which is the whole migration failing on its second execution. |
 
 `dbDelta()` also requires `wp-admin/includes/upgrade.php`, which WordPress loads
 for admin requests but **not** under WP-CLI's default bootstrap or during cron.
@@ -176,12 +176,12 @@ a migration that "works on my machine".
 
 ### What this means in practice
 
-| You want to | Route |
-| --- | --- |
-| Create a table | `Schema::create()` → `dbDelta()` (converges on re-run) |
-| Add a column or index to an existing table | `Schema::table()` → plain `ALTER` |
-| Change, drop or rename a column | plain `ALTER` — **never** `dbDelta()`. Not built yet; the builder today can only *add* to an existing table. |
-| Rewrite existing rows | `$wpdb` directly — see *When you need raw `$wpdb`* under Database Migrations |
+| You want to                                | Route                                                                                                        |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| Create a table                             | `Schema::create()` → `dbDelta()` (converges on re-run)                                                       |
+| Add a column or index to an existing table | `Schema::table()` → plain `ALTER`                                                                            |
+| Change, drop or rename a column            | plain `ALTER` — **never** `dbDelta()`. Not built yet; the builder today can only _add_ to an existing table. |
+| Rewrite existing rows                      | `$wpdb` directly — see _When you need raw `$wpdb`_ under Database Migrations                                 |
 
 ---
 
@@ -265,19 +265,19 @@ env('APP_ENV', 'production');
 It checks `$_ENV`, then `$_SERVER`, then `getenv()`, and coerces Laravel-style
 string values:
 
-| Written in `.env` | Resolves to |
-| --- | --- |
-| `true` / `false` | `bool` |
-| `(true)` / `(false)` | `bool` |
-| `(null)` | `null` |
-| `(empty)` | `''` |
-| `KEY=` (present, empty) | `null` |
-| key absent entirely | the second argument, uncoerced |
+| Written in `.env`       | Resolves to                    |
+| ----------------------- | ------------------------------ |
+| `true` / `false`        | `bool`                         |
+| `(true)` / `(false)`    | `bool`                         |
+| `(null)`                | `null`                         |
+| `(empty)`               | `''`                           |
+| `KEY=` (present, empty) | `null`                         |
+| key absent entirely     | the second argument, uncoerced |
 
 Two consequences worth internalising:
 
 - **An empty value is not an absent one.** `KEY=` resolves to `null` and
-  therefore *does not* fall through to the default — see the warning in
+  therefore _does not_ fall through to the default — see the warning in
   [Installation](#installation).
 - **Quote any value containing a space.** phpdotenv's parser rejects unquoted
   whitespace: `APP_NAME="Lead Bridge"`.
@@ -331,7 +331,7 @@ Which surface a route lands on is decided by **which file it is written in**, no
 by anything in the declaration — see
 [How the `Route` facade knows which router it is talking to](#how-the-route-facade-knows-which-router-it-is-talking-to).
 That split is the whole design: a `leads` route in `web.php` is an admin screen,
-and the *same* `leads` route in `api.php` is a REST endpoint. Neither file needs
+and the _same_ `leads` route in `api.php` is a REST endpoint. Neither file needs
 to know the other exists.
 
 ### Admin Menus & Submenus (`web.php`)
@@ -355,14 +355,42 @@ Route::get('leads', [LeadController::class, 'index'])
     ]);
 ```
 
-| Option | What it does |
-| --- | --- |
-| `page_title` | The screen's heading and document title. |
-| `menu_title` | The sidebar label. Defaults to `page_title` — set it when the menu needs to be shorter than the heading. |
-| `capability` | The WordPress capability required to see *and* open the screen. This is a menu-level guard, not a route middleware. |
-| `icon` | A [Dashicon](https://developer.wordpress.org/resource/dashicons/) class, a URL, or `data:image/svg+xml;base64,…`. |
-| `position` | Where the menu sits in the sidebar. Defaults to the bottom. Reserve a gap when adding several — the values are compared numerically. |
-| `parent_slug` | **Makes this a submenu.** See below. |
+| Option        | What it does                                                                                                                                                |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `page_title`  | The screen's heading and document title.                                                                                                                    |
+| `menu_title`  | The sidebar label. Defaults to `page_title` — set it when the menu needs to be shorter than the heading.                                                    |
+| `capability`  | The WordPress capability required to see _and_ open the screen. This is a menu-level guard, not a route middleware.                                         |
+| `icon`        | A [Dashicon](https://developer.wordpress.org/resource/dashicons/) class, a URL, or `data:image/svg+xml;base64,…`.                                           |
+| `position`    | Where the menu sits in the sidebar. Omit it and WordPress places the entry itself. Reserve a gap when adding several — the values are compared numerically. |
+| `parent_slug` | **Makes this a submenu.** See below.                                                                                                                        |
+
+**These options are read through `AdminPage`, not off the route.** `AdminPage` is a
+read-only value object built with `AdminPage::fromRoute($route)` (or
+`AdminPage::fromArray($slug, $options)`), and it is what the adapter, `route:list`
+and a view rendering the menu all read — so they cannot disagree about what a key
+means or fall back to different defaults. `Route` itself stays domain-agnostic:
+a REST endpoint has no menu, so the option bag is the escape hatch that keeps
+`add_menu_page()`'s nine positional arguments from becoming nine methods on a DTO
+that mostly serves REST.
+
+Its accessors: `slug()`, `pageTitle()`, `menuTitle()`, `capability()`, `icon()`,
+`position()`, `parentSlug()`, `isSubmenu()`, `action()`, `has($key)`,
+`options()`.
+
+Three of its behaviours are worth knowing before you set an option:
+
+| Accessor      | Rule                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pageTitle()` | `page_title` → `menu_title` → the slug, humanized. A page that declares only `menu_title` has said what it wants the header to say; humanizing the slug over the top of that would ignore a deliberate choice. `humanize()` capitalises the **first word only** — `lead-reports` becomes `Lead reports` — because over-capitalising an unset label reads worse than plain sentence case. A slug of only separators is returned as-is rather than becoming an empty title, and an empty slug becomes `Untitled`. |
+| `position()`  | An integer, or a string that is a clean integer (`'26'`). **Anything else is `null`, not `0`** — `(int) 'top'` is `0`, which would silently pin the entry to the top of the menu.                                                                                                                                                                                                                                                                                                                               |
+| `has($key)`   | A key given as `null` or `''` counts as **not given**, so `'icon' => ''` means "no icon" rather than "an empty icon that beats the default". A value that is not a string is likewise ignored rather than cast — a `menu_title` given as an array would otherwise render a menu entry literally labelled `Array`.                                                                                                                                                                                               |
+
+`capability()` defaults to `manage_options`, matching `add_menu_page()`. That is a
+default rather than an error on purpose: an admin screen with no capability
+declared is the common case and is _correctly_ restricted, whereas refusing to
+register would make the common case the broken one. WordPress enforces it before
+the route's own middleware runs — it is the outer gate, and middleware is for what
+a capability cannot express, such as a per-record ownership check.
 
 #### Submenus
 
@@ -381,7 +409,7 @@ Route::get(LeadController::CREATE_SLUG, [LeadController::class, 'create'])
 
 > **Declare the parent before the child.** WordPress back-fills the parent's own
 > submenu entry only if the parent is already registered. Reversed, the top-level
-> menu takes its *first submenu item's* title and the parent screen becomes
+> menu takes its _first submenu item's_ title and the parent screen becomes
 > unreachable — with no error, because both menus registered successfully.
 
 #### Explicit surfaces
@@ -390,13 +418,25 @@ The verb decides the surface: a `get()` is an admin screen, a `post()` is a form
 handler. When the verb does not say — a GET that is a front-end page, a POST that
 is not a form submission — name the surface instead:
 
-| Helper | WordPress mechanism | Use for |
-| --- | --- | --- |
-| `get($slug, $action)` | `admin_menu` | `wp-admin` screens |
-| `post($slug, $action)` | `admin_post_{action}` | form submissions |
-| `put`/`patch`/`delete` | `admin_post_{action}` | form submissions via `_method` |
-| `page($url, $action)` | `template_redirect` | front-end pages |
-| `adminPage()` / `adminAction()` | as above | the same decisions, named explicitly |
+| Helper                          | WordPress mechanism   | Use for                              |
+| ------------------------------- | --------------------- | ------------------------------------ |
+| `get($slug, $action)`           | `admin_menu`          | `wp-admin` screens                   |
+| `post($slug, $action)`          | `admin_post_{action}` | form submissions                     |
+| `put`/`patch`/`delete`          | `admin_post_{action}` | form submissions via `_method`       |
+| `page($url, $action)`           | `template_redirect`   | front-end pages                      |
+| `adminPage()` / `adminAction()` | as above              | the same decisions, named explicitly |
+
+`adminPage()` is `get()` under a name that says what it means. `adminAction()`
+takes a **fourth** argument the verb methods have no room for:
+
+```php
+Route::adminAction('leads/update', CompanyController::class, 'update', 'PUT');
+```
+
+The verb is stated separately because a form handler's verb is _not_ what
+identifies it: the form itself sends a POST, and the `PUT` is what the route
+declares so `_method` can be matched. Reaching for `Route::put()` to say the same
+thing works, but the call no longer reads as "a form posts here".
 
 The action is Laravel's pair — `[LeadController::class, 'index']` — and the class
 is resolved from the container at dispatch, so its constructor dependencies are
@@ -404,11 +444,34 @@ injected. `LeadController::class, 'index'` as two arguments means the same thing
 which is what `#[Route]`-attributed controllers and `RouteRegistrar::controller()`
 emit; both work.
 
+**Where a pair and a callable differ is worth one sentence**, because the two look
+alike and behave differently. A two-element list of strings — and _only_ that — is
+read as a controller action, so the class is resolved from the container and even a
+`static` method is invoked on an instance. Any other callable (a closure, or
+`[$object, 'method']`) is registered as a **handler** through `Route::handle()`,
+which means no constructor injection: there is no class for the container to
+reflect on. Anything else — a three-element array, a string-keyed array — is
+refused when the route is built rather than at dispatch, where the same mistake
+would surface as a missing-method error naming no route.
+
 **In a web routes file a bare `get()` is an admin screen, not a front-end page.**
 WordPress has no general front-end router, so a front-end request is the case
 that has to be asked for by name — `page('thank-you', [...])`. The other two
 surfaces follow from the verb, which is what lets a web routes file read like a
 Laravel one.
+
+There is one place the bare `get()` says something else, and it is worth knowing
+because the two rules point in opposite directions. `WebRouteRegistrar::get()`
+**stamps** the admin-screen surface on the route, so a bare GET written through a
+web routes file is a screen. `WordPressRouterAdapter::inferSurface()` is the
+fallback used only for a `Route` assembled by hand and handed to `addRoute()` —
+and it has no registrar to have stamped anything, so it reads the verb: non-mutating
+becomes a front-end page, mutating becomes a form handler. Both are right for their
+own caller. The inference is deliberately the _conservative_ pair, because claiming
+an admin menu nobody asked for is the mistake that produces an unreachable screen.
+
+An explicit `surface` option always wins over the inference, so a route that states
+its surface is never overruled by its verb.
 
 A screen callback must **return** a string or a `ResponseInterface` — an admin
 page returns rather than exits, so WordPress can render its chrome around it.
@@ -441,12 +504,166 @@ path. **Set it explicitly when a form must post to a known string**, because the
 derivation is not obvious: non-POST verbs get a suffix so that PUT and DELETE do
 not share one hook. Declaring it (here, as a controller constant) keeps the
 routes file, the nonce middleware and the form's hidden `action` field reading a
-single string. Every route registered this way also exposes both
-`admin_post_{action}` and `admin_post_nopriv_{action}`, so the handler decides
-who may run it rather than WordPress silently 404ing a logged-out submit.
+single string.
+
+Every route registered this way exposes **both** `admin_post_{action}` and
+`admin_post_nopriv_{action}`, so the handler decides who may run it rather than
+WordPress silently 404ing a logged-out submit.
+
+#### The action name, derived step by step
+
+Walking `actionName()` in order, because the option above is the escape hatch from
+a chain that has four steps:
+
+| Step | Rule                                                                                                                                                                                                                                                            | Example                                                              |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| 1    | An explicit `action` option wins outright.                                                                                                                                                                                                                      | `->withOptions(['action' => 'leads_store'])` → `leads_store`         |
+| 2    | Otherwise the route's **name**, or its path when unnamed. A name is the identifier the author chose and already appears in the route table.                                                                                                                     | `->name('store')` → `store`                                          |
+| 3    | Placeholders are removed **whole**, through `RouteCompiler::substitute()` — not by matching `\{[^}]*\}`. A constraint holding a quantifier is dropped in one piece, and a path already compiled to `(?P<id>…)` loses the group rather than contributing `p_id`. | `leads/{id:\d+}` → `leads`                                           |
+| 4    | Remaining non-alphanumerics become `_`, then the result is trimmed of leading and trailing `_`. An empty result becomes the literal `route`.                                                                                                                    | `leads/{id}` → `leads`; `/` → `route`                                |
+| 5    | If the route's verbs are anything other than exactly `POST`, the lowercased verb list is appended.                                                                                                                                                              | `DELETE leads/{id}` → `leads_delete`; `PUT leads/{id}` → `leads_put` |
+
+**Why step 5 exists.** `PUT leads/{id}` and `DELETE leads/{id}` both derive `leads`
+from the path, and would then share one hook — so both callbacks would fire on one
+submission instead of the later one replacing the earlier. Since a browser reaches
+PUT and DELETE only through a `_method` field, the verb is the only thing
+distinguishing them, so it belongs in the name. POST keeps the bare derived name,
+because it is the overwhelmingly common case and `leads_store` reads better than
+`leads_store_post`.
+
+A collision at any point is **refused**, not merged: two form-handler routes
+resolving to one action throw `RouteRegistrationException::duplicateAction` at
+flush time, naming both paths.
+
+The resolved name is written **back onto the route** as the `action` option, so
+`route:list` and a view rendering the form's hidden field both report the string
+WordPress will actually fire rather than deriving it a second time. Read it with
+`AdminPage::fromRoute($route)->action()`, or `$adapter->actionFor($route)`.
+
+#### How a submission is actually dispatched
+
+The mechanism is not the obvious one, and the reason is ordering.
+
+The hook name comes from the routes file, and the routes file is only read once a
+WordPress action fires. So on the first submission of a process the sequence would
+have to be: read the file → learn the action names → register
+`admin_post_{action}` hooks → _then_ have WordPress fire the right one. It cannot
+be, because WordPress resolves and fires `admin_post_{action}` in a single pass,
+and by the time a listener on the generic `admin_post` action runs, that pass is
+already under way.
+
+So the name is not used to find the route — **the request is.** The provider hooks
+generic `admin_post` and calls `dispatchCurrentAdminAction()`, which reads
+`$_REQUEST['action']` and matches it against the routes already published in this
+same request. A no-op when nothing matches, which matters: WordPress fires
+`admin_post` for its own internal handlers too, and an unmatched action is not this
+plugin's business — returning without sending lets WordPress continue to whoever
+owns it.
+
+Three consequences:
+
+- **The routes file is read and flushed at priority 5**, ahead of the default 10,
+  on `admin_menu`, `template_redirect` and generic `admin_post`. Loading is
+  idempotent per file and `flush()` is guarded, so the repeats cost nothing.
+- **A route written as `leads/{id}/delete` never has its placeholder filled from a
+  URL.** A form submits to `admin-post.php?action=…` regardless of the original
+  path, so the parameter is read from `$_REQUEST` — the form field of the same name
+  — and only when it is scalar. A hidden input is how it arrives.
+- **`_method` is honoured**, by the request itself. A browser cannot send `PUT`, so
+  the form posts `POST` with `<input type="hidden" name="_method" value="DELETE">`,
+  and the route matching a `DELETE` declaration is reached.
 
 Form input arrives as a `Framework\Http\Request`; `$request->input('name')` reads
 it, and validation lives in a `FormRequest` subclass.
+
+#### What a web action may return
+
+An admin screen and a form handler both return their response — neither exits, so
+WordPress can render its chrome around a screen and can finish the request around a
+redirect.
+
+| Returned            | Outcome                                                                                                                                                            |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ResponseInterface` | Sent as-is.                                                                                                                                                        |
+| `string`            | Wrapped in an HTML response.                                                                                                                                       |
+| `null`              | **Refused**, naming the route: a controller that returns nothing has produced no page, and an empty 200 looks like a broken plugin rather than a missing `return`. |
+| an array            | **Refused**, naming the route. An array is the REST idiom; sent here it would emit the literal text `Array`.                                                       |
+| `WP_REST_Response`  | **Refused**, naming the route. Only WordPress's REST server renders one; through this path it emits nothing at all.                                                |
+
+A request that reaches a route on the wrong verb gets a **405 with an `Allow`
+header**, not a 404 — the path exists, so saying "not found" would send a developer
+looking for a route that is already there.
+
+### Route Grammar and Specificity
+
+Both domains read placeholders with **the same parser**
+(`Framework\Routing\RouteCompiler`), which is the reason a route cannot resolve in
+one file and 404 in the other. That is a real guarantee and not merely tidiness:
+three callers used to carry their own regex for the same grammar and disagreed
+about `{id:}` — the route dispatched while the binder reported no parameters, so
+the argument was silently dropped.
+
+| Written                 | Meaning                                                                                                                   |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `leads/{id}`            | One path segment, unconstrained. Compiles to `(?P<id>[^/]+)`.                                                             |
+| `leads/{id:\d+}`        | One segment matching the constraint. The constraint **is** a regex and is left as written.                                |
+| `leads/{id:[0-9]{1,3}}` | A constraint containing braces, a class and a quantifier — handled by the scanner, not by a string replace.               |
+| `leads/{id:((\d+))}`    | Nested groups are fine: parens inside a character class are literal to PCRE, and the scanner knows it.                    |
+| `leads/{id:}`           | An **empty** constraint is read as _no_ constraint, not as an empty group. It compiles to `(?P<id>[^/]+)`.                |
+| `leads/(?P<id>\d+)`     | The compiled spelling. Accepted wherever a path is read, because a REST route's path is in this state after registration. |
+
+Everything that is **not** a placeholder is `preg_quote`d. WordPress compiles the
+registered path as `@^<route>$@i`, so without that a literal `.` would match any
+character — `file.json` and `fileXjson` both dispatching — and a stray `(`, `[` or
+`+` would corrupt the pattern so `preg_match` fails and the route is silently dead.
+
+#### Routes are ordered most-specific-first
+
+WordPress tries every registered pattern in insertion order and takes the first that
+matches. So `leads/{id}` registered before `leads/latest` would dispatch `show`
+with `id="latest"` — a silent wrong-action dispatch rather than a 404, which is the
+worst of the three possible outcomes. Both adapters therefore sort by
+`RouteCompiler::sortBySpecificity()` before handing anything to WordPress:
+
+1. **More literal segments first.** `/leads/latest` scores 2 and `/leads/{id}`
+   scores 1, so the literal route is matched first.
+2. **Then more constrained placeholders first**, breaking the tie — a
+   `{id:\d+}` sorts ahead of a bare `{id}`.
+
+Routes identical on both keys keep their relative order only by accident of the
+sort, which is exactly why the duplicate guard refuses a same-method-same-path pair
+outright rather than relying on the ordering to save it.
+
+### Verb Coverage
+
+`get`, `post`, `put`, `patch`, `delete` are the everyday spellings. Three more
+exist, and the supported set is a stated constant rather than whatever the adapter
+happens to accept:
+
+| Call                                               | Registers                                                                      |
+| -------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `Route::get/post/put/patch/delete($path, $action)` | One verb.                                                                      |
+| `Route::match(['GET', 'POST'], $path, $action)`    | One route per verb listed.                                                     |
+| `Route::any($path, $action)`                       | `RouteRegistrar::SUPPORTED_METHODS` — `GET`, `POST`, `PUT`, `PATCH`, `DELETE`. |
+
+Anything outside `SUPPORTED_METHODS` is refused with
+`RouteRegistrationException::unsupportedMethod` **when the route is declared**, not
+at dispatch. A verb that reaches WordPress unregistered is a route that exists in
+your file and nowhere else.
+
+`Route::controller()` declares several actions of one controller in a single call,
+and it is what the `#[Route]` attribute and `make:controller` emit:
+
+```php
+Route::controller(PostController::class, [
+    'index'  => 'GET',
+    'store'  => 'POST',
+    'delete' => 'DELETE',
+], 'posts');
+```
+
+The action named `index` maps to the **base path itself**; every other action is
+appended. So the above registers `posts`, `posts/store` and `posts/delete`.
 
 ### Route Groups
 
@@ -460,14 +677,14 @@ Route::group(['as' => 'leads.', 'prefix' => 'leads', 'middleware' => [Authentica
 });
 ```
 
-| Key | Effect |
-| --- | --- |
-| `as` | A **name** prefix. `['as' => 'leads.']` plus `->name('index')` gives `leads.index`. |
-| `prefix` | A **path** prefix, joined the way a URI joins: `['prefix' => 'leads']` plus `Route::get('all', ...)` registers the screen `admin.php?page=leads/all`. |
-| `middleware` | Middleware applied to every route in the group. |
+| Key          | Effect                                                                                                                                                |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `as`         | A **name** prefix. `['as' => 'leads.']` plus `->name('index')` gives `leads.index`.                                                                   |
+| `prefix`     | A **path** prefix, joined the way a URI joins: `['prefix' => 'leads']` plus `Route::get('all', ...)` registers the screen `admin.php?page=leads/all`. |
+| `middleware` | Middleware applied to every route in the group.                                                                                                       |
 
 `as` and `prefix` are independent — `['prefix' => 'leads', 'as' => 'leads.']` is
-the ordinary pairing, but grouping *paths* under a name prefix, or the reverse, is
+the ordinary pairing, but grouping _paths_ under a name prefix, or the reverse, is
 legal and sometimes right.
 
 Names compose rather than replace, so nesting works the way path prefixes do:
@@ -482,7 +699,7 @@ Route::group(['as' => 'admin.'], function (): void {
 ```
 
 > **A group's prefix ends with the callback.** Path, name and middleware state are
-> restored on the way out, so a route declared *after* the group does not inherit
+> restored on the way out, so a route declared _after_ the group does not inherit
 > anything from it. A route that picks up a prefix nobody gave it is the failure
 > this prevents.
 
@@ -522,15 +739,16 @@ is safe.
 Short aliases are registered in `Framework\Http\Middleware\MiddlewareAliases`;
 the class names work too.
 
-| Alias | Class | What it does |
-| --- | --- | --- |
-| `capability` | `CheckCapability` | Requires the capability named as a parameter. All comma-separated capabilities must be held. **Fails closed** — an empty parameter or a missing `current_user_can` denies with 403. |
-| `nonce` | `VerifyNonce` | Verifies `_wpnonce` against the named action. An optional second parameter renames the field. **An empty action is refused**, because WordPress's `-1` is a specific action, not a wildcard. |
-| `trim` | `TrimStrings` | Trims leading/trailing whitespace from string input, at any nesting depth. |
-| `null` | `ConvertEmptyStringsToNull` | Turns `''` into `null`. `'0'` is left alone. |
-| `sanitize` | `SanitizeInput` | `wp_unslash()` then `sanitize_text_field()` — the WordPress baseline. Collapses newlines, so do not enable it on a field that needs them. |
-| `auth` | `Authenticate` | Requires a logged-in user. |
-| `can` | `Authorize` | Capability check that **fails open** with a logged warning — prefer `capability` for anything that guards data. |
+| Alias        | Class                       | What it does                                                                                                                                                                                 |
+| ------------ | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `capability` | `CheckCapability`           | Requires the capability named as a parameter. All comma-separated capabilities must be held. **Fails closed** — an empty parameter or a missing `current_user_can` denies with 403.          |
+| `nonce`      | `VerifyNonce`               | Verifies `_wpnonce` against the named action. An optional second parameter renames the field. **An empty action is refused**, because WordPress's `-1` is a specific action, not a wildcard. |
+| `trim`       | `TrimStrings`               | Trims leading/trailing whitespace from string input, at any nesting depth.                                                                                                                   |
+| `null`       | `ConvertEmptyStringsToNull` | Turns `''` into `null`. `'0'` is left alone.                                                                                                                                                 |
+| `sanitize`   | `SanitizeInput`             | `wp_unslash()` then `sanitize_text_field()` — the WordPress baseline. Collapses newlines, so do not enable it on a field that needs them.                                                    |
+| `auth`       | `Authenticate`              | Requires a logged-in user.                                                                                                                                                                   |
+| `can`        | `Authorize`                 | Capability check that **fails open** with a logged warning — prefer `capability` for anything that guards data.                                                                              |
+| `throttle`   | `ThrottleRequests`          | Rate-limits the route. Parameterized as `throttle:maxAttempts,decayMinutes` — `'throttle:60,1'` is 60 requests per minute. Refuses over-limit requests with a 429 carrying `Retry-After`.    |
 
 ```php
 use Framework\Http\Middleware\ConvertEmptyStringsToNull;
@@ -554,7 +772,59 @@ Register your own aliases in the same class:
 
 ```php
 $aliases->alias('lead-access', \App\Http\Middleware\RequireLeadRead::class);
+$aliases->aliasMany([
+    'lead-access' => \App\Http\Middleware\RequireLeadRead::class,
+    'lead-write'  => \App\Http\Middleware\RequireLeadWrite::class,
+]);
 ```
+
+Four rules about aliases, all of which exist to keep an alias from silently
+substituting a class:
+
+| Rule                                                                                                                 | Why                                                                                                                                                                                          |
+| -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **A loadable class name always wins.** Resolution checks `class_exists()`/`interface_exists()` before the alias map. | A project may define its own `CheckCapability`; a registry that rewrote the name would quietly substitute the framework's.                                                                   |
+| **A name containing `:` is refused.**                                                                                | The colon separates a middleware from its parameters, so an alias holding one could never be addressed — `'foo:bar'` would always parse as the alias `foo` with parameter `bar`.             |
+| **An unknown name resolves to itself.**                                                                              | It fails later at dispatch, naming the entry. Reporting it at registration would mean naming no route and being unable to tell a typo from a project's own un-aliased middleware.            |
+| **`alias()` silently replaces.**                                                                                     | A project overriding `'capability'` to point at its own class is legitimate, and refusing would make the defaults unoverridable. Same contract as the container's `instance()` and `bind()`. |
+
+The registry is a singleton, so an alias added at boot is visible to every route
+dispatched later in the process.
+
+Two stack-building methods, and the difference matters because one replaces and one
+appends:
+
+```php
+$pipeline->send($request)->through(['capability:manage_options'])->then($destination);
+$pipeline->send($request)->through([...])->pipe(TrimStrings::class)->then($destination);
+```
+
+#### Rate limiting (`throttle`)
+
+```php
+->middleware('throttle:5,10')   // five submissions per ten minutes
+```
+
+The counter is keyed on **the authenticated user's id when there is one, and the
+client's IP otherwise**, namespaced by the route's path — so two routes never
+share an allowance and a paginating client does not get a fresh one per page.
+
+`X-Forwarded-For` is deliberately **not** trusted: it is client-supplied, and
+honouring it lets any caller pick a new counter per request, which does not weaken
+the limit so much as remove it. A project behind a trusted proxy should subclass
+`ThrottleRequests` and override `clientKey()`, having first confirmed the proxy
+strips the header from inbound requests.
+
+Counting is a single `INSERT … ON DUPLICATE KEY UPDATE` against the
+`{prefix}mini_rate_limits` table, so two simultaneous requests cannot both read
+the same count and both decide they are allowed — the race a
+read-then-write limiter (transients, `get_option`) cannot avoid. **Run the
+migration that creates that table**; without it every throttled route refuses
+with a 503 rather than silently allowing everything.
+
+The middleware **fails closed**: if the limiter cannot run, the request is
+refused. A guard that cannot run has not guarded anything, and a limiter that
+stops limiting is invisible precisely when traffic is high enough to need it.
 
 ### The `route()` Helper (Intelligent URL Generation)
 
@@ -563,12 +833,12 @@ serves it at. **Which WordPress function is used is decided by the route's
 surface**, not by the caller — so a link and the screen it points at cannot
 disagree:
 
-| Route surface | Generated URL | WordPress function |
-| --- | --- | --- |
-| Admin screen | `admin.php?page=leads` | `admin_url()` |
-| Form handler | `admin-post.php?action=leads_store` | `admin_url()` |
-| REST endpoint | `/wp-json/wp-mini-laravel/v1/leads/42` | `rest_url()` |
-| Front-end page | `thank-you` (plus a query string) | `home_url()` |
+| Route surface  | Generated URL                          | WordPress function |
+| -------------- | -------------------------------------- | ------------------ |
+| Admin screen   | `admin.php?page=leads`                 | `admin_url()`      |
+| Form handler   | `admin-post.php?action=leads_store`    | `admin_url()`      |
+| REST endpoint  | `/wp-json/wp-mini-laravel/v1/leads/42` | `rest_url()`       |
+| Front-end page | `thank-you` (plus a query string)      | `home_url()`       |
 
 ```php
 // Admin screens and form handlers — the names routes/web.php declares.
@@ -589,13 +859,37 @@ parameters the path does not consume become a **query string** — so linking to
 `page('leads')` with `['status' => 'new']` gives `?status=new` rather than
 silently dropping the filter.
 
+The query string is built by `rawurlencode`ing **each key and value separately** and
+joining the pairs with `&` — deliberately not `http_build_query()`, which encodes a
+space as `+` under its default encoding. That is wrong in a path context and
+differs from what the path segments get, so the generator uses one encoding rule
+throughout rather than two.
+
+Three consequences of the placeholder rules:
+
+- **A parameter the path cannot consume is not silently dropped.** On a front-end
+  page it becomes a query string. On a form handler it is a mistake — an
+  `admin_post_{action}` name cannot carry a value, which is why the derivation
+  drops placeholders — so it is not tolerated either.
+- **A non-scalar value throws.** An array would stringify to `Array` and produce a
+  URL that looks plausible and goes nowhere.
+- **A placeholder with no value throws**, naming the route and the parameter. See
+  the two mistakes below.
+
 Two mistakes are told apart, with different messages:
 
-- **Unknown name** — throws `InvalidArgumentException` and *lists the names that
-  do exist*, so a typo is a glance rather than a hunt.
+- **Unknown name** — throws `InvalidArgumentException` and _lists the names that
+  do exist_, so a typo is a glance rather than a hunt. The list is **capped at 20
+  names**, with `(and N more)` appended, so a large project does not get a wall of
+  names with the one missing fact buried in it.
 - **Missing placeholder** — `leads/{id}` with no `id` throws `RuntimeException`.
   It is not quietly rendered as `/leads/`, which is a valid-looking URL that
   resolves to nothing.
+
+A name that resolves to _nothing at all registered_ gets its own message rather
+than the list, because "no routes are registered at all yet" is a different
+problem from a typo — and it is the answer you get when `route()` is called before
+any hook has fired.
 
 > **Outside WordPress, `route()` returns the path.** In a unit test or under
 > WP-CLI the URL functions are not loaded, so you get `admin.php?page=leads`
@@ -614,6 +908,20 @@ $urls = app(\Framework\Routing\UrlGenerator::class);
 
 $url = $urls->has('leads.optional') ? route('leads.optional') : '#';
 ```
+
+`has()` answers `false` for a name that is ambiguous as well as for one that does
+not exist, so it never reports a route that `route()` would refuse to build.
+
+When you hold a `Route` rather than a name — a template part handed one, or an
+unnamed route, which has no name to look up — ask the generator directly:
+
+```php
+$urls->page($route, ['order' => 7]);   // the front-end page URL for this route
+```
+
+`page()` is the one surface-specific builder exposed this way, because a front-end
+page is the one surface where calling it without the route's name is the ordinary
+case. The other three are reachable by name.
 
 ### Redirecting
 
@@ -641,7 +949,7 @@ already on its way out.
 
 It does not, and that is deliberate. `routes/web.php` and `routes/api.php` both
 call `Route::get(...)`, but one writes into the web adapter and the other into the
-REST router — so `RouteLoader` aims the facade at the router it is loading *for*,
+REST router — so `RouteLoader` aims the facade at the router it is loading _for_,
 around the `require`, and restores the previous target afterwards. A routes file
 is therefore domain-blind, exactly as a Laravel routes file is.
 
@@ -672,12 +980,12 @@ Route::get('leads/{id}', [LeadController::class, 'show'])
 
 These publish under `/wp-json/{config('app.rest_namespace')}/`. The demo exposes:
 
-| Endpoint | Response | Guard |
-| --- | --- | --- |
-| `GET /wp-json/wp-mini-laravel/v1/ping` | `{"pong":true}` | none — deliberately open |
-| `GET /wp-json/wp-mini-laravel/v1/leads` | `{"data":[{...},{...}]}` | `RequireLeadRead` |
-| `GET /wp-json/wp-mini-laravel/v1/leads/{id}` | `{"data":{...}}` | `RequireLeadRead` |
-| …unknown `{id}` | `{"error":"not_found","message":"No lead with id 99."}` with **404** | `RequireLeadRead` |
+| Endpoint                                     | Response                                                             | Guard                    |
+| -------------------------------------------- | -------------------------------------------------------------------- | ------------------------ |
+| `GET /wp-json/wp-mini-laravel/v1/ping`       | `{"pong":true}`                                                      | none — deliberately open |
+| `GET /wp-json/wp-mini-laravel/v1/leads`      | `{"data":[{...},{...}]}`                                             | `RequireLeadRead`        |
+| `GET /wp-json/wp-mini-laravel/v1/leads/{id}` | `{"data":{...}}`                                                     | `RequireLeadRead`        |
+| …unknown `{id}`                              | `{"error":"not_found","message":"No lead with id 99."}` with **404** | `RequireLeadRead`        |
 
 A missing row is a 404 with an error body rather than `{}`, because a client that
 receives an empty object has to guess whether the lead is absent or merely empty.
@@ -705,14 +1013,234 @@ final class RequireLeadRead extends RequireCapability
 > so it takes no parameters and there is **no** `'capability:list_users'` syntax
 > here. Writing one registers a route whose middleware cannot be resolved: the
 > resolution throws, the adapter converts the throw into a denial, and the endpoint
-> 403s for *every* caller including administrators. It reads as a permissions bug
+> 403s for _every_ caller including administrators. It reads as a permissions bug
 > in the wrong file. The parameterized syntax described
 > [above](#parameterized-middleware) belongs to `routes/web.php`, where the
 > pipeline owns the request and can pass arguments to `handle()`.
 
 Routes can also be declared on a controller with the `#[Route]` attribute, which
 `Framework\Routing\Controller::registerRoutes()` reflects over; `make:controller`
-generates the attribute form.
+generates the attribute form. The attribute takes the verb, the path, the
+middleware and a permission callback:
+
+```php
+#[Route('GET', 'posts', middleware: [RequireCapability::class])]
+#[Route('DELETE', 'posts/{id:\d+}', permissionCallback: 'Checks@canDelete')]
+```
+
+It is repeatable, so one method may carry several. A route declared this way goes
+through exactly the same group prefix and group middleware handling as one written
+by hand — `registerRoutes()` calls `RouteRegistrar::controllerAction()`, the same
+seam `Route::controller()` uses.
+
+#### The `permission_callback` seam
+
+WordPress offers a REST route exactly one authorization hook, and it is a yes/no
+check: `permission_callback`. Middleware on a REST route runs **there**, not in the
+HTTP pipeline, and that is why the two middleware contracts are separate rather
+than merged.
+
+Every middleware runs in registration order and the first to return a `WP_Error`
+wins. Then:
+
+| Returned      | Meaning                                                                                                                                                                                                                   |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WP_Error`    | Denied, and the error's own status and message survive unchanged.                                                                                                                                                         |
+| `null`        | **Denied.** A middleware returns `null` to mean "no opinion" and WordPress reads it as a refusal — but the adapter has already returned by then, so an explicit `permissionCallback` returning `null` denies the request. |
+| `false`       | Denied.                                                                                                                                                                                                                   |
+| anything else | **A contract violation** — 500, naming the class and what it returned. A truthy `bool` or a string would otherwise be indistinguishable from the final "allowed" and would turn a protected route into a public one.      |
+
+Two failure rules that apply to every path through this seam:
+
+- **Authorization fails closed.** A middleware that _throws_ — a database blip, a
+  null dereference, a third-party call — is converted into a denial rather than
+  escaping. WordPress calls the permission callback with no error handling of its
+  own, so a throwable there would be an unhandled fatal that any unauthenticated
+  client could trigger on demand. An authorization check that could not run has
+  authorized nothing.
+- **A permission callback is named by string**, in one of the three forms the
+  container understands: a plain function name, a static method
+  (`Checks::canDelete`), or an instance method on a resolvable class
+  (`Checks@canDelete`). A **bare method name** such as `canDelete` is _not_ one of
+  them — nothing ties it to the route's controller, so it is reflected as a plain
+  function, not found, and the route denies. Because that is indistinguishable from
+  a real authorization failure, the error message names the callback and carries
+  the underlying reason, so a wiring bug can be told apart from a locked-down route.
+
+#### `WP_Error` codes
+
+The `code` a client switches on is `{app.prefix}` plus one of these, so it is
+stable across installs and rebrands:
+
+| Reason                       | Status                                                              |
+| ---------------------------- | ------------------------------------------------------------------- |
+| `unresolvable_controller`    | 500                                                                 |
+| `controller_failed`          | 500                                                                 |
+| `no_handler`                 | 500                                                                 |
+| `invalid_request`            | 400                                                                 |
+| `route_failed`               | 500, or 400 for a binding failure                                   |
+| `middleware_failed`          | `rest_authorization_required_code()` — 401 anonymous, 403 logged in |
+| `middleware_contract`        | 500                                                                 |
+| `permission_callback_failed` | `rest_authorization_required_code()`                                |
+
+The adapter builds these through the central `Handler`, so the _decisions_ — status,
+envelope, whether the message is safe to show, and the transaction rollback — come
+from one place while the _shape_ stays a `WP_Error`. That is the same split the two
+middleware contracts make, for the same reason: WordPress's REST server serializes
+whatever a callback returns and knows nothing about this framework's responses, so a
+`JsonResponse` returned from a REST callback would emit nothing at all.
+
+`Handler::toRestError()` is that seam, and it is public so a project can reach the
+same decisions without reaching the same shape.
+
+### Parameter Binding
+
+One class binds request values onto a controller action for **both** domains —
+`Framework\Routing\ParameterBinder`. The two differ in exactly two seams, and both
+are injected: where the values come from (`ParameterSource` — a `WP_REST_Request`
+or a `Framework\Http\Request`), and whether the request object itself is
+injectable.
+
+That sharing is not tidiness. Everything after the source is the same set of sharp
+decisions, and a fix to any of them fixes both domains rather than half of each.
+
+#### A route placeholder beats the body
+
+The rule the whole class exists to enforce. WordPress ranks request sources JSON,
+then body, then query, then URL **last** — so a POST body carrying `{"id": 999}`
+would fill an `$id` parameter that the URL matched as `123`, letting a client
+address one record and act on another. An ownership check written against the URL
+would then be bypassable.
+
+Two mechanisms close it, on the two domains:
+
+- **REST** — `pinRouteParameters()` writes the URL-matched values back through
+  `set_param()`, putting them at the front of WordPress's own priority order, so the
+  matched value is what the action sees however it reads the request.
+- **Web** — the binder reads route parameters **before** the source, and prefers
+  them by name when the loop reaches that parameter.
+
+#### A `bool` parameter never receives the string `"false"`
+
+`{"published": "false"}` arriving at a `bool $published` parameter is coerced by PHP
+to `true` — the non-empty string is truthy — and a draft silently publishes. So
+every accepted spelling is converted before reflection sees it:
+
+| Input                  | Result                                                        |
+| ---------------------- | ------------------------------------------------------------- |
+| `'true'`, `'1'`        | `true`                                                        |
+| `'false'`, `'0'`, `''` | `false`                                                       |
+| `1`, `0`               | `true`, `false`                                               |
+| anything else          | passed through unchanged, and refused by the type check below |
+
+Matching is case-insensitive, because `?published=False` from a hand-built query
+string is as likely as the lowercase form.
+
+The type check runs first and is its own table: an `int` parameter accepts an
+integer or an all-digits string, a `float` accepts an int, a float or a numeric
+string, a `bool` accepts any spelling above, an `array` accepts only an array — a
+PHP array cannot arrive from a URL segment, so it can only be satisfied by a
+structured body value. A value that satisfies nothing raises
+`RouteResolutionException::unexpectedArgument`, naming the parameter, the value, the
+controller and the action. A parameter no value was supplied for is **left out
+entirely**, so the container applies the parameter's own default, or reports a
+required scalar as unresolvable rather than passing `null` in and raising a
+`TypeError` inside the controller.
+
+#### A `FormRequest` parameter is a gate in front of the action
+
+Type-hint a `FormRequest` subclass and the action is **never entered** when
+validation fails — the binder returns the request's own failure response in its
+place. That is the one place a controller's contract is enforced without the
+author's cooperation, and it is why the check lives in the binder: the type-hint is
+the declaration, and the binder is the only code that reads it before the call.
+
+Two details worth knowing:
+
+- **Binding continues after a failure.** Every parameter is still bound, so a
+  parameter whose type no request value can satisfy is still reported — the two
+  defects stay distinguishable. A rejected form is something the user can fix; an
+  unbindable parameter is something only the route author can. Returning early
+  would hide the second behind the first, and would make binding depend on where in
+  the signature the form request sits.
+- **The response shape is chosen by the client, not the route.** A request that
+  `expectsJson()` gets a `422` with the errors. A browser form post gets a redirect
+  back to the form with the errors and old input flashed. The route's _file_ is not
+  the test: an admin screen whose form is submitted by `fetch()` is an HTML route
+  that wants a JSON error.
+
+The distinction between "a REST dispatch" and "a web dispatch" is carried by a
+marker the REST adapter primes around the call, not by inspecting the request —
+both domains build byte-identical `Request` objects, so nothing observable tells
+them apart.
+
+### `route:list`
+
+```bash
+wp wp_mini route:list
+```
+
+Every registered route in both domains, in one table: the domain, the verb, the
+WordPress **hook** it publishes on, the `Controller@action`, and the middleware.
+With no routes it says so and names the two files to look in.
+
+Three things about it are deliberate:
+
+- **It loads both routes files itself.** WP-CLI fires none of `rest_api_init`,
+  `admin_menu`, `admin_post` or `template_redirect`, so both routers would be empty
+  and the true answer invisible. Listing nothing would be a _wrong_ answer presented
+  confidently. It goes through `RouteLoader`, the same entry point the providers
+  use, so it cannot disagree with them about what loading a routes file means — and
+  the load is idempotent per file, so a process where a hook already fired lists
+  what that load collected rather than doubling it.
+- **A routes file that fails to load is a warning, not an abort.** The table still
+  prints. A broken file usually takes _some_ of the routes with it, and seeing the
+  ones that did register is how the mistake gets found.
+- **The URI column puts the hook first**, with the URL as a parenthetical. The hook
+  is the string a developer greps for in WordPress's source when a route does not
+  fire, and WordPress reaches both web surfaces through the same `admin-post.php`
+  and `admin-menu.php` entry points — so the URL's distinguishing part is its query
+  string, which sits exactly where truncation cuts.
+
+The **Domain** column is what makes the table answerable. `leads` may be an admin
+screen, a form action or a REST endpoint: three different URLs, three different
+hooks. The URI shows which one, but only because the domain says how to read the
+URI.
+
+### What the Routing Layer Binds
+
+`App\Providers\RouteServiceProvider` installs these, and the string keys are not
+an accident:
+
+| Key                                  | Binding                  | Why                                                                                                                                                                                                                                                                    |
+| ------------------------------------ | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `RouteFacade::ACCESSOR` (`'router'`) | `null`                   | Bound rather than omitted, because the facade distinguishes "unbound" from "bound to nothing". Nothing resolves it directly — `RouteLoader` aims the facade at a registrar around each routes file.                                                                    |
+| `router.api`                         | `RestApiRouterAdapter`   | **String keys, because two adapters share `RouterInterface`** and a type-hint on it would have no single correct answer. A silent choice between them is a route registered into the wrong domain.                                                                     |
+| `router.web`                         | `WordPressRouterAdapter` | As above.                                                                                                                                                                                                                                                              |
+| `'url'`                              | `UrlGenerator`           | What the `route()` helper resolves.                                                                                                                                                                                                                                    |
+| `NamedRoutes`                        | singleton                | One registry, so `route()` can find a name whichever domain declared it. Two registries would mean a name was only ever findable in one domain, silently.                                                                                                              |
+| both adapters                        | singletons               | **Load-bearing.** A routes file is `require`d and its calls land on whichever router the facade was aimed at. If the adapter were re-resolved at flush time it would be a _different object_ holding an empty table, and every route would vanish with nothing raised. |
+
+Most callers should type-hint the concrete adapter class rather than either string
+key — `RouteListCommand`, for instance, takes both adapters and the loader by
+constructor injection.
+
+Two consequences of the wiring, both covered above: the web hooks run at
+**priority 5**, and `routes/api.php` is loaded by the framework's own
+`RouteServiceProvider` (which the app provider extends) — it must not be loaded a
+second time, or every endpoint registers twice into one request and WordPress takes
+whichever it matches first.
+
+> **A note on the zone boundary.** `framework/Routing/` imports nothing from `App\`
+> or `Core\` — it is clean, and that is what lets the whole routing layer be tested
+> without a domain. Three classes in `framework/Http/` do reach into `Core\`, and
+> each is deliberate: `Handler` maps `DomainValidationException` to a 422 and rolls
+> back through `TransactionManagerContract`, which is the _only_ seam that knows both
+> zones and the reason the domain's exception carries no status; and
+> `HttpServiceProvider` resolves the transaction manager **conditionally**, so a
+> project with no database still gets a working error path. The rule being kept is
+> the one in [The Three-Zone Architecture](#the-three-zone-architecture) — `core/`
+> never depends on `app/` — and none of these three inverts it.
 
 ### Controller shapes
 
@@ -731,23 +1259,45 @@ views and redirects form posts. `--api` is a REST controller — it returns
 `WP_REST_Response` and is answered by WordPress's REST server. The namespace no
 longer decides this: `Admin/CompanyController --api` is a REST controller
 placed under `Admin/`, and `Api/CompanyController --resource` is a web one. The
-path says *where the file goes*; the flag says *what it is*.
+path says _where the file goes_; the flag says _what it is_.
 
 The two surfaces share no base class, no request type and no return type, so
-they are different stubs rather than one file with a namespace swapped in:
+they are different stubs rather than one file with a namespace swapped in. This
+table is the contract every stub is held to:
 
-| Flag | Stub | Extends | Takes | Returns | Actions |
-|---|---|---|---|---|---|
-| *(none)* | `controller.stub` | `Controller` | — | — | *(none)* |
-| `--resource` | `controller.resource.stub` | *(nothing)* | `Request` | `ResponseInterface` | `index`, `create`, `store`, `show`, `edit`, `update`, `destroy` |
-| `--api` | `controller.api.stub` | `Controller` | `WP_REST_Request` | `WP_REST_Response` | `index`, `store`, `show`, `update`, `destroy` |
-| `--invokable` | `controller.api.invokable.stub` | `Controller` | `WP_REST_Request` | `WP_REST_Response` | `__invoke` |
-| `--invokable` under `Admin/` | `controller.invokable.stub` | *(nothing)* | `Request` | `ResponseInterface` | `__invoke` |
+| Flag                         | Stub                            | Extends                            | `final` | Takes             | Returns             | Actions                                                         |
+| ---------------------------- | ------------------------------- | ---------------------------------- | ------- | ----------------- | ------------------- | --------------------------------------------------------------- |
+| _(none)_                     | `controller.stub`               | `Framework\Routing\Controller`     | no      | —                 | —                   | _(none)_                                                        |
+| `--resource`                 | `controller.resource.stub`      | _(nothing)_                        | yes     | `Request`         | `ResponseInterface` | `index`, `create`, `store`, `show`, `edit`, `update`, `destroy` |
+| `--api`                      | `controller.api.stub`           | `Framework\Routing\Controller`     | no      | `WP_REST_Request` | `WP_REST_Response`  | `index`, `store`, `show`, `update`, `destroy`                   |
+| `--invokable`                | `controller.api.invokable.stub` | `Framework\Routing\Controller`     | no      | `WP_REST_Request` | `WP_REST_Response`  | `__invoke`                                                      |
+| `--invokable` under `Admin/` | `controller.invokable.stub`     | _(nothing)_                        | no      | `Request`         | `ResponseInterface` | `__invoke`                                                      |
+
+Only `--resource` is `final`, and the split is not arbitrary. A generated class is
+`final` when it is **finished** — the web `--resource` stub is a complete set of
+screens a developer fills in, so nothing should extend it. The rows that extend
+`Framework\Routing\Controller` are open, because that base class is a shared
+surface a project may want to build a house base class on top of.
+
+**The two request types are not interchangeable, and neither are the two return
+types.** A `Request` is the framework's own input object, read with
+`$request->input('name')` and validatable through a `FormRequest`. A
+`WP_REST_Request` is WordPress's, read with `$request->get_param('name')`. A web
+action returns a `Framework\Http\Contracts\ResponseInterface`; a REST action
+returns a `WP_REST_Response` that WordPress's REST server renders. What a web
+action may and may not return is a closed list — see
+[What a web action may return](#what-a-web-action-may-return); a
+`WP_REST_Response` from a web route is **refused**, naming the route.
 
 The three shape flags are mutually exclusive; asking for two at once is refused
 before anything is written. `--invokable` is the one shape with no surface flag
 of its own, so its surface comes from the namespace: under `Admin/` it is a web
-controller, anywhere else a REST one.
+controller, anywhere else a REST one. The match is on the **first** namespace
+segment, case-sensitively: `Admin\Reports\CompanyController` is a web
+controller, `Reports\CompanyController` is not. There is no rule that says a
+namespace called `Reports` is a screen.
+
+#### What a `--resource` controller generates
 
 A `--resource` controller renders views and redirects with a flash message, and
 is mounted with `Route::adminPage(...)` / `Route::adminAction(...)` in
@@ -770,28 +1320,141 @@ final class CompanyController
 }
 ```
 
-An `--api` controller declares `#[Route]` attributes and is mounted with
-`Route::controller(...)` in `routes/api.php`. The command prints the correct
-mount for whichever shape it generated.
+The three form handlers each flash a different message — `Created.`, `Updated.`,
+`Deleted.` — and all three redirect to the same `<name>.index` target.
+
+**Nothing is injected and nothing is stubbed.** An injected dependency is one
+more thing to delete before the feature's own logic can be written, so the stub
+has no constructor at all. `view()` and `redirect()` resolve through the
+container at call time, which is what lets a scaffold with no constructor stay
+honest: the response a generated action returns is the same one an injected
+renderer would have produced.
+
+#### What an `--api` controller generates
+
+An `--api` controller declares `#[Route]` attributes on its five actions. Those
+attributes describe the routes, but **they do not register themselves**: nothing
+scans `app/Http/Controllers` at boot looking for controllers carrying them. The
+class is inert until a routes file names it.
+
+There are two ways to name it, and **they produce different route tables** — this
+is the one trap in the shape, so it is worth reading twice.
+
+**Attribute-driven** — mount the controller so `registerRoutes()` reflects over
+its methods, which is what the `#[Route]` attributes are for:
+
+```php
+Route::group(['prefix' => ''], function (): void {
+    (new CompanyController())->registerRoutes(Route::target());
+});
+```
+
+Every route then comes from an attribute, so the paths are the ones written in the
+class: `Company` (index, store) and `Company/(?P<id>\d+)` (show, update, destroy).
+The identifier segment is written in its **compiled** form rather than the
+`{id:\d+}` shorthand used in hand-written routes files; both are accepted wherever
+a path is read, since
+[a route's path is in compiled form after registration](#route-grammar-and-specificity).
+
+**Imperative** — declare the actions in the routes file instead:
+
+```php
+Route::controller(CompanyController::class, [
+    'index'   => 'GET',
+    'store'   => 'POST',
+    'show'    => 'GET',
+    'update'  => 'PUT',
+    'destroy' => 'DELETE',
+], 'Company');
+```
+
+> **`Route::controller()` ignores the `#[Route]` attributes.** It builds its own
+> paths by appending each action name to the base, so the same controller mounted
+> this way answers `Company`, `Company/store`, `Company/show`, `Company/update`
+> and `Company/destroy` — not `Company/(?P<id>\d+)`. Pick one mechanism per
+> controller, or you will have two overlapping tables registering from one class.
+
+The action named `index` maps to the base path itself in both mechanisms; every
+other action is appended in the imperative one.
+
+The five actions return through the inherited helpers: `respond()` for `index`
+and `show` (200), `created()` for `store` (201), and `noContent()` for `destroy`
+(204). `update` returns `respond()`.
+
+> **`make:controller --api` prints the imperative mount.** Its post-write hint
+> reads `Mount it with Route::controller(CompanyController::class, [...], 'Company')`
+> — which is correct for the *route names and verbs* but re-derives the paths, so
+> the `{id}` segments in the generated attributes are not the ones that end up
+> registered. If you generated the file for its attributes, mount it via
+> `registerRoutes()`; the hint names the other mechanism.
+
+#### The mount the command prints
+
+Once the file is written the command prints the mount for the shape it actually
+generated — the stub, not the flag, decides which line is printed, since
+`--resource` under `Admin/` and `--invokable` anywhere have surfaces the flag
+alone does not fix:
+
+| Shape generated                  | Printed hint                                                        |
+| -------------------------------- | ------------------------------------------------------------------- |
+| bare (`controller.stub`)         | It declares no routes yet; add `#[Route]` attributes and mount it.   |
+| `--api`                          | `Route::controller(Foo::class, [...], 'Foo')` in `routes/api.php`.   |
+| `--invokable` (REST)             | `Route::post('Foo', Foo::class)` in `routes/api.php`.                |
+| `--resource`                     | `Route::adminPage(...)` / `Route::adminAction(...)` in `routes/web.php`. |
+| `--invokable` under `Admin/`     | `Route::adminPage('…', Foo::class)` in `routes/web.php`.             |
+
+#### Placeholders a stub may use
+
+Each stub is rendered by replacing `{{ … }}` placeholders, all derived from the
+**class name** the generator stripped of its `Controller` suffix, its namespace
+segments and its `.php` extension — so `Admin/CompanyController` renders
+`Company`, not `Admin/Company`:
+
+| Placeholder     | For `CompanyController` | Used by                                | Casing                                            |
+| --------------- | ----------------------- | -------------------------------------- | ------------------------------------------------- |
+| `{{ namespace }}` | `App\Http\Controllers\Admin` | every stub                       | as declared                                       |
+| `{{ class }}`     | `CompanyController`     | every stub                             | as declared                                       |
+| `{{ route }}`     | `Company`               | the two REST stubs                     | class spelling, suffix stripped                   |
+| `{{ name }}`      | `company`               | the web stubs' redirect target         | lower-cased first letter                          |
+| `{{ view }}`      | `company`               | the web stubs' view directory          | lower-cased                                       |
+| `{{ items }}`     | `companies`             | the web stub's `index` view data (the collection) | lower-cased, naively pluralized       |
+| `{{ item }}`      | `company`               | the web stub's `create`/`show`/`edit` view data (the single record) | lower-cased first letter |
+
+`{{ route }}` and `{{ name }}` deliberately disagree about case: a route path is
+a noun in a URL and a route **name** is what `redirect()->route()` matches
+against. `{{ view }}` and `{{ item }}` disagree with both, because a view is a
+file path. Each is spelled the way its own surface conventionally spells it.
+The plural is a naive rule (`-y` → `-ies`, sibilants → `-es`, else `+ s`), not an
+inflector — it names a **local variable** in a generated action that the
+developer renames the moment they write the query behind it.
+
+#### Redirect names, and the one that throws
 
 The web stubs name their redirect target `<name>.index` — `company.index` for
 `CompanyController` — so a generated `store()` only works once you have given the
 `index` route that name with `->name('company.index')`. A name that does not match
 throws when the redirect is built, naming the routes that do exist.
 
+#### Overriding a stub, and the refusals
+
 Each shape is a separate file in `framework/stubs/`, so a project can override
 one without touching the others by copying it into its own `stubs/` directory.
 They are resolved through `StubLocator`, which prefers the project's copy and
-falls back to the framework's.
+falls back to the framework's — a project that edits one command's stub and not
+another's has two copies answering the same name, which is what `StubLocator::source()`
+exists to make answerable.
 
 `--resource`, `--api` and `--invokable` together are refused rather than
 resolved: they name different files, and silently picking one would report
-success for a controller nobody asked for.
+success for a controller nobody asked for. The refusal happens before anything
+is written, so a rejected run leaves no file behind. The count is what is
+checked, not a table of pairs — a `match` over combinations would have to
+enumerate every one, and the pair it forgot would fall through to the default
+stub and report the wrong shape as a success.
 
-> **The attributes are declarative; the mount is what publishes them.**
-> `#[Route]` attributes describe each action in place, but they do not put the
-> controller on the router by themselves — add the controller to
-> `routes/api.php` for them to take effect.
+Generation into an occupied path is refused by the base generator rather than
+overwritten, and a sub-namespace argument (`Admin/CompanyController`) places the
+file and its matching namespace without changing the placeholders above.
 
 ### Resources and sparse fieldsets
 
@@ -862,9 +1525,19 @@ php mini --verbose route:list          # report the prefix and binary it resolve
   no flag. Without a `.env` it falls back to the same `wp_mini` that
   `config/app.php` falls back to.
 - **WP-CLI installs itself when it is missing.** If `wp` is not on your `PATH`,
-  `mini` downloads `wp-cli.phar` once into a hidden `.cli-cache/` directory
-  (gitignored) and reuses it from then on. A machine that already has WP-CLI
-  never triggers a download.
+  `mini` downloads `wp-cli.phar` once and reuses it from then on. A machine that
+  already has WP-CLI never triggers a download.
+
+  The copy is cached in a namespaced directory under the system temporary
+  directory — `sys_get_temp_dir() . '/wp-mini-laravel-cli-cache'`, so
+  `%TEMP%\wp-mini-laravel-cli-cache` on Windows and `/tmp/...` elsewhere. It is
+  deliberately **not** inside the plugin. A running process that has read the
+  phar holds a share lock on it under Windows, and WordPress cannot recursively
+  delete a locked file — which is exactly how a cached phar used to turn into
+  `Could not fully remove the plugin wp-mini-laravel/wp-mini-laravel.php` during
+  an uninstall or update. A cache is regenerable machine-specific state, not
+  plugin data, so it has no business in the directory WordPress has to be able
+  to delete outright. Run `php mini --help` to see the resolved path.
 
 It is a **forwarder**, not a second console: there is no command registry in it,
 and it never needs to know what `route:list` is. Two things are resolved, and
@@ -883,14 +1556,16 @@ called. A malformed value is refused with the value quoted.
 
 **WP-CLI resolution order** is your `PATH` first — preferring a real `wp` or a
 `.phar` over the `wp.bat` proxy, since PHP cannot execute a batch file as a
-script — then the local `.cli-cache/` download. Both cURL and PHP's stream
-wrapper are tried for the download, because the two read their TLS trust anchors
-from different ini settings and a machine can have a working HTTPS stack in one
-and not the other.
+script — then the cached download in the system temporary directory. Both cURL
+and PHP's stream wrapper are tried for the download, because the two read their
+TLS trust anchors from different ini settings and a machine can have a working
+HTTPS stack in one and not the other. The download is written to a `.part` file
+and renamed into place, so an interrupted transfer can never be cached as a
+truncated phar.
 
 `tests/manual/verify-mini-entrypoint.php` checks all of this against a real
 WordPress — including the case that matters most, that a prefix the plugin has
-not registered does *not* silently succeed.
+not registered does _not_ silently succeed.
 
 ### Troubleshooting: `bash: wp: command not found` (Windows + Git Bash)
 
@@ -985,7 +1660,7 @@ Notes that matter:
 
 `Framework\Console\Command` deliberately does **not** extend `WP_CLI_Command` —
 WP-CLI accepts a plain callable, so extending it would couple every command to
-WP-CLI being loaded merely to be *declared*, not to be run. `App\Console\Command`
+WP-CLI being loaded merely to be _declared_, not to be run. `App\Console\Command`
 exists as an empty subclass so project-wide output conventions have a home in
 your namespace rather than in the library.
 
@@ -1013,6 +1688,61 @@ final class DashboardController
 {
     public function __construct(private readonly ViewRenderer $views) {}
 }
+```
+
+### Exception Handling
+
+Both route adapters wrap their dispatch in `try / catch (\Throwable)` and hand
+whatever they catch to `Framework\Http\Exceptions\Handler`. Nothing reaches
+WordPress as a fatal, and every failure becomes a response shaped for the client —
+JSON for a request that asked for JSON, an HTML page otherwise.
+
+The handler does three things, **in this order**, and the order is load-bearing:
+
+1. **Roll back.** If a transaction is open it is abandoned first. Rendering can
+   itself throw — a broken view, an unwritable log — and `$wpdb` closes an open
+   transaction by _committing_ it, so "left open across a render failure" means
+   half the work becomes durable, which is exactly what the transaction existed to
+   prevent.
+2. **Report.** Every throwable is logged, including ones whose message is withheld
+   from the client. Withholding is about the client, not about losing the detail.
+3. **Render.** The status, the envelope and whether the message is safe.
+
+```php
+throw new NotFoundHttpException('No such lead.');        // 404
+throw new TooManyRequestsHttpException(30);              // 429 + Retry-After: 30
+throw new ValidationHttpException('Invalid.', $errors);  // 422 + field errors
+```
+
+The JSON envelope is stable — `{error, message}`, plus `errors` and `code` when
+present — and `error` is a slug derived from the **status**, not the exception
+class, so a client switching on it does not break when the framework adds a
+subclass.
+
+**The domain never names a status code.** `Core\` may not depend on `Framework\`,
+so a genuine invariant violation raises
+`Core\Shared\Exceptions\DomainValidationException` — which extends `\DomainException`
+and carries no HTTP knowledge at all. The handler is the only seam that knows both
+zones, and maps it to a 422 there:
+
+```php
+// core/ — no status, no headers, no HTTP
+throw DomainValidationException::field('email', 'That address is not valid.');
+```
+
+Override `Handler::mapDomainException()` to change that policy — a JSON API and an
+HTML admin may want different statuses for the same violation, and that one method
+is the only place either answer belongs.
+
+**Server-fault messages are withheld in production.** An uncaught `RuntimeException`
+from a repository leaks the schema — `SQLSTATE[HY000] … MySQL server has gone away`
+names the engine, the driver and the failure mode, to whoever asked. So a throwable
+the handler had to _wrap_ says `An unexpected error occurred.` unless `APP_DEBUG` is
+on. A deliberate `HttpException` keeps its own message at any status, because its
+author wrote it to be read:
+
+```php
+throw new HttpException('The payment gateway is unavailable.', 503);  // shown as-is
 ```
 
 ---
@@ -1085,7 +1815,7 @@ final class CreateLeadsTable extends Migration
 }
 ```
 
-Note what is *not* in that snippet: no `$wpdb`, no `$wpdb->prefix`, no
+Note what is _not_ in that snippet: no `$wpdb`, no `$wpdb->prefix`, no
 `CREATE TABLE`, no `last_error` handling. Table names are written bare (`leads`,
 not `wp_leads`) and the prefix is applied by the adapter, so the same migration
 runs unchanged on a site whose `$table_prefix` differs.
@@ -1099,22 +1829,22 @@ table uses. `Schema::drop()` and `Schema::dropIfExists()` are the same operation
 prefer the second in a `down()`, since a `down()` routinely runs against a
 database where its `up()` never completed.
 
-| Columns | Modifiers | Indexes | Foreign keys |
-| --- | --- | --- | --- |
+| Columns                                                                                                                                                                                                                                                                                                                                                                         | Modifiers                                                       | Indexes                                                                              | Foreign keys                                                                                                                                                  |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `id()`, `string()`, `char()`, `text()`, `mediumText()`, `tinyText()`, `integer()`, `unsignedInteger()`, `unsignedBigInteger()`, `unsignedTinyInteger()`, `boolean()`, `datetime()`, `date()`, `time()`, `year()`, `timestamp()`, `decimal()`, `float()`, `double()`, `binary()`, `json()`, `enum()`, `set()`, `uuid()`, `ulid()`, `ipAddress()`, `macAddress()`, `timestamps()` | `nullable()`, `default()`, `useCurrent()`, `after()`, `first()` | `index()`, `indexColumn()`, `indexWith()`, `unique()`, `dropIndex()`, `dropUnique()` | `foreignId()`, `foreignUuid()`, `foreignUlid()`, `morphs()`, `nullableMorphs()`, `constrained()`, `cascadeOnDelete()`, `nullOnDelete()`, `restrictOnDelete()` |
 
 Three of those are multi-column helpers rather than single types:
 
-| Helper | Emits |
-| --- | --- |
-| `morphs('subject')` | `subject_type` varchar(191) + `subject_id` bigint unsigned, both `NOT NULL`, plus a composite index |
-| `nullableMorphs('subject')` | the same two columns, both nullable — `morphs(…)->nullable()` would reach only the second |
-| `softDeletes()` | a nullable `deleted_at` datetime. Deliberately **not** indexed: the useful index is composite and depends on what the table filters by |
-| `rememberToken()` | a nullable `remember_token` varchar(100) |
+| Helper                      | Emits                                                                                                                                  |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `morphs('subject')`         | `subject_type` varchar(191) + `subject_id` bigint unsigned, both `NOT NULL`, plus a composite index                                    |
+| `nullableMorphs('subject')` | the same two columns, both nullable — `morphs(…)->nullable()` would reach only the second                                              |
+| `softDeletes()`             | a nullable `deleted_at` datetime. Deliberately **not** indexed: the useful index is composite and depends on what the table filters by |
+| `rememberToken()`           | a nullable `remember_token` varchar(100)                                                                                               |
 
 **`json()` and `binary()` take no `default()`, and `enum()`/`set()` refuse one
 too.** MySQL rejects a `DEFAULT` clause on a json or blob column outright, and
-accepts one on an enum that is *outside* the member list — storing the empty
+accepts one on an enum that is _outside_ the member list — storing the empty
 member rather than refusing it, which is a schema that quietly allows a value
 nothing meant to permit. All four are refused at build time with that said.
 
@@ -1126,16 +1856,16 @@ so a member containing a quote cannot break out of the list.
 Changing an existing table — all of these are `Schema::table()`, and all of them
 compile into the one `ALTER TABLE` the callback describes:
 
-| What | Method |
-| --- | --- |
-| Add columns and indexes | `string('slug')`, `index()`, `unique()`, … |
-| Drop a column | `dropColumn('slug')` or `dropColumn(['a', 'b'])` |
-| Rename a column | `renameColumn('body', 'content')` |
-| Change a column's definition | `string('body', 500)->nullable()->change()` |
-| Move a column | `string('title')->after('id')->change()`, or `->first()` |
-| Drop an index | `dropIndex(['name'])`, `dropUnique(['name'])` |
+| What                         | Method                                                   |
+| ---------------------------- | -------------------------------------------------------- |
+| Add columns and indexes      | `string('slug')`, `index()`, `unique()`, …               |
+| Drop a column                | `dropColumn('slug')` or `dropColumn(['a', 'b'])`         |
+| Rename a column              | `renameColumn('body', 'content')`                        |
+| Change a column's definition | `string('body', 500)->nullable()->change()`              |
+| Move a column                | `string('title')->after('id')->change()`, or `->first()` |
+| Drop an index                | `dropIndex(['name'])`, `dropUnique(['name'])`            |
 
-`Schema::rename('notes', 'archive')` renames a *table*, and is the one alteration
+`Schema::rename('notes', 'archive')` renames a _table_, and is the one alteration
 that is not a blueprint method — it takes both names through the prefix and
 throws if the source is absent.
 
@@ -1251,7 +1981,7 @@ A `down()` that genuinely cannot reverse its `up()` is a legitimate choice for a
 data migration — say so in the docblock, as above, rather than writing a `down()`
 that silently does the wrong thing.
 
-> **Note on the two examples.** Raw `$wpdb` DDL for *schema* changes is not
+> **Note on the two examples.** Raw `$wpdb` DDL for _schema_ changes is not
 > recommended here — it bypasses the prefix handling and the `dbDelta()`
 > convergence above. Reach for `$wpdb` for **data**, and `Schema::` for
 > **structure**.
@@ -1360,11 +2090,11 @@ being reversed. They are ordinary WordPress hooks, so you attach to them with
 `add_action()` in a service provider or anywhere else that runs before the
 migration command does:
 
-| Action | Fires | Arguments |
-| --- | --- | --- |
-| `{prefix}migration_starting` | immediately before the body runs | `string $identifier`, `string $direction` |
-| `{prefix}migration_finished` | after the body returned, **only on success** | `string $identifier`, `string $direction` |
-| `{prefix}migration_failed` | when the body threw, before the exception propagates | `string $identifier`, `string $direction`, `Throwable $e` |
+| Action                       | Fires                                                | Arguments                                                 |
+| ---------------------------- | ---------------------------------------------------- | --------------------------------------------------------- |
+| `{prefix}migration_starting` | immediately before the body runs                     | `string $identifier`, `string $direction`                 |
+| `{prefix}migration_finished` | after the body returned, **only on success**         | `string $identifier`, `string $direction`                 |
+| `{prefix}migration_failed`   | when the body threw, before the exception propagates | `string $identifier`, `string $direction`, `Throwable $e` |
 
 ```php
 add_action('wp_mini_laravel_migration_starting', function (string $identifier, string $direction): void {
@@ -1423,7 +2153,7 @@ DDL implicitly commits. So the second process waits instead of racing.
 has to decide what to do when the holder dies: the row outlives the process, so
 every later run blocks on a lock nobody holds, and expiring it needs a timeout
 that is either too short (two live runs collide) or too long (a dead run blocks a
-deploy). `GET_LOCK()` has no such problem: MySQL binds it to the *connection*, so
+deploy). `GET_LOCK()` has no such problem: MySQL binds it to the _connection_, so
 a process that dies takes its lock with it, immediately and correctly.
 
 **The lock name carries `$wpdb->prefix`** — `wp_plugin_migrations_lock` on a
@@ -1548,11 +2278,11 @@ invent a REST namespace or a CLI prefix by hand (see the table below).
 
 ### What it rewrites — the hybrid pass
 
-| Kind | Files | Example |
-| --- | --- | --- |
+| Kind                 | Files                                                                                                                                         | Example                                                  |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
 | **Static structure** | Renamed entry file, `composer.json` name + PSR-4 maps, every `App\` / `Core\` namespace in `app/`, `core/`, `config/`, `routes/` and `tests/` | `App\` → `LeadBridge\App\`, `Core\` → `LeadBridge\Core\` |
-| **Config fallbacks** | The second argument of every `env()` call in `config/app.php` | `env('APP_NAME', 'Lead Bridge')` |
-| **Dotenv** | Identity keys in `.env.example`, and in `.env` when it exists | `APP_PREFIX="lead_bridge_"` |
+| **Config fallbacks** | The second argument of every `env()` call in `config/app.php`                                                                                 | `env('APP_NAME', 'Lead Bridge')`                         |
+| **Dotenv**           | Identity keys in `.env.example`, and in `.env` when it exists                                                                                 | `APP_PREFIX="lead_bridge_"`                              |
 
 `framework/` is never rewritten. Its `Framework\` namespace and its fallback
 defaults are the library's own identity — the script prints what it left there so
@@ -1565,7 +2295,7 @@ to parse `\A`.
 
 Two things are deliberately left alone even though they are yours:
 
-- **`tests/Integration/RebranderTest.php`** holds fixtures that *describe* the
+- **`tests/Integration/RebranderTest.php`** holds fixtures that _describe_ the
   starter's identity — they write `App\` and `Core\` into a scratch tree and
   assert what moved. Rewriting the file would move the fixture and the assertion
   independently and leave the rebranded project with a red suite.
@@ -1575,16 +2305,16 @@ Two things are deliberately left alone even though they are yours:
 
 ### Identifiers
 
-| Identifier | Default | Example | Derived from |
-| --- | --- | --- | --- |
-| Plugin name | `WP Mini Laravel` | `Lead Bridge` | `--name` |
-| Slug / folder | `wp-mini-laravel` | `lead-bridge` | `--slug` |
-| Constant prefix | `WP_MINI_LARAVEL_` | `LEAD_BRIDGE_` | `SNAKE(namespace)_` |
-| Option prefix | `wp_mini_laravel_` | `lead_bridge_` | `SNAKE(slug)_` |
-| CLI prefix | `wp_mini` | `leadbridge` | `LOWER(namespace)` |
-| REST namespace | `wp-mini-laravel/v1` | `lead-bridge/v1` | `slug/v1` |
-| App namespace | `App` | `LeadBridge\App` | `namespace\App` |
-| Core namespace | `Core` | `LeadBridge\Core` | `namespace\Core` |
+| Identifier      | Default              | Example           | Derived from        |
+| --------------- | -------------------- | ----------------- | ------------------- |
+| Plugin name     | `WP Mini Laravel`    | `Lead Bridge`     | `--name`            |
+| Slug / folder   | `wp-mini-laravel`    | `lead-bridge`     | `--slug`            |
+| Constant prefix | `WP_MINI_LARAVEL_`   | `LEAD_BRIDGE_`    | `SNAKE(namespace)_` |
+| Option prefix   | `wp_mini_laravel_`   | `lead_bridge_`    | `SNAKE(slug)_`      |
+| CLI prefix      | `wp_mini`            | `leadbridge`      | `LOWER(namespace)`  |
+| REST namespace  | `wp-mini-laravel/v1` | `lead-bridge/v1`  | `slug/v1`           |
+| App namespace   | `App`                | `LeadBridge\App`  | `namespace\App`     |
+| Core namespace  | `Core`               | `LeadBridge\Core` | `namespace\Core`    |
 
 The four names that must be **globally unique** — option prefix, CLI prefix, REST
 namespace and constant prefix — are the ones that break something when two
@@ -1612,7 +2342,13 @@ composer test
 
 ---
 
-## Testing
+### UNIT TESTING POLICY (TEMPORARILY PAUSED)
+
+- NEVER write, generate, scaffold, or require unit/feature/integration tests. NEVER create files under `tests/`. NEVER run test suites unless the prompt asks.
+- NEVER load or follow `07-testing.txt` while paused, unless the prompt asks for tests. Do not list or claim tests in any Definition of Done or checklist.
+- An explicit prompt instruction ("write a test for X") overrides the pause for that request only.
+- Architecture rules are unchanged. Keep code testable (ports behind `...Contract`, pure Entities, no framework in Core).
+- Only the developer re-enables testing, explicitly. Then load 07 and remove this section.
 
 ```bash
 vendor/bin/phpunit                                    # the whole suite
@@ -1628,13 +2364,13 @@ deliberate order (stubs first, then Composer's autoloader, then the class stubs,
 then the builtin doubles), so the whole framework is testable without a
 WordPress install.
 
-| Directory | What it holds |
-| --- | --- |
-| `tests/Unit/` | No infrastructure — pure logic against the stubs. |
-| `tests/Integration/` | Adapters that really issue SQL, against in-memory doubles. |
-| `tests/Support/` | The doubles: `FakeWpdb`, `WpStub`, `MigrationWorkspace`, recording migrations. |
-| `tests/Fixtures/config/` | A rebranded config, for tests that must prove a value is *derived*. |
-| `tests/manual/` | Runnable probes for behaviour that cannot be reached from PHPUnit. |
+| Directory                | What it holds                                                                  |
+| ------------------------ | ------------------------------------------------------------------------------ |
+| `tests/Unit/`            | No infrastructure — pure logic against the stubs.                              |
+| `tests/Integration/`     | Adapters that really issue SQL, against in-memory doubles.                     |
+| `tests/Support/`         | The doubles: `FakeWpdb`, `WpStub`, `MigrationWorkspace`, recording migrations. |
+| `tests/Fixtures/config/` | A rebranded config, for tests that must prove a value is _derived_.            |
+| `tests/manual/`          | Runnable probes for behaviour that cannot be reached from PHPUnit.             |
 
 `phpunit.xml` sets `failOnWarning`, `failOnNotice` and `failOnDeprecation`, so a
 sloppy test is a failing test rather than a footnote.
@@ -1649,20 +2385,24 @@ a stubbed test for it would pass for the wrong reason. That is what
 
 All keys live in `config/app.php` and are read through `config()`:
 
-| Key | Env variable | Default |
-| --- | --- | --- |
-| `app.name` | `APP_NAME` | `WP Mini Laravel` |
-| `app.env` | `APP_ENV` | `production` |
-| `app.prefix` | `APP_PREFIX` | `wp_mini_laravel_` |
-| `app.namespace` | `APP_NAMESPACE` | `App` |
-| `app.views` | `APP_VIEWS_PATH` | `views` |
-| `app.cli_prefix` | `CLI_PREFIX` | `wp_mini` |
-| `app.rest_namespace` | `REST_NAMESPACE` | `wp-mini-laravel/v1` |
-| `app.providers` | — | the service provider list |
+| Key                  | Env variable     | Default                   |
+| -------------------- | ---------------- | ------------------------- |
+| `app.name`           | `APP_NAME`       | `WP Mini Laravel`         |
+| `app.env`            | `APP_ENV`        | `production`              |
+| `app.prefix`         | `APP_PREFIX`     | `wp_mini_laravel_`        |
+| `app.namespace`      | `APP_NAMESPACE`  | `App`                     |
+| `app.views`          | `APP_VIEWS_PATH` | `views`                   |
+| `app.cli_prefix`     | `CLI_PREFIX`     | `wp_mini`                 |
+| `app.rest_namespace` | `REST_NAMESPACE` | `wp-mini-laravel/v1`      |
+| `app.providers`      | —                | the service provider list |
+| `app.debug`          | `APP_DEBUG`      | `false`                   |
 
-`APP_DEBUG` ships in `.env` and `.env.example` but is **not yet mapped to a
-config key** — nothing reads it. Add `'debug' => env('APP_DEBUG', false)` to
-`config/app.php` if you want it.
+`app.debug` governs one thing: whether a **server fault** the handler had to wrap
+shows its real message to the client. It does not affect a deliberately raised
+`HttpException`, whose message is always shown — see
+[Exception Handling](#exception-handling). It defaults to `false`, because a
+framework that leaks stack detail by default leaks it on every install that never
+got round to reading this table.
 
 **Never call `env()` outside `config/`.** See [Config over env](#config-over-env).
 

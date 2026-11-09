@@ -12,22 +12,22 @@ use Framework\Database\Schema\Schema;
 use Framework\Database\Schema\SchemaDumper;
 
 /**
- * `wp wp_mini migrate:dump` — write the live schema back out as a migration.
+ * `wp wp_mini migrate:dump` - write the live schema back out as a migration.
  *
- * ## What it is for
+ * What it is for
  *
  * The migration history and the database drift apart. A column added by hand, a
  * migration that half-applied, a table an earlier developer created through
- * phpMyAdmin — none of those are in `database/migrations` and all of them are in
+ * phpMyAdmin - none of those are in `database/migrations` and all of them are in
  * the database. This reads the catalogue and writes a migration describing what
  * is actually there, so the two can be compared and reconciled.
  *
- * ## Why it writes to `--output` and not to `database/migrations/`
+ * Why it writes to `--output` and not to `database/migrations/`
  *
  * The product is a *snapshot*, and the usual reason to take one is to look at
  * it. A command that dropped a generated file into the migrations directory by
  * default would leave every developer who ran it once with a migration they did
- * not write and probably do not want — and running it would apply a second,
+ * not write and probably do not want - and running it would apply a second,
  * conflicting definition of tables the existing migrations already create. So the
  * destination is explicit, and the message says what was written where.
  *
@@ -35,12 +35,12 @@ use Framework\Database\Schema\SchemaDumper;
  * is WP-CLI's own global flag for selecting a WordPress installation; see
  * {@see self::targetPath()}.
  *
- * ## What it does not do
+ * What it does not do
  *
  * It does not reconstruct the migration history: it emits one `create` per table
  * and has no way to know which migration produced which column. It does not dump
  * data. And it reports, rather than approximates, anything it cannot
- * reconstruct — see {@see SchemaDumper}, whose limits are stated there and
+ * reconstruct - see {@see SchemaDumper}, whose limits are stated there and
  * repeated in the file it writes so a reader meets them where they matter.
  */
 class MigrateDumpCommand extends Command
@@ -51,7 +51,7 @@ class MigrateDumpCommand extends Command
      * The default is "the project's own tables", and on a real install the
      * database prefix covers `wp_posts`, `wp_options` and forty more that belong
      * to WordPress. Dumping those would produce a migration that re-declares
-     * WordPress's own schema — which is not merely useless but actively harmful,
+     * WordPress's own schema, which is not merely useless but actively harmful,
      * since running it would assert a shape WordPress is free to change.
      *
      * A fixed list rather than a query, because the set of core tables is a fact
@@ -116,13 +116,13 @@ class MigrateDumpCommand extends Command
         $directory = dirname($target);
 
         if (!is_dir($directory) && !@mkdir($directory, 0755, true) && !is_dir($directory)) {
-            $this->error(sprintf('Cannot write to: %s — the directory %s could not be created.', $target, $directory));
+            $this->error(sprintf('Cannot write to: %s, the directory %s could not be created.', $target, $directory));
 
             return;
         }
 
         // Checked rather than allowed to overwrite: the file may be a dump the
-        // operator has since hand-edited, which is the documented workflow — dump,
+        // operator has since hand-edited, which is the documented workflow - dump,
         // read, adjust, keep. Silently replacing it would destroy exactly the work
         // this command exists to make possible.
         if (file_exists($target)) {
@@ -137,10 +137,10 @@ class MigrateDumpCommand extends Command
 
         // Tested before writing rather than inferring failure from the write's
         // return value. `file_put_contents()` also returns false when the *disk*
-        // is full, and the two want different advice — "fix the path" against
-        // "free up space" — so the common and checkable case is separated out.
+        // is full, and the two want different advice - "fix the path" against
+        // "free up space" - so the common and checkable case is separated out.
         if (!is_writable($directory)) {
-            $this->error(sprintf('Cannot write to: %s — the directory %s is not writable.', $target, $directory));
+            $this->error(sprintf('Cannot write to: %s, the directory %s is not writable.', $target, $directory));
 
             return;
         }
@@ -161,12 +161,12 @@ class MigrateDumpCommand extends Command
     /**
      * Where the dump is written, or null when no destination was given.
      *
-     * ## Why the flag is `--output` and not `--path`
+     * Why the flag is `--output` and not `--path`
      *
      * `--path` is a **WP-CLI global**: `wp --path=/srv/site` selects which
      * WordPress installation to run against, and WP-CLI consumes it during
      * bootstrap, before any command sees its arguments. Declaring it as an
-     * option here did not shadow the global — it lost to it. `wp wp_mini
+     * option here did not shadow the global - it lost to it. `wp wp_mini
      * migrate:dump --path=dumps/schema.php` would have had `dumps/schema.php`
      * read as a WordPress root, the command would never have received the flag,
      * and the operator would be told to "pass a different --path" while passing
@@ -174,7 +174,7 @@ class MigrateDumpCommand extends Command
      * use.
      *
      * Not declared in a synopsis either, because this framework registers
-     * commands by callable and lets WP-CLI infer the signature — so the only
+     * commands by callable and lets WP-CLI infer the signature - so the only
      * defence is to not want the name.
      */
     private function targetPath(array $assocArgs): ?string
@@ -208,7 +208,7 @@ class MigrateDumpCommand extends Command
      * The `--table` values, however WP-CLI spelled them.
      *
      * A repeated flag arrives as an array and a single use arrives as a string,
-     * so both are accepted — the alternative is a command that works once and
+     * so both are accepted - the alternative is a command that works once and
      * breaks when a second table is added.
      *
      * @return list<string>
@@ -241,7 +241,7 @@ class MigrateDumpCommand extends Command
      * "The plugin's" means carrying the database prefix, minus WordPress's core
      * tables and the framework's tracking table. The prefix is the whole of the
      * plugin's claim on the database, so a table without it is not this plugin's
-     * to describe — dumping it would produce a migration that fails on install,
+     * to describe - dumping it would produce a migration that fails on install,
      * since `Schema::create()` would prefix a name that is already fully spelled.
      *
      * @return list<string>
@@ -291,7 +291,7 @@ class MigrateDumpCommand extends Command
      * describe it; the `Schema::` calls a migration makes write through the same
      * seam. Resolving the interface from the container independently would give
      * the command a *different* adapter whenever `Schema::useAdapter()` has
-     * substituted one — it would then happily describe a database the rest of the
+     * substituted one - it would then happily describe a database the rest of the
      * run is not using, and nothing about the output would look wrong.
      */
     private function adapter(): DatabaseAdapterInterface

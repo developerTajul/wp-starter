@@ -13,7 +13,7 @@ use Throwable;
  *
  * Failure to run is a deliberate hard stop. A batch that continues past a failed
  * migration runs later migrations against a schema that is not what they expect,
- * and — worse — records them as applied, so the tracking table claims a structure
+ * and - worse - records them as applied, so the tracking table claims a structure
  * the database does not have. Stopping leaves the table honest about what
  * actually ran.
  */

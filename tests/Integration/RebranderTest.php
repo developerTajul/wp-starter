@@ -256,7 +256,7 @@ final class RebranderTest extends TestCase
         <?php
         namespace App;
 
-        use Core\Shared\Result;
+        use Core\Shared\Application\DTOs\Result;
 
         final class Kernel
         {

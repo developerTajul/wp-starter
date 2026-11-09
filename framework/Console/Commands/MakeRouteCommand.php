@@ -10,7 +10,7 @@ use Framework\Console\GeneratorCommand;
  * Creates the routes file for a project that does not have one yet.
  *
  * There is only ever one routes file, so this is a scaffold rather than a
- * generator for arbitrary names — the name argument is accepted but the target
+ * generator for arbitrary names - the name argument is accepted but the target
  * path is fixed. Re-running it is reported as an error by the base class rather
  * than silently overwriting hand-written routes.
  */
@@ -36,7 +36,7 @@ class MakeRouteCommand extends GeneratorCommand
     protected function getStubPath(): string
     {
         // Bare name: see StubLocator. The target path below is still the
-        // project's — only the *template* is overridable.
+        // project's, only the *template* is overridable.
         return 'routes.stub';
     }
 
@@ -46,7 +46,7 @@ class MakeRouteCommand extends GeneratorCommand
     }
 
     /**
-     * The file name is fixed, so no class name is accepted — passing one is more
+     * The file name is fixed, so no class name is accepted - passing one is more
      * likely to be a misunderstanding than a request, and silently ignoring it
      * would leave the caller thinking a differently-named file was created.
      */

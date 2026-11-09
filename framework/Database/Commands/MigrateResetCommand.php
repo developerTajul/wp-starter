@@ -11,37 +11,37 @@ use Framework\Database\Schema\Schema;
 use Throwable;
 
 /**
- * `wp wp_mini migrate:reset` — reverse every batch, and stop there.
+ * `wp wp_mini migrate:reset` - reverse every batch, and stop there.
  *
  * The first half of `migrate:refresh`, on its own. Where `rollback` undoes the
  * most recent batch, this runs each migration's `down()` for *every* batch,
  * newest first, and leaves the database empty of this plugin's schema.
  *
- * ## Why this exists when `refresh` already does it
+ * Why this exists when `refresh` already does it
  *
  * Because the two halves of a refresh are separately useful, and the useful one
  * is the first. A developer who wants to test their `down()` methods, or to get
  * back to a clean schema before switching branches, does not want the re-run that
- * `refresh` performs — and `rollback` only reaches one batch, so getting to empty
+ * `refresh` performs - and `rollback` only reaches one batch, so getting to empty
  * with it means running it once per batch with no idea how many that is.
  *
- * ## How it differs from `migrate:fresh`
+ * How it differs from `migrate:fresh`
  *
  * **`fresh` drops the tables; `reset` reverses them.** The distinction is not
- * cosmetic. `fresh` calls no `down()` at all — it is the command that works even
- * when every `down()` in the project is broken — and it also drops the tracking
+ * cosmetic. `fresh` calls no `down()` at all - it is the command that works even
+ * when every `down()` in the project is broken - and it also drops the tracking
  * table, resetting the batch counter. This runs the reverse path, so it is the
  * command that *finds out* whether that path works, and it leaves the tracking
  * table in place with its batch history intact.
  *
- * Neither is reversible, and neither takes a confirmation flag here — the
+ * Neither is reversible, and neither takes a confirmation flag here - the
  * confirmation is WP-CLI's `--yes`, handled at the command layer above this one.
  *
- * ## A failure reports how far it got
+ * A failure reports how far it got
  *
  * A `down()` that throws stops the sweep. The migrations already reversed are
  * genuinely reversed and their rows are gone, so re-running resumes rather than
- * repeating — the same truthful half-state `rollback` reports. Saying how many
+ * repeating - the same truthful half-state `rollback` reports. Saying how many
  * succeeded is what makes that recoverable: "reset failed" alone leaves an
  * operator unable to tell an empty database from a full one.
  */

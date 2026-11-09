@@ -11,10 +11,10 @@ use InvalidArgumentException;
  *
  * Parsing is separated from discovery so the naming rules can be tested without
  * a filesystem, and so a filename that cannot be parsed is rejected at the point
- * where the reason is still obvious — rather than surfacing later as a class that
+ * where the reason is still obvious - rather than surfacing later as a class that
  * "does not exist", which names the symptom and not the cause.
  *
- * ## Naming convention
+ * Naming convention
  *
  *     <timestamp>_<snake_case_description>.php
  *     2026_11_05_120000_create_leads_table.php
@@ -22,7 +22,7 @@ use InvalidArgumentException;
  * The description is converted to StudlyCase for the class name, the way Laravel
  * does it: `2026_11_05_120000_create_leads_table` becomes `CreateLeadsTable`. A
  * migration file is therefore *named differently* from the class it contains, and
- * unlike a PSR-4 class the file cannot be autoloaded by its class name — the
+ * unlike a PSR-4 class the file cannot be autoloaded by its class name - the
  * migrator `require`s the file and then checks the class exists.
  *
  * The identifier is the filename without its extension, and is what the tracking
@@ -58,14 +58,14 @@ final class MigrationFile
      *   `Y_m_d_His`  → `2026_11_05_100000_create_users_table` (Laravel's form)
      *   `YmdHis`     → `20261105100000_create_users_table`
      *
-     * The first is 17 characters (`2026_11_05_100000`), not 14 — a timestamp
+     * The first is 17 characters (`2026_11_05_100000`), not 14 - a timestamp
      * written as `2026_11_05_100000` has *six* underscore-free digits for the
      * time, and counting the whole run as 14 digits silently rejects every
      * filename that uses it. Both forms sort identically as strings, which is
      * all the ordering here relies on.
      *
-     * Anchored at both ends so a partly-matching name — a file with a suffix, or
-     * a description that is not snake_case — is rejected rather than half-parsed
+     * Anchored at both ends so a partly-matching name - a file with a suffix, or
+     * a description that is not snake_case - is rejected rather than half-parsed
      * into a class name that would not exist.
      */
     private const PATTERN = '/^(?<timestamp>(?:\d{4}_\d{2}_\d{2}_\d{6})|\d{14})_(?<description>[a-z0-9]+(?:_[a-z0-9]+)*)$/';
@@ -118,8 +118,8 @@ final class MigrationFile
      * Convert a snake_case description to StudlyCase.
      *
      * `create_leads_table` becomes `CreateLeadsTable`. Digits are kept as written
-     * and capitalised like any other word boundary, and a leading digit — which a
-     * filename may perfectly well have — is prefixed so the result is always a
+     * and capitalised like any other word boundary, and a leading digit - which a
+     * filename may perfectly well have - is prefixed so the result is always a
      * legal class name rather than one PHP would refuse to declare.
      */
     public static function studly(string $description): string
@@ -141,11 +141,11 @@ final class MigrationFile
      * first and roll back newest first, so the ordering has to come from the
      * filename rather than from `scandir()`.
      *
-     * ## Why the underscores come out
+     * Why the underscores come out
      *
      * The two accepted spellings do **not** compare as strings. `_` is 0x5F and
      * digits are 0x30–0x39, so `2026_11_05_100000` sorts after `20261231000000`
-     * — every underscored timestamp beats every compact one, whatever the dates
+     * - every underscored timestamp beats every compact one, whatever the dates
      * say. Sorting a mixed directory by the raw filename therefore runs
      * migrations in spelling order rather than date order, and a migration that
      * alters a table can run before the one that creates it.

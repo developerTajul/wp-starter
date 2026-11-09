@@ -11,7 +11,7 @@ use InvalidArgumentException;
 use RuntimeException;
 
 /**
- * `wp wp_mini make:migration create_leads_table` — scaffold a migration.
+ * `wp wp_mini make:migration create_leads_table` - scaffold a migration.
  *
  * Differs from the other generators in one way that matters: the class name is
  * not what the caller typed. A migration is named
@@ -25,7 +25,7 @@ class MakeMigrationCommand extends GeneratorCommand
      * The timestamp this run's filename carries, fixed per invocation.
      *
      * Held rather than recomputed so a caller that asks for the target path and
-     * then the replacements does not get two different timestamps — which would
+     * then the replacements does not get two different timestamps - which would
      * name the file and the class from different seconds, and the class name
      * would not match the filename the migrator derives it from.
      */
@@ -120,7 +120,7 @@ class MakeMigrationCommand extends GeneratorCommand
      *
      * **Not guessed from the description.** A `create_leads_table` name used to be
      * read as naming `leads`, which produced a scaffold that looked right and was
-     * right often enough to be trusted — and wrong the rest of the time, silently.
+     * right often enough to be trusted - and wrong the rest of the time, silently.
      * `create_leads_and_companies` guessed nothing, `add_status_to_orders` guessed
      * `orders` whether or not that was the intent, and a rename or a data migration
      * guessed from a preposition. A wrong table name in a scaffold is worse than an
@@ -166,7 +166,7 @@ class MakeMigrationCommand extends GeneratorCommand
     /**
      * `migration.stub` uses only `{{ table }}` alongside the `{{ class }}` and
      * `{{ namespace }}` the base class supplies. `{{ cli_prefix }}` is a
-     * `command.stub` placeholder — it is replaced by {@see MakeCommandCommand},
+     * `command.stub` placeholder - it is replaced by {@see MakeCommandCommand},
      * which renders a stub that names the command in its docblock. This command
      * renders no such stub, so the key was never read.
      *
@@ -202,13 +202,13 @@ class MakeMigrationCommand extends GeneratorCommand
 
         // `parseName()` rejects a segment that is not a label at all, which is
         // correct but is not what a caller typing a *description* expects to hear
-        // — they have not made a naming mistake, they have given prose where a
+        // - they have not made a naming mistake, they have given prose where a
         // description belonged. Answered with the same "please provide a
         // description" message as no argument at all, which is the message that
         // tells them what to do next.
         //
         // `!!!` is the case that matters: it normalizes to an empty description,
-        // which would name the file `<timestamp>_.php` — a filename
+        // which would name the file `<timestamp>_.php` - a filename
         // `MigrationFile::PATTERN` rejects, so the migrator would skip it forever
         // while the generator reported success. A migration that silently never
         // exists is the failure this refusal prevents.
@@ -221,7 +221,7 @@ class MakeMigrationCommand extends GeneratorCommand
         }
 
         // A sub-namespace segment is a namespace, so it is StudlyCased like the
-        // class — `notes/create_notes_table` declares
+        // class - `notes/create_notes_table` declares
         // `App\Database\Migrations\Notes`, matching every other namespace in the
         // project. The description itself is snake_cased below instead, because
         // it becomes a *filename*.
@@ -231,7 +231,7 @@ class MakeMigrationCommand extends GeneratorCommand
         // normalized by different rules.
         // `parseLenient()`, not `parse()`: the description segment is snake_case
         // prose and is about to become a filename, so the strict upper-case rule
-        // does not apply to it — only to the sub-namespace segment, which
+        // does not apply to it - only to the sub-namespace segment, which
         // `studly()` has just capitalised.
         if ($parsed->sub !== '') {
             $sub = implode('/', array_map(
@@ -258,7 +258,7 @@ class MakeMigrationCommand extends GeneratorCommand
     protected function getTargetPath(string $className): string
     {
         // The sub-directory comes from the parsed name, so
-        // `notes/create_notes_table` lands in `database/migrations/notes/` —
+        // `notes/create_notes_table` lands in `database/migrations/notes/` -
         // matching the `...\Migrations\Notes` namespace the base class renders.
         // The filename itself stays `<timestamp>_<snake_case_description>`,
         // because that is the shape `MigrationFile::PATTERN` requires and the
@@ -274,7 +274,7 @@ class MakeMigrationCommand extends GeneratorCommand
      * written, so the generated file is loadable by the project's autoloader as
      * well as by the migrator's own `require`.
      *
-     * The caller's sub-namespace is appended by the base class, not here — see
+     * The caller's sub-namespace is appended by the base class, not here, see
      * {@see GeneratorCommand::namespaceFor()}. Appending it in both places was a
      * real bug: the rendered namespace came out as `...Migrations\notes\notes`.
      */
@@ -320,8 +320,8 @@ class MakeMigrationCommand extends GeneratorCommand
     /**
      * Turn free-form input into snake_case.
      *
-     * Accepts what a developer is likely to type — spaces, dashes, camelCase,
-     * mixed case — rather than demanding they pre-format it, since a rejected
+     * Accepts what a developer is likely to type - spaces, dashes, camelCase,
+     * mixed case - rather than demanding they pre-format it, since a rejected
      * generator invocation is pure friction.
      */
     private function snake(string $name): string

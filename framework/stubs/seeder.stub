@@ -1,0 +1,36 @@
+<?php
+declare(strict_types=1);
+
+namespace {{ namespace }};
+
+use Framework\Database\Seeding\Seeder;
+
+/**
+ * @see \Framework\Database\Seeding\SeederInterface for the idempotency rule this
+ *      class is responsible for: seeders are re-runnable, so running this twice
+ *      must not produce duplicates. Either look before writing, or clear what you
+ *      are about to write.
+ *
+ * Run it with: wp {{ cli_prefix }} db:seed --class={{ seeder }}
+ */
+final class {{ class }} extends Seeder
+{
+    public function run(): void
+    {
+        // Write this seeder's rows here.
+        //
+        // Prefer a repository injected through the constructor — a seeder is
+        // resolved through the container, so a constructor dependency receives the
+        // same instance the application uses, and seeded rows pass the same
+        // validation and mapping as real ones:
+        //
+        //     public function __construct(private readonly LeadRepositoryContract $leads) {}
+        //
+        // Reach for `$this->db()` only when the fixture is deliberately invalid —
+        // the row a bug report reproduced, or data predating a constraint. Fake
+        // data is sometimes invalid by design, and forcing it through entity
+        // validation would mean weakening the validation to permit it.
+        //
+        // Delete this comment once there is something here.
+    }
+}

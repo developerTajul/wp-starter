@@ -22,7 +22,7 @@ if (! function_exists('env')) {
     {
         $value = _env_get_from_superglobals($key);
 
-        // A missing key yields the caller's default verbatim — nothing is
+        // A missing key yields the caller's default verbatim, nothing is
         // coerced when there is no value to parse.
         if ($value === null) {
             return $default;
@@ -171,7 +171,7 @@ if (! function_exists('base_path_join')) {
      *
      * The base path belongs to the caller: it may be a native Windows path with
      * backslashes or a WordPress-supplied forward-slash path. Appending
-     * DIRECTORY_SEPARATOR assumes the two agree, which they do not on Windows —
+     * DIRECTORY_SEPARATOR assumes the two agree, which they do not on Windows -
      * a forward-slash root would produce `H:/site/app\Providers`, and a literal
      * `\a` in that path is a Windows escape sequence, not a directory.
      *
@@ -248,7 +248,7 @@ if (! function_exists('e')) {
      * Escape a value for HTML output.
      *
      * The one helper a view needs on nearly every line, and the reason it exists
-     * is that the alternative — reaching for `esc_html()` — is WordPress-specific
+     * is that the alternative - reaching for `esc_html()` - is WordPress-specific
      * and unavailable the moment a view is rendered outside the CMS (a WP-CLI
      * export, an email built in a queue worker, a test). `esc_html()` is used when
      * it is loaded, so a view still gets WordPress's filters and translations;
@@ -261,7 +261,7 @@ if (! function_exists('e')) {
      * both. Without it, `value="<?= e($x) ?>"` lets an apostrophe end the
      * attribute and inject a handler.
      *
-     * A null renders as the empty string rather than the literal "null" — the
+     * A null renders as the empty string rather than the literal "null" - the
      * overwhelmingly common case is an optional field, and `value="null"` in a
      * form is never what was meant.
      *
@@ -298,8 +298,8 @@ if (! function_exists('old')) {
     /**
      * A submitted value from the previous request, escaped for an attribute.
      *
-     * The pair a form field actually needs — repopulate the value, escape it for
-     * the context it lands in — collapsed into one call, because writing
+     * The pair a form field actually needs - repopulate the value, escape it for
+     * the context it lands in - collapsed into one call, because writing
      * `e(app(ViewRenderer::class)->oldValue('email'))` in every input is how a
      * project ends up with one input that forgot to.
      *
@@ -332,12 +332,12 @@ if (! function_exists('route')) {
      *     route('leads.show', ['id' => 42]);     // /wp-json/wp-mini-laravel/v1/leads/42
      *
      * Which of WordPress's four mechanisms the URL comes out of is decided by the
-     * route's own surface, not by the caller — see
+     * route's own surface, not by the caller, see
      * {@see \Framework\Routing\UrlGenerator}. A template therefore links to a route
      * the same way whether it is a screen, a form handler or an endpoint.
      *
      * Resolved from the container rather than through a static, so a project can
-     * swap the binding — a test asserting a URL, or an install that rewrites the
+     * swap the binding - a test asserting a URL, or an install that rewrites the
      * REST prefix.
      *
      * @param array<string, scalar> $parameters Placeholder values, keyed by name.
@@ -365,10 +365,10 @@ if (! function_exists('redirect')) {
      *     redirect()->route('leads.show', ['id' => 42]);
      *     redirect()->route('leads.index')->with('notice', 'Saved.');
      *
-     * ## Why the no-argument form exists
+     * Why the no-argument form exists
      *
      * `redirect()` with no URL returns a response pointed at the empty string,
-     * which is not a usable redirect on its own — it exists so that
+     * which is not a usable redirect on its own - it exists so that
      * `redirect()->route(...)` reads the way it reads in Laravel. The chained
      * call replaces the URL before anything can send it, so the placeholder is
      * never followed.
@@ -396,7 +396,7 @@ if (! function_exists('to_route')) {
      *     return to_route('leads.show', ['id' => 42])->with('notice', 'Saved.');
      *
      * It resolves the name *through* {@see route()} so that an unknown name fails
-     * the same way and with the same message in both spellings — a second lookup
+     * the same way and with the same message in both spellings - a second lookup
      * path here would be a second place for the ambiguity check to be forgotten.
      *
      * @param array<string, scalar> $parameters Placeholder values, keyed by name.

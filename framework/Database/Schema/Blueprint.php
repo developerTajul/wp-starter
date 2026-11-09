@@ -27,54 +27,32 @@ use function strlen;
  *         $table->timestamps();
  *     });
  *
- * ## What this class is, and is not
+ * Holds no connection, issues no statement and knows no SQL dialect: it is a
+ * description of columns and the name to put them under. Compiling it into a
+ * statement is the adapter's job ({@see DatabaseAdapterInterface}), which is
+ * what lets a test assert against a blueprint with nothing running below it.
  *
- * It is a **description**: a list of columns, and a name to put them under. It
- * holds no connection, issues no statement, and knows no SQL dialect. Compiling
- * the description into a statement is the adapter's job
- * ({@see DatabaseAdapterInterface}), which is what lets the same blueprint
- * create a table on MySQL and be asserted against in a test with nothing
- * running underneath it.
+ * `Schema::create()` owns execution and hands the finished blueprint to the
+ * adapter once the callback returns, so a half-built table is never created.
+ * {@see Schema::create()} emits one `CREATE TABLE`; {@see Schema::table()} is
+ * given a table that already exists and emits an `ALTER TABLE ... ADD COLUMN`
+ * per column. For the WordPress adapter the second shape matters: `dbDelta()`
+ * only diffs tables named by the statement itself, so a column added to an
+ * existing table is a change it can never see.
  *
- * That separation is also why the fluent methods return `$this`: chaining is
- * just an ergonomic way to append to the list, and a chain that ended at the
- * first column would be a builder that could only ever define one.
- *
- * ## The table is not created when the closure returns
- *
- * `Schema::create()` owns execution — it runs the callback and then hands the
- * finished blueprint to the adapter. A blueprint that executed eagerly would
- * issue a statement per call and leave a half-created table behind when the
- * third column was the one with the typo.
- *
- * ## Two ways to build a table, and why both exist
- *
- * {@see Schema::create()} starts from nothing and emits one `CREATE TABLE`.
- * {@see Schema::table()} is handed a table that already exists and each column
- * added to it becomes its own `ALTER TABLE ... ADD COLUMN`. The distinction is
- * not bookkeeping: `CREATE TABLE` names only the tables it creates, so a column
- * added to an *existing* table is a statement the original `CREATE` was never
- * going to produce, and — for the WordPress adapter — a statement `dbDelta()`
- * cannot reach, since its diff only ever consults tables the statement creates.
- *
- * ## Values are never interpolated, identifiers are
- *
- * Column names are validated ({@see assertIdentifier()}) because they are
- * grammar — they cannot be bound as parameters and so must be known-safe.
- * Defaults *are* values, and they are escaped as string literals here rather
- * than bound, because a `DEFAULT` clause is part of the schema and a prepared
- * statement cannot carry one. See {@see compileDefault()}.
+ * Column names are validated ({@see assertIdentifier()}): they are grammar and
+ * cannot be bound. Defaults are values and are escaped as literals here, since
+ * a prepared statement cannot carry a `DEFAULT` clause.
  */
 class Blueprint
 {
     /**
-     * The column types this builder can express, mapped to the SQL a MySQL-
-     * family database uses for them.
+     * Column types this builder can express, mapped to the SQL a MySQL-family
+     * database uses for them.
      *
-     * A closed set on purpose. A `raw()`-style escape hatch would let any string
-     * through, and the first thing it would let through is a migration whose
-     * column type is a typo — which fails at *migration* time on a developer's
-     * machine and at *deploy* time on the operator's, if it fails at all.
+     * A closed set, with no `raw()` escape hatch: an arbitrary string in a
+     * migration would fail at migration time on a developer's machine or at
+     * deploy time on the operator's, whichever it reached first.
      */
     private const TYPES = [
         'bigint' => 'bigint(20)',
@@ -86,16 +64,16 @@ class Blueprint
     ];
 
     /**
-     * The longest `varchar` MySQL will index on utf8mb4 — 191 characters times
-     * four bytes stays inside the 767-byte limit a single-column index has on
-     * the older row formats WordPress still supports.
+     * Longest `varchar` MySQL will index on utf8mb4: 191 characters times four
+     * bytes stays inside the 767-byte single-column index limit on the older
+     * row formats WordPress still supports.
      */
     public const MAX_INDEXED_STRING_LENGTH = 191;
 
     private const MAX_VARCHAR_LENGTH = 65535;
 
     /**
-     * The columns defined so far, each already compiled to an SQL fragment.
+     * Columns defined so far, each already compiled to an SQL fragment.
      *
      * @var list<array{name: string, definition: string}>
      */
@@ -111,10 +89,9 @@ class Blueprint
     /**
      * Whether each column carries a default, by column name.
      *
-     * Consulted by {@see nullable()} because the *order* of
-     * `->default(0)->nullable()` and `->nullable()->default(0)` must not change
-     * the result — so the answer comes from the column's current definition
-     * rather than from a flag flipped by whichever call ran last.
+     * Consulted by {@see nullable()} so the order of `->default(0)->nullable()`
+     * and `->nullable()->default(0)` cannot change the result: the answer comes
+     * from whichever call recorded a default, not from the last one to run.
      *
      * @var array<string, bool>
      */
@@ -122,25 +99,25 @@ class Blueprint
 
     /**
      * `ALTER TABLE` actions that are neither a column nor a constraint, already
-     * compiled — index drops, in practice.
+     * compiled. Index drops, in practice.
      *
      * Kept apart from {@see $columns} because the statement shapes differ: a
-     * column is `ADD COLUMN x ...` and one of these is a complete action clause.
+     * column compiles to `ADD COLUMN x ...`, one of these to a whole action
+     * clause.
      *
      * @var list<string>
      */
     private array $alterations = [];
 
     /**
-     * Columns added by {@see foreignId()} that are still awaiting a
-     * `constrained()` call, by column name.
+     * Columns added by {@see foreignId()} still awaiting a `constrained()` call,
+     * by column name.
      *
-     * `constrained()` is a separate call from `foreignId()` — and its optional
-     * argument means it is sometimes separated from it by nothing at all — so
-     * the column it applies to is the most recent one, and whether it has one
-     * is the question this answers. A `foreignId()` with no `constrained()`
-     * after it is a legitimate unsigned big integer column with no constraint,
-     * which is why this is a record rather than a pending obligation.
+     * `constrained()` follows `foreignId()` as a separate call, sometimes with
+     * nothing between them, so it applies to the most recent one. A
+     * `foreignId()` with no `constrained()` after it is a legitimate unsigned
+     * big integer with no constraint, which is why this is a record rather than
+     * a pending obligation.
      *
      * @var array<string, true>
      */
@@ -155,12 +132,11 @@ class Blueprint
     /**
      * Foreign keys to emit, each already compiled to an SQL fragment.
      *
-     * Separate from {@see $indexes} because MySQL treats them differently: a
-     * `CONSTRAINT ... FOREIGN KEY` creates its own index implicitly, and adding
-     * an explicit `KEY` over the same column would be a second B-tree over the
-     * same data. A migration that asks for both — which the Laravel originals
-     * do, since Laravel's `foreignId()->constrained()` emits only the
-     * constraint — therefore ends up with one index, as it should.
+     * Separate from {@see $indexes}: a `CONSTRAINT ... FOREIGN KEY` creates its
+     * own index implicitly, so an explicit `KEY` over the same column would be a
+     * second B-tree over the same data. A migration that asks for both (as the
+     * Laravel originals do, since Laravel's `foreignId()->constrained()` emits
+     * only the constraint) therefore ends up with one index.
      *
      * @var list<string>
      */
@@ -169,11 +145,10 @@ class Blueprint
     /**
      * Columns defined with a type that cannot carry an index, by the reason.
      *
-     * Filled by the type methods rather than derived from the compiled
-     * definition, because `KEY (content)` on a `longtext` column is rejected by
-     * MySQL at creation — and a caller asking for one has a design problem worth
-     * reporting, not a statement worth emitting and letting the database refuse
-     * with a message about key length.
+     * Filled by the type methods because MySQL rejects `KEY (content)` on a
+     * `longtext` column at creation. A caller asking for one has a design
+     * problem worth reporting, not a statement worth letting the database
+     * refuse with a message about key length.
      *
      * @var array<string, string>
      */
@@ -183,15 +158,13 @@ class Blueprint
      * Columns that cannot carry a `DEFAULT`, by the reason.
      *
      * Populated by the type methods, consulted by {@see default()}. Three types
-     * need it and each for a different reason: `json` because MySQL rejects the
-     * clause outright, `enum`/`set` because MySQL accepts a default outside the
-     * member list and silently stores the empty member instead of refusing it.
+     * need it: `json` because MySQL rejects the clause outright, `enum`/`set`
+     * because MySQL accepts a default outside the member list and silently
+     * stores the empty member rather than refusing it.
      *
-     * Refused at build time rather than emitted, because both failures are
-     * invisible from the migration source: the first is a statement error the
-     * database reports without naming the column, and the second is not an error
-     * at all — it is a schema that accepts a value the application never meant to
-     * allow.
+     * Refused at build time because neither failure is visible from the
+     * migration source: the first is a statement error that does not name the
+     * column, the second is not an error at all.
      *
      * @var array<string, string>
      */
@@ -199,12 +172,11 @@ class Blueprint
 
     /**
      * Resolves a table name from how a schema names it to how the database
-     * spells it — the prefix, plus whatever else the target needs.
+     * spells it: the prefix, plus whatever else the target needs.
      *
-     * A callable rather than the adapter itself, so the blueprint keeps the one
-     * dependency it actually has (a way to name a table) instead of the whole
-     * database seam. It is also what makes the class constructible in a test
-     * with `fn (string $t): string => 'wp_' . $t` and nothing else.
+     * A callable rather than the adapter itself, so the blueprint depends on a
+     * way to name a table rather than the whole database seam. That is what
+     * makes it constructible in a test with `fn (string $t): string => 'wp_' . $t`.
      *
      * @var callable(string): string
      */
@@ -213,11 +185,10 @@ class Blueprint
     /**
      * Reads an existing column's definition back from the database.
      *
-     * Needed by {@see renameColumn()}, and by nothing else. MySQL's `CHANGE
-     * COLUMN` makes the caller restate the definition, and the whole point of a
-     * rename is that the caller gave two *names* — so the definition has to come
-     * from the target rather than from the caller or from a schema-introspection
-     * dependency this framework deliberately does not carry.
+     * Used by {@see renameColumn()} only. MySQL's `CHANGE COLUMN` makes the
+     * caller restate the definition, but a rename supplies two names, so the
+     * definition has to come from the target rather than from the caller or from
+     * a schema-introspection dependency this framework does not carry.
      *
      * Returns null when the column is absent, which a rename treats as an error
      * rather than as "invent a definition".
@@ -253,8 +224,8 @@ class Blueprint
      * Whether this blueprint describes a new table or an addition to one.
      *
      * Read by {@see Schema} to choose between creating and altering, and by the
-     * column-building code to reject the one thing that is legal in a `CREATE`
-     * and illegal in an `ALTER`.
+     * column-building code to refuse what is legal in a `CREATE` and illegal in
+     * an `ALTER`.
      */
     public function isCreating(): bool
     {
@@ -266,11 +237,9 @@ class Blueprint
     /**
      * An auto-incrementing unsigned big integer primary key.
      *
-     * The default key for a new table, and deliberately not offered when adding
-     * to an existing one: MySQL permits exactly one auto-increment column per
-     * table, so `$table->id()` in a `Schema::table()` block is a request the
-     * database will always refuse. Refused here instead, where the message can
-     * say why.
+     * Refused when adding to an existing table: MySQL permits one
+     * auto-increment column per table, so `id()` inside a `Schema::table()`
+     * block is a request the database would always reject.
      *
      * @throws SchemaException When the blueprint is adding to an existing table.
      */
@@ -291,24 +260,17 @@ class Blueprint
     /**
      * A variable-length string column.
      *
-     * ## The default is 191, not 255
-     *
-     * Laravel defaults this to 255, and 255 is not indexable on utf8mb4 — 255
-     * characters times four bytes overruns the 767-byte limit a single-column
-     * index has on the row formats WordPress still supports. Laravel gets away
-     * with it by having applications set a shorter default in a service
-     * provider; a framework that has not been told that should not assume it.
-     *
-     * So the default is the length that always works. A column that genuinely
-     * needs 255 asks for it — `$table->string('title', 255)` — and is still
-     * allowed, because most columns are never indexed.
-     *
-     * ## What is refused, and when
+     * The default is 191 rather than Laravel's 255: 255 characters times four
+     * bytes overruns the 767-byte single-column index limit on utf8mb4 for the
+     * row formats WordPress still supports. Laravel leaves that to the
+     * application to shorten in a service provider; this framework cannot assume
+     * it was told. A column that genuinely needs 255 asks for it and is allowed
+     * one, since most columns are never indexed.
      *
      * Above 65535 the type is not a `varchar` at all, so that is refused here.
-     * Over {@see MAX_INDEXED_STRING_LENGTH} is *not* refused, because the column
-     * may never be indexed — the refusal belongs at the index, which is where it
-     * happens ({@see assertIndexable()}).
+     * A length over {@see MAX_INDEXED_STRING_LENGTH} is not refused: the column
+     * may never be indexed, and the refusal belongs at the index
+     * ({@see assertIndexable()}).
      *
      * @throws SchemaException When the length cannot be a varchar at all.
      */
@@ -341,19 +303,18 @@ class Blueprint
     /**
      * A `longtext` column.
      *
-     * `longtext` rather than `text` for every case, matching what the project's
-     * hand-written migrations chose: the two are the same type to a reader and
-     * wildly different at 65KB, and the 4-byte-per-row overhead of the larger
-     * one is not a reason to have a note body truncated in production.
+     * `longtext` rather than `text`, matching the project's hand-written
+     * migrations: the two are identical until 65KB, where the 4-byte-per-row
+     * overhead of the larger type is cheaper than a truncated body in
+     * production.
      *
-     * MySQL will not index a `longtext` column without a prefix length, so no
-     * index is emitted for one — a `KEY` on it would be rejected at creation.
+     * Unindexable without a prefix length, so no index is emitted for one.
      */
     public function text(string $column): static
     {
         $this->unindexable[$column] = sprintf(
             'MySQL cannot index a longtext column without a prefix length, so a KEY on [%s] would be '
-            . 'rejected at creation. Index a separate, shorter column instead — a hash of the content, '
+            . 'rejected at creation. Index a separate, shorter column instead, a hash of the content, '
             . 'or its first 191 characters in a varchar().',
             $column
         );
@@ -364,14 +325,10 @@ class Blueprint
     /**
      * A `longtext` column, spelled out.
      *
-     * The same type {@see text()} emits. It exists so a *dumper* has a name to
-     * reach for that says what it means: a `SHOW COLUMNS` reports `longtext`, and
-     * a reconstruction that had to call it `text()` would read as a deliberate
-     * downgrade to anyone comparing the two.
-     *
-     * Unindexable, for the same reason and with the same message — the two
-     * methods emit the identical definition and must therefore carry identical
-     * guards.
+     * The same type {@see text()} emits. It exists so a dumper has a name that
+     * says what it means: `SHOW COLUMNS` reports `longtext`, and a
+     * reconstruction forced to call it `text()` reads as a deliberate downgrade
+     * to anyone comparing the two.
      */
     public function longText(string $column): static
     {
@@ -381,16 +338,13 @@ class Blueprint
     /**
      * A JSON column.
      *
-     * MySQL's native `json` type, not a `longtext` that happens to hold JSON.
-     * The difference is not cosmetic: `json` validates on write, so a malformed
-     * document is rejected at the statement rather than discovered by whatever
-     * reads the column months later — and it normalises key order and whitespace,
-     * so two documents that differ only in formatting compare equal.
+     * MySQL's native `json` type, not a `longtext` holding JSON: `json` validates
+     * on write, so a malformed document is rejected at the statement rather than
+     * discovered months later, and it normalises key order and whitespace.
      *
-     * **No default, ever.** MySQL does not permit a `DEFAULT` on a `json` column
-     * (before 8.0.13 it rejects the clause outright; after, only an expression
-     * default is allowed), so {@see default()} refuses to apply to one rather
-     * than emitting a statement the database will reject. Make the column
+     * No default: MySQL does not permit a `DEFAULT` on a `json` column (before
+     * 8.0.13 the clause is rejected outright, after only an expression default
+     * is allowed), so {@see default()} refuses to apply to one. Make the column
      * `nullable()` and let absence mean "no document".
      */
     public function json(string $column): static
@@ -404,26 +358,20 @@ class Blueprint
     /**
      * An `ENUM` column over a fixed list of values.
      *
-     * ## Why this is worth having despite the reputation
+     * Awkward to change (adding a value rewrites the table on older MySQL) but
+     * still right for a set that is closed and known: a status, a role, a
+     * direction. The alternative, a `varchar(191)` with the valid values in
+     * application code, has the same alteration problem and no enforcement.
      *
-     * `ENUM` is genuinely awkward to change — adding a value is an `ALTER TABLE`
-     * that rewrites the table on older MySQL — and it is still the right type for
-     * a value whose set is closed and known: a status, a role, a direction. The
-     * alternative, a `varchar(191)` with the valid values in application code,
-     * has the same alteration problem plus no enforcement, so a typo writes a
-     * value no reader expects and nothing rejects it.
-     *
-     * ## Values are escaped, never interpolated raw
-     *
-     * Each value becomes a single-quoted SQL literal through {@see quote()}, the
-     * same path a {@see default()} takes, so a value containing a quote cannot
-     * break out of the list. They are also checked for length: MySQL's limit is
-     * 255 *total* bytes across the list, and going over is a statement error
-     * rather than a truncation, so it is reported here where the list is visible.
+     * Each member is quoted as a SQL literal through {@see compileDefault()}, so
+     * a value containing a quote cannot break out of the list. MySQL's 255-byte
+     * limit is on the total across the list and overshooting is a statement
+     * error rather than a truncation, so it is reported here where the list is
+     * visible.
      *
      * @param list<string> $values The permitted values, in the order MySQL stores
-     *                             them — which is the order a `ORDER BY` on the
-     *                             column sorts by, and is not alphabetical.
+     *                             them. That is the order `ORDER BY` on the column
+     *                             sorts by, which is not alphabetical.
      *
      * @throws SchemaException When the list is empty, has non-string members, or
      *                         exceeds MySQL's 255-byte total.
@@ -436,17 +384,16 @@ class Blueprint
     /**
      * A `SET` column: a subset of a fixed list, stored as one value.
      *
-     * The multi-select counterpart to {@see enum()}, and it carries the same
-     * trade-off further: a `SET` is at most 64 members, and querying one is a
-     * `FIND_IN_SET()` rather than an index-friendly equality. It is worth having
-     * because the alternative — a comma-joined `varchar` — makes the same query
-     * *and* loses enforcement.
+     * The multi-select counterpart to {@see enum()}, carrying the same trade-off
+     * further: at most 64 members, and querying one needs a `FIND_IN_SET()`
+     * rather than an index-friendly equality. The alternative, a comma-joined
+     * `varchar`, makes the same query and loses enforcement.
      *
-     * MySQL stores a `SET` as a bitmask, so `ORDER BY` on the column sorts by
-     * the declared order, not alphabetically. Same rules, same escaping and the
-     * same 255-byte ceiling as {@see enum()}.
+     * MySQL stores a `SET` as a bitmask, so `ORDER BY` sorts by the declared
+     * order, not alphabetically. Same escaping and 255-byte ceiling as
+     * {@see enum()}.
      *
-     * @param list<string> $values The permitted members. At most 64.
+     * @param list<string> $values At most 64 permitted members.
      *
      * @throws SchemaException When the list is empty, too long, or not strings.
      */
@@ -468,17 +415,16 @@ class Blueprint
     /**
      * A fixed-length `CHAR` column.
      *
-     * Not a `varchar` with a short length, and the distinction is load-bearing
-     * for exactly two kinds of value: a fixed-width code — a country code, a
-     * currency code, a hash — where the padding is meaningful and an index over
-     * it is denser than one over a variable-length column.
+     * Not a `varchar` with a short length. The distinction matters for a
+     * fixed-width code (a country code, a currency code, a hash), where the
+     * padding is meaningful and an index is denser than over a variable-length
+     * column.
      *
      * `CHAR` right-pads with spaces and strips them on read, so `'ab '` and `'ab'`
-     * compare equal. That is the point for a code and a trap for anything else,
-     * which is why the length is required rather than defaulted: the caller has
-     * to know what width the value really is.
+     * compare equal. That is the point for a code and a trap elsewhere, so the
+     * length is required: the caller has to know the value's real width.
      *
-     * @throws SchemaException When the length is outside MySQL's 0–255 range.
+     * @throws SchemaException When the length is outside MySQL's 1-255 range.
      */
     public function char(string $column, int $length): static
     {
@@ -498,16 +444,13 @@ class Blueprint
     /**
      * A `CHAR(36)` holding a UUID.
      *
-     * Stored as text rather than as `BINARY(16)`, deliberately. The binary form
-     * is half the size and a UUID is compared by equality in the overwhelming
-     * majority of cases, so the storage argument is real — but it makes the
-     * column unreadable in every `SELECT`, every log line and every manual
-     * repair, and it puts a conversion between the application and the database
-     * that has to be applied identically on both sides of every comparison. For
-     * a plugin table that a human will inspect, readable wins.
+     * Text rather than `BINARY(16)`: the binary form is half the size, but it is
+     * unreadable in every `SELECT`, log line and manual repair, and it needs a
+     * conversion applied identically on both sides of every comparison. For a
+     * plugin table a human will inspect, readable wins.
      *
-     * The collation note matters: at `utf8mb4`, `CHAR(36)` is 144 bytes, well
-     * inside the 767-byte index limit, so a `UNIQUE` over it is fine.
+     * At `utf8mb4` a `CHAR(36)` is 144 bytes, inside the 767-byte index limit, so
+     * a `UNIQUE` over it is fine.
      */
     public function uuid(string $column): static
     {
@@ -517,9 +460,8 @@ class Blueprint
     /**
      * A `CHAR(26)` holding a ULID.
      *
-     * 26 characters is Crockford base32: 48 bits of millisecond timestamp, 80
-     * bits of randomness. Not padded to the next power of two, because the type
-     * is fixed-width by definition.
+     * 26 characters of Crockford base32: 48 bits of millisecond timestamp, 80
+     * bits of randomness.
      *
      * @see uuid() for why this is text rather than a binary encoding.
      */
@@ -531,9 +473,8 @@ class Blueprint
     /**
      * The shared body of `enum()` and `set()`.
      *
-     * Both are a quoted list under a different keyword, and both are subject to
-     * the same escaping and the same 255-byte total. One implementation means a
-     * fix to either cannot miss the other.
+     * Both are a quoted list under a different keyword, with the same escaping
+     * and the same 255-byte total.
      *
      * @param 'enum'|'set' $type
      * @param list<string> $values
@@ -545,7 +486,7 @@ class Blueprint
         if ($values === []) {
             throw new SchemaException(sprintf(
                 'Column [%s] on table [%s] was given an empty %s list. An %s with no permitted '
-                . 'values cannot be written to at all — name at least one, or use string().',
+                . 'values cannot be written to at all, name at least one, or use string().',
                 $column,
                 $this->table,
                 strtoupper($type),
@@ -585,9 +526,9 @@ class Blueprint
             $quoted[] = self::compileDefault($value);
         }
 
-        // MySQL's own limit on the combined length of an ENUM/SET definition.
-        // Checked here rather than left to the database because MySQL's error
-        // ("Column length too big") does not name which column or by how much.
+        // MySQL's limit on the combined length of an ENUM/SET definition. Checked
+        // here because MySQL's "Column length too big" error names neither the
+        // column nor by how much.
         if ($totalBytes > 255) {
             throw new SchemaException(sprintf(
                 'Column [%s] on table [%s] was given %d bytes of %s values, but MySQL stores the '
@@ -612,14 +553,11 @@ class Blueprint
     }
 
     /**
-     * A `MEDIUMTEXT` column — up to 16MB.
+     * A `MEDIUMTEXT` column, up to 16MB.
      *
-     * Between {@see text()}'s `longtext` (4GB) and a `varchar` (65KB). Worth
-     * having because the difference is real at the row level: `longtext` stores a
-     * 4-byte length prefix and is otherwise identical, but choosing it for a
-     * column known to hold a few kilobytes states an intent the reader can act
-     * on. A `mediumtext` column is also indexable with a prefix length where a
-     * `longtext` one is not.
+     * Between {@see text()}'s `longtext` (4GB) and a `varchar` (65KB); choosing
+     * it for a column known to hold a few kilobytes states an intent the reader
+     * can act on. Also indexable with a prefix length, where `longtext` is not.
      */
     public function mediumText(string $column): static
     {
@@ -634,12 +572,12 @@ class Blueprint
     }
 
     /**
-     * A `TINYTEXT` column — up to 255 bytes.
+     * A `TINYTEXT` column, up to 255 bytes.
      *
-     * The `varchar(255)` counterpart, and the reason to prefer it is the same one
-     * that makes `text()` a `longtext`: it is stored off-page past a threshold,
-     * so a row full of short values stays small. For anything a developer would
-     * also want to index, `string()` is the better choice.
+     * The `varchar(255)` counterpart, preferred for the reason `text()` is a
+     * `longtext`: it is stored off-page past a threshold, so a row full of short
+     * values stays small. For anything that also needs an index, `string()` is
+     * the better choice.
      */
     public function tinyText(string $column): static
     {
@@ -655,9 +593,9 @@ class Blueprint
     /**
      * A single-precision float.
      *
-     * For a value that is genuinely approximate and where the storage matters —
-     * a coordinate, a measurement. **Not for money**: binary floating point
-     * cannot represent 0.10 exactly, so a sum of float values drifts. Use
+     * For a value that is genuinely approximate and where storage matters: a
+     * coordinate, a measurement. Not for money, since binary floating point
+     * cannot represent 0.10 exactly and a sum of floats drifts. Use
      * {@see decimal()} for anything that has to add up.
      */
     public function float(string $column): static
@@ -666,8 +604,8 @@ class Blueprint
     }
 
     /**
-     * A double-precision float. The wider counterpart to {@see float()}, and
-     * subject to the same warning about money.
+     * A double-precision float. The wider counterpart to {@see float()}, subject
+     * to the same warning about money.
      */
     public function double(string $column): static
     {
@@ -679,8 +617,8 @@ class Blueprint
      *
      * One byte rather than the four a `smallint` would take, and it rejects an
      * out-of-range value at write time rather than storing `0000` for a typo.
-     * Distinct from an `integer` holding a year, which is what most schemas reach
-     * for and which stores four times as much to gain nothing.
+     * Distinct from an `integer` holding a year, which stores four times as much
+     * to gain nothing.
      */
     public function year(string $column): static
     {
@@ -690,10 +628,9 @@ class Blueprint
     /**
      * A `TIME` column, holding a clock time with no date.
      *
-     * The counterpart to {@see date()}. `TIME` also accepts values past 24 hours
-     * and negative values — MySQL uses it for elapsed durations as well as for
-     * clock times — so a schedule column and a duration column can share the
-     * type. If the value is genuinely a span, that is worth a comment.
+     * The counterpart to {@see date()}. MySQL also uses `TIME` for elapsed
+     * durations, so it accepts values past 24 hours and negative values, and a
+     * schedule column and a duration column can share the type.
      */
     public function time(string $column): static
     {
@@ -703,15 +640,13 @@ class Blueprint
     /**
      * A `BLOB` column, holding raw bytes.
      *
-     * `blob` rather than `longblob`: the same reasoning as {@see text()}, in
-     * reverse — this one is chosen for a value known to be small. MySQL's
-     * `blob` is binary and has no character set, so it neither validates nor
-     * converts on read, which is what makes it right for a hash, a key or an
-     * encoded payload and wrong for anything a human reads.
+     * `blob` rather than `longblob`, for a value known to be small. MySQL's
+     * `blob` is binary with no character set, so it neither validates nor
+     * converts on read: right for a hash, a key or an encoded payload, wrong for
+     * anything a human reads.
      *
-     * No `default()`, because MySQL refuses one on a blob column — the same
-     * clause it refuses on `json`, for the same reason: there is no literal
-     * syntax for the value.
+     * No `default()`: MySQL refuses a `DEFAULT` on a blob column, as it does on
+     * `json`, because there is no literal syntax for the value.
      */
     public function binary(string $column): static
     {
@@ -724,22 +659,20 @@ class Blueprint
     /**
      * A fixed-width `BINARY(n)` column, padded with `\0` to exactly `n` bytes.
      *
-     * **Not the same type as {@see binary()}**, and the difference is not
-     * cosmetic. `BLOB` is variable-width with a two-byte length prefix and
-     * compares by content; `BINARY(n)` is fixed-width, pads on the right, and
-     * compares by the padded bytes. A `BINARY(16)` holding a UUID and a `BLOB`
-     * holding the same 16 bytes are different storage and can compare unequal
-     * against the same literal, so the two cannot stand in for one another.
+     * Not the same type as {@see binary()}: `BLOB` is variable-width with a
+     * two-byte length prefix and compares by content, while `BINARY(n)` is
+     * fixed-width, pads on the right, and compares by the padded bytes. A
+     * `BINARY(16)` holding a UUID and a `BLOB` holding the same 16 bytes can
+     * compare unequal against one literal, so they cannot stand in for each
+     * other.
      *
-     * The length is required rather than defaulted: MySQL has no meaningful
-     * default for `BINARY`, and a wrong one silently truncates or pads — both of
-     * which change the value rather than failing. Sixteen is the common case (a
-     * UUID, or the output of `INET6_ATON()`) but it is not the only one, so it is
-     * the caller's to name.
+     * The length is required because MySQL has no meaningful default for
+     * `BINARY`, and a wrong one silently truncates or pads. Sixteen is the
+     * common case (a UUID, or the output of `INET6_ATON()`) but not the only one.
      *
-     * `default()` is refused for the same reason as `binary()`: there is no
-     * literal syntax for a binary value, so a default the builder could emit
-     * would be read as a string of characters rather than bytes.
+     * `default()` is refused for the same reason as `binary()`: no literal
+     * syntax exists for a binary value, so an emitted default would be read as
+     * characters rather than bytes.
      */
     public function binaryFixed(string $column, int $length): static
     {
@@ -754,11 +687,10 @@ class Blueprint
     /**
      * A variable-width `VARBINARY(n)` column, up to `n` bytes.
      *
-     * The variable-width counterpart to {@see binaryFixed()}, and the right choice
-     * for a value whose length varies — a hash, a token, an encrypted payload.
-     * Like `BLOB` it is variable-width, but unlike `BLOB` it carries an explicit
-     * maximum the database enforces on write, which is the difference that
-     * matters for an indexed column.
+     * The variable-width counterpart to {@see binaryFixed()}, for a value whose
+     * length varies: a hash, a token, an encrypted payload. Like `BLOB` it is
+     * variable-width, but it carries an explicit maximum the database enforces
+     * on write, which is what matters for an indexed column.
      */
     public function varbinary(string $column, int $length): static
     {
@@ -774,16 +706,13 @@ class Blueprint
      * A `BINARY(16)` column holding a UUID, the binary counterpart of
      * {@see uuid()}.
      *
-     * Sixteen bytes rather than `CHAR(36)`. {@see uuid()} argues for the readable
-     * form and that argument stands for a table a human inspects; this exists for
-     * the case where it does not — a join table, or a column indexed and compared
-     * in bulk — where the storage and the comparison cost are the point. The
-     * caller takes on the conversion between the textual and binary forms, which
-     * has to be applied identically on every read and every write; that is the
-     * whole cost of choosing this.
+     * Sixteen bytes rather than `CHAR(36)`, for a join table or a column indexed
+     * and compared in bulk, where the storage and comparison cost are the point.
+     * The caller takes on the conversion between the textual and binary forms,
+     * applied identically on every read and write.
      *
-     * A named method rather than `binaryFixed($c, 16)` so the intent is legible in
-     * a migration and so the length cannot be got wrong by a digit.
+     * A named method rather than `binaryFixed($c, 16)` so the intent is legible
+     * in a migration and the length cannot be got wrong by a digit.
      */
     public function binaryUuid(string $column): static
     {
@@ -793,10 +722,9 @@ class Blueprint
     /**
      * Refuse a length MySQL cannot accept, at the point the mistake is made.
      *
-     * `BINARY(0)` and `VARBINARY(0)` are rejected by MySQL with a message about
-     * the column type, which names the symptom and not the call that produced it.
-     * A negative length is worse: it reaches the statement as `binary(-1)` and
-     * fails as a syntax error attributed to the whole CREATE.
+     * MySQL's own rejection of `BINARY(0)` names the column type rather than the
+     * call that produced it. A negative length is worse: it reaches the
+     * statement as `binary(-1)` and fails as a syntax error on the whole CREATE.
      */
     private function assertPositiveLength(string $column, int $length, string $type): void
     {
@@ -813,11 +741,10 @@ class Blueprint
     /**
      * A `VARCHAR(45)` holding an IPv4 or IPv6 address.
      *
-     * 45 is the longest textual IPv6 form —
-     * `0000:0000:0000:0000:0000:ffff:255.255.255.255` — so the column fits either
-     * family without a length the caller has to reason about. Text rather than
-     * MySQL's `INET6_ATON()` binary form, for the same readability reason
-     * {@see uuid()} is text: an address in a `SELECT` should be legible.
+     * 45 is the longest textual IPv6 form, so the column fits either family
+     * without a length the caller has to reason about. Text rather than MySQL's
+     * `INET6_ATON()` binary form, for the readability reason {@see uuid()} is
+     * text: an address in a `SELECT` should be legible.
      */
     public function ipAddress(string $column): static
     {
@@ -827,8 +754,7 @@ class Blueprint
     /**
      * A `VARCHAR(17)` holding a MAC address in the usual colon-separated form.
      *
-     * 17 is exactly `aa:bb:cc:dd:ee:ff`, so nothing shorter fits and nothing
-     * longer is a MAC address in that spelling.
+     * 17 is exactly `aa:bb:cc:dd:ee:ff`.
      */
     public function macAddress(string $column): static
     {
@@ -838,10 +764,9 @@ class Blueprint
     /**
      * A signed integer column.
      *
-     * Signed, so it can hold a negative number — a count, an offset, a delta. An
-     * identifier is not this: use {@see unsignedBigInteger()} for a foreign key,
-     * since a negative id is not a row that can exist and an unsigned column
-     * rejects one at insert time rather than storing it.
+     * For a value that can go negative: a count, an offset, a delta. Not for an
+     * identifier; use {@see unsignedBigInteger()} for a foreign key, since a
+     * negative id is not a row that can exist.
      */
     public function integer(string $column): static
     {
@@ -851,16 +776,13 @@ class Blueprint
     /**
      * A signed big integer.
      *
-     * Distinct from {@see unsignedBigInteger()} by what it can hold: a signed
-     * bigint reaches negative values and half the positive range, and a column
-     * that needs a negative value — an offset, a balance, a signed delta — is
-     * silently truncated to zero by the unsigned spelling rather than rejected.
+     * Distinct from {@see unsignedBigInteger()} by what it can hold: the unsigned
+     * spelling silently truncates a negative value to zero rather than rejecting
+     * it.
      *
      * The dumper needs it because `bigint(20)` and `bigint(20) unsigned` are
-     * different definitions that `SHOW COLUMNS` reports differently, and
-     * collapsing both to the unsigned method would widen the range of every
-     * signed column in a dump without changing a line of its output that a
-     * reader would notice.
+     * definitions `SHOW COLUMNS` reports differently, and collapsing both to the
+     * unsigned method would widen every signed column in a dump.
      */
     public function bigInteger(string $column): static
     {
@@ -871,7 +793,7 @@ class Blueprint
      * A signed one-byte integer.
      *
      * The signed counterpart to {@see unsignedTinyInteger()}, and separate for
-     * the same reason `bigInteger()` is: a `tinyint(4)` that holds `-1` is not a
+     * the same reason `bigInteger()` is: a `tinyint(4)` holding `-1` is not a
      * `tinyint(3) unsigned`, and the difference is only visible in the data.
      */
     public function tinyInteger(string $column): static
@@ -883,9 +805,8 @@ class Blueprint
      * An unsigned big integer, the type a foreign key has to be to match an
      * `id()` column.
      *
-     * Not part of the brief's list; here because the brief's list cannot express
-     * a foreign key without it, and a migration that guessed `integer()` for one
-     * would produce a column that silently holds the wrong range of values.
+     * A migration that guessed `integer()` for a foreign key would produce a
+     * column holding the wrong range of values.
      */
     public function unsignedBigInteger(string $column): static
     {
@@ -895,11 +816,10 @@ class Blueprint
     /**
      * A boolean column, stored as MySQL's one-byte `tinyint(1)`.
      *
-     * The width is written out rather than left as `tinyint` because it is what
-     * tells a client library to report the value as a bool — PHP's mysqli and
-     * PDO both use it, and WordPress does not, so `$wpdb` hands back `'0'`/`'1'`
-     * regardless. Defaulted to false so an existing row is not left NULL by an
-     * `ADD COLUMN` that had no value to write.
+     * The width is written out because it is what tells a client library to
+     * report the value as a bool; PHP's mysqli and PDO both use it. WordPress
+     * does not, so `$wpdb` hands back `'0'`/`'1'` regardless. Defaulted to false
+     * so an `ADD COLUMN` does not leave existing rows NULL.
      */
     public function boolean(string $column): static
     {
@@ -909,17 +829,14 @@ class Blueprint
     /**
      * `created_at` and `updated_at`, both datetime, both not null.
      *
-     * No `DEFAULT CURRENT_TIMESTAMP`, deliberately, and this is a real decision
-     * rather than an omission. A note's creation time is the moment the
-     * application decided it — which, inside a transaction that stays open, is
-     * not the moment MySQL happened to write the row. A database default makes
-     * those two indistinguishable after the fact, and the difference is exactly
-     * what an audit trail is for. So the application writes both, and a row that
-     * forgot to is a loud failure rather than a quietly plausible timestamp.
+     * No `DEFAULT CURRENT_TIMESTAMP`: a row's creation time is the moment the
+     * application decided it, which inside a long-running transaction is not the
+     * moment MySQL wrote it. A database default makes the two indistinguishable
+     * after the fact, which is exactly what an audit trail needs to keep apart.
      *
-     * No `ON UPDATE CURRENT_TIMESTAMP` either, for the same reason: an `UPDATE`
-     * that deliberately leaves `updated_at` alone is a legitimate write, and a
-     * column-level trigger cannot be told to allow one.
+     * No `ON UPDATE CURRENT_TIMESTAMP` either: an `UPDATE` that deliberately
+     * leaves `updated_at` alone is legitimate, and a column-level trigger cannot
+     * be told to allow one.
      */
     public function timestamps(): static
     {
@@ -933,10 +850,9 @@ class Blueprint
      * A datetime column.
      *
      * `datetime` rather than `timestamp`: a `timestamp` column is stored as UTC
-     * and converted on read using the connection's timezone, which means the
-     * same stored row reads back differently through two connections configured
-     * differently. `datetime` stores what it is given, which is what an
-     * application that sets its own times wants.
+     * and converted on read using the connection's timezone, so the same row
+     * reads back differently through two differently configured connections.
+     * `datetime` stores what it is given.
      */
     public function datetime(string $column): static
     {
@@ -946,11 +862,9 @@ class Blueprint
     /**
      * A `DATE` column, holding a calendar day with no time component.
      *
-     * Distinct from {@see datetime()} because the difference is a real one for
-     * anything compared or sorted as a day: an expected close date of the 5th
-     * is the 5th regardless of the hour it was written, and storing it as a
-     * datetime invites a `< '2026-11-05'` comparison to exclude rows on the 5th
-     * itself.
+     * Distinct from {@see datetime()} for anything compared or sorted as a day:
+     * storing a date as a datetime invites a `< '2026-11-05'` comparison to
+     * exclude rows on the 5th itself.
      */
     public function date(string $column): static
     {
@@ -960,11 +874,9 @@ class Blueprint
     /**
      * A `TIMESTAMP` column.
      *
-     * The distinction from {@see datetime()} matters for exactly one modifier:
-     * `useCurrent()` is only valid on a timestamp or datetime column, and
-     * MySQL's `TIMESTAMP` additionally converts on read using the connection's
-     * timezone. Use `datetime()` unless the column is genuinely a moment in
-     * absolute time.
+     * Differs from {@see datetime()} in that MySQL converts it on read using the
+     * connection's timezone. Use `datetime()` unless the column is genuinely a
+     * moment in absolute time.
      */
     public function timestamp(string $column): static
     {
@@ -974,10 +886,9 @@ class Blueprint
     /**
      * A fixed-precision decimal.
      *
-     * `decimal` rather than a float, and this is not a style choice: a float
-     * cannot represent 0.10 exactly in binary, so summing a column of money
-     * stored as one accumulates a drift that shows up as a total that is off by
-     * a cent. Storage is exact at `$scale` places.
+     * `decimal` rather than a float: a float cannot represent 0.10 exactly in
+     * binary, so summing money stored as one accumulates a drift that shows up
+     * as a total off by a cent. Storage is exact at `$scale` places.
      *
      * @param int $precision Total significant digits.
      * @param int $scale     Digits after the point.
@@ -1001,10 +912,8 @@ class Blueprint
     }
 
     /**
-     * An unsigned integer.
-     *
-     * Unsigned, so the column cannot hold a negative value — which is correct
-     * for an ordering or a count and wrong for anything that can go backwards.
+     * An unsigned integer, for a value that cannot go negative: an ordering, a
+     * count.
      */
     public function unsignedInteger(string $column): static
     {
@@ -1012,8 +921,8 @@ class Blueprint
     }
 
     /**
-     * A one-byte unsigned integer, for a value with a small fixed ceiling —
-     * a percentage, a rating, a small count.
+     * A one-byte unsigned integer, for a value with a small fixed ceiling: a
+     * percentage, a rating, a small count.
      */
     public function unsignedTinyInteger(string $column): static
     {
@@ -1026,15 +935,13 @@ class Blueprint
      *
      *     $table->foreignId('company_id')->nullable()->constrained()->nullOnDelete();
      *
-     * The column name is the whole input, and the referenced table is derived
-     * from it by {@see constrainTo()} — `company_id` names `companies`. That
-     * derivation is Laravel's, and it is why the `_id` suffix is not optional:
-     * a column named `author` would resolve to a table called `author`.
+     * The column name is the whole input; the referenced table is derived from
+     * it by {@see guessForeignTable()} (`company_id` names `companies`). That
+     * derivation is Laravel's, which is why the `_id` suffix is not optional; a
+     * column named `author` would resolve to a table called `author`.
      *
-     * Emitted as `unsignedBigInteger` rather than a type name of its own,
-     * because that is what it is — and because the column has to match the type
-     * of the `id()` column it points at, which is an unsigned big integer. A
-     * mismatch is rejected by InnoDB as an incompatible constraint.
+     * Emitted as an unsigned big integer so it matches the `id()` column it
+     * points at. InnoDB rejects a mismatch as an incompatible constraint.
      */
     public function foreignId(string $column): static
     {
@@ -1051,27 +958,25 @@ class Blueprint
      * A polymorphic relation: `{name}_type` and `{name}_id`, and an index over
      * the pair.
      *
-     * Two columns rather than one, because a morph relation identifies its
-     * target by *type and id together* — `Lead` number 7 and `Company` number 7
-     * are different rows in different tables. `{name}_id` is an unsigned big
-     * integer but deliberately **not** a foreign key: it points at whichever
-     * table `{name}_type` names, and MySQL cannot express a constraint whose
-     * target is another column's value.
+     * Two columns because a morph identifies its target by type and id together;
+     * `Lead` number 7 and `Company` number 7 are different rows in different
+     * tables. `{name}_id` is an unsigned big integer but not a foreign key: it
+     * points at whichever table `{name}_type` names, and MySQL cannot express a
+     * constraint whose target is another column's value.
      *
-     * The composite index is the point of the helper. A morph lookup always
-     * filters on both columns, and an index on `{name}_id` alone would leave the
-     * type as a post-filter over every row that shares an id — which is every
-     * relation in the table, since ids repeat across types.
+     * The composite index is the point of the helper. A morph lookup filters on
+     * both columns, and an index on `{name}_id` alone leaves the type as a
+     * post-filter over every row that shares an id, which is every relation in
+     * the table since ids repeat across types.
      */
     public function morphs(string $name): static
     {
         $this->assertIdentifier($name, 'column');
 
-        // 191, not 255. The type column is indexed below, and a varchar longer
-        // than 191 characters cannot carry that index on utf8mb4 — MySQL refuses
-        // the CREATE with "specified key was too long". 191 is what WordPress
-        // uses for its own indexed string columns for the same reason, and a
-        // morph alias is a short class name rather than a document.
+        // 191, not 255: the type column is indexed below, and a longer varchar
+        // cannot carry that index on utf8mb4. MySQL refuses the CREATE with
+        // "specified key was too long". WordPress uses 191 for its own indexed
+        // string columns for the same reason.
         $this->addColumn($name . '_type', 'varchar(' . self::MAX_INDEXED_STRING_LENGTH . ') NOT NULL');
         $this->addColumn($name . '_id', 'bigint(20) unsigned NOT NULL');
         $this->indexes[] = $this->compileIndex([$name . '_type', $name . '_id']);
@@ -1082,24 +987,21 @@ class Blueprint
     /**
      * A nullable polymorphic relation: `{name}_type` and `{name}_id`, both null.
      *
-     * The pair a relation that may not be set needs. {@see morphs()} emits both
-     * columns `NOT NULL`, which is correct for a relation that always exists and
-     * wrong for one that is optional — and "optional" is the common case for an
-     * audit or activity row that is *sometimes* about a subject.
+     * The pair {@see morphs()} cannot express, for a relation that is only
+     * sometimes set: an audit or activity row whose subject is optional.
      *
-     * Nullability is applied to both columns rather than to one, because a morph
-     * with a type and no id (or the reverse) is a relation that names nothing.
-     * MySQL's `NULL` semantics make the composite index still work: `(NULL, NULL)`
-     * is stored and does not collide with any other row, since a NULL never
-     * compares equal to another NULL in a unique index.
+     * Both columns are nullable rather than one, because a morph with a type and
+     * no id (or the reverse) is a relation that names nothing. The composite
+     * index still works: `(NULL, NULL)` is stored and does not collide with any
+     * other row, since a NULL never compares equal to another NULL.
      */
     public function nullableMorphs(string $name): static
     {
         $this->morphs($name);
 
-        // Applied by name rather than through `nullable()`, which only ever
-        // reaches the *last* column — and the last column here is `{name}_id`,
-        // so the type column would silently stay NOT NULL.
+        // By name rather than through `nullable()`, which only reaches the last
+        // column. The last column here is `{name}_id`, so the type column would
+        // otherwise silently stay NOT NULL.
         $this->makeNullable($name . '_type');
         $this->makeNullable($name . '_id');
 
@@ -1109,17 +1011,14 @@ class Blueprint
     /**
      * A nullable `deleted_at` datetime, for soft deletes.
      *
-     * A column and nothing more: this framework has no model layer, so nothing
-     * here filters on it — a query that means "only live rows" says
-     * `WHERE deleted_at IS NULL` itself. What the helper buys is the convention:
-     * one name, one type, and a *nullable* column, so "not deleted" is NULL
-     * rather than a sentinel timestamp like `'0000-00-00'` that some MySQL
-     * configurations reject outright.
+     * A column and nothing more: this framework has no model layer, so a query
+     * meaning "only live rows" writes `WHERE deleted_at IS NULL` itself. What
+     * the helper buys is the convention of one name, one type, and a nullable
+     * column, so "not deleted" is NULL rather than a sentinel like
+     * `'0000-00-00'` that some MySQL configurations reject outright.
      *
-     * Deliberately not indexed. The usual companion is a composite index over
-     * `(deleted_at, <something you filter by>)`, which depends on what a given
-     * table queries on — so the caller adds it, and a bare index here would
-     * usually be the wrong one and always a second B-tree to maintain.
+     * Not indexed: the usual companion is a composite index over
+     * `(deleted_at, <what the table filters by>)`, which only the caller knows.
      */
     public function softDeletes(string $column = 'deleted_at'): static
     {
@@ -1131,11 +1030,9 @@ class Blueprint
     /**
      * A nullable `remember_token` varchar, for "remember me" sessions.
      *
-     * 100 characters, matching what Laravel's own migrations use. Nullable
-     * because most rows never have one — the token exists only between a user
-     * checking "remember me" and that session ending — and an empty-string
-     * default would make "no token" and "a token that happens to be empty"
-     * indistinguishable.
+     * 100 characters, matching Laravel's own migrations. Nullable because most
+     * rows never have one, and an empty-string default would make "no token" and
+     * "a token that happens to be empty" indistinguishable.
      */
     public function rememberToken(): static
     {
@@ -1147,15 +1044,12 @@ class Blueprint
      *
      * `char(36)` rather than `varchar`, because the referenced column is
      * {@see uuid()} and InnoDB requires a foreign key's type to match the column
-     * it points at — including the fixed-versus-variable distinction. A
-     * `varchar(36)` here produces a constraint the server refuses, so the reason
-     * the type is what it is belongs in the code rather than in a comment
-     * somebody will delete.
+     * it points at, including the fixed-versus-variable distinction. A
+     * `varchar(36)` here produces a constraint the server refuses.
      *
      * The column name is the whole input; the referenced table is derived the
-     * same way {@see foreignId()} derives it — `company_id` names `companies`.
-     * That derivation lives in {@see guessForeignTable()} and is shared rather
-     * than repeated, so the two cannot drift.
+     * same way {@see foreignId()} derives it, through
+     * {@see guessForeignTable()}.
      */
     public function foreignUuid(string $column): static
     {
@@ -1171,8 +1065,7 @@ class Blueprint
     /**
      * A foreign key column holding a ULID: `{name}` as `CHAR(26)`, constrained.
      *
-     * @see foreignUuid() for why the type is fixed-width, and {@see ulid()} for
-     * why it is 26 characters.
+     * @see foreignUuid() for the fixed width, {@see ulid()} for the 26 chars.
      */
     public function foreignUlid(string $column): static
     {
@@ -1190,11 +1083,9 @@ class Blueprint
     /**
      * Allow NULL in the column the chain is currently on.
      *
-     * Applies to the most recently added column, so it must directly follow it:
-     * `$table->string('title')->nullable();` and not
-     * `$table->string('title'); $table->string('body')->nullable();` — the
-     * second leaves `title` untouched and is correct behaviour, but reads as
-     * though it modified both.
+     * Applies to the most recently added column, so it must directly follow it.
+     * `$table->string('title'); $table->string('body')->nullable();` leaves
+     * `title` untouched.
      *
      * @throws SchemaException When no column has been added yet.
      */
@@ -1208,15 +1099,12 @@ class Blueprint
     /**
      * Allow NULL in a column named explicitly, wherever it is in the list.
      *
-     * The by-name counterpart to {@see nullable()}, which can only ever reach the
-     * most recent column. A helper that defines *two* columns needs this: the
-     * thing that wants nullability is the pair, and `nullable()` after it would
-     * reach only the second of them.
+     * The by-name counterpart to {@see nullable()}, which only reaches the most
+     * recent column. A helper that defines two columns needs this, since
+     * `nullable()` after it reaches only the second.
      *
-     * Not part of the public builder API — a migration chains `nullable()` — but
-     * `private` would force the two morph helpers to duplicate the definition
-     * rewrite below, which is exactly the kind of duplication that lets one copy
-     * drift.
+     * Not part of the public builder API; `private` would force the two morph
+     * helpers to duplicate the definition rewrite below.
      *
      * @throws SchemaException When no column by that name has been defined.
      */
@@ -1247,38 +1135,23 @@ class Blueprint
 
     /**
      * Strip `NOT NULL` from a definition, state `NULL`, and drop any default the
-     * *type* supplied.
+     * type supplied.
      *
-     * A column that becomes nullable keeps a default the author gave it, but
-     * loses one it inherited from its type — `boolean()` and `id()` both emit
-     * one. The distinction is what stops a nullable boolean from reporting
-     * `false` for a row whose value was never set, which is the difference
-     * between "no" and "no answer".
+     * A column that becomes nullable keeps a default the author gave it but
+     * loses one it inherited from its type (`boolean()` and `id()` emit one).
+     * That is what stops a nullable boolean reporting `false` for a row whose
+     * value was never set, the difference between "no" and "no answer".
      *
-     * ## Why `NULL` is written rather than merely implied
+     * `NULL` is written although omitting `NOT NULL` already makes a column
+     * nullable, because {@see SchemaDumper} re-emits nullability explicitly, so
+     * a dump and a hand-written migration would otherwise differ textually on
+     * the same column.
      *
-     * Omitting `NOT NULL` is *enough* — MySQL reads a column with no nullability
-     * clause as nullable — so this method worked for years while saying nothing.
-     * It is written out anyway because of the two places the difference is
-     * observable.
-     *
-     * A dump is the first. {@see SchemaDumper} reads nullability from the
-     * catalogue and re-emits it as an explicit `->nullable()`, so a migration the
-     * dumper generated and one a person wrote spell the same column two ways —
-     * and a text comparison of the two reports a difference that does not exist.
-     *
-     * The second is that relying on a default makes the intent unrecoverable from
-     * the source. `tinyint(1)` states a type; `tinyint(1) NULL` states a type and
-     * a decision. The next reader should not have to know MySQL's rules to see
-     * which was meant.
-     *
-     * `NULL` goes *before* any surviving default, because that is the order
-     * MySQL's grammar requires — `type [NULL | NOT NULL] [DEFAULT v] [extra]`.
-     * `tinyint(1) NULL DEFAULT 1` parses; `tinyint(1) DEFAULT 1 NULL` is a syntax
-     * error. The adapter's own {@see WpDatabaseAdapter::columnDefinition()} builds
-     * a definition the same way round, which is a second reason not to guess: the
-     * two have to describe a column identically for an `ALTER` to be a no-op
-     * against a column this created.
+     * It goes before any surviving default, as MySQL's grammar requires
+     * (`type [NULL | NOT NULL] [DEFAULT v] [extra]`); `tinyint(1) DEFAULT 1 NULL`
+     * is a syntax error. {@see WpDatabaseAdapter::columnDefinition()} builds a
+     * definition the same way round, and the two have to match for an `ALTER` to
+     * be a no-op against a column this created.
      */
     private function dropNotNull(string $definition, string $column): string
     {
@@ -1290,11 +1163,10 @@ class Blueprint
 
         $definition = rtrim($definition);
 
-        // Idempotent, because `nullable()` can legitimately be reached twice for
-        // one column: `$table->string('x')->nullable()` followed by a helper that
-        // makes the whole group nullable, or a doubled modifier. Without this the
-        // second pass would emit `... NULL NULL`, which MySQL rejects — turning a
-        // harmless repeat into a migration that will not run.
+        // Idempotent: `nullable()` can legitimately be reached twice for one
+        // column (a doubled modifier, or a helper that nullables a whole group).
+        // Without this the second pass emits `... NULL NULL`, which MySQL
+        // rejects, turning a harmless repeat into a migration that will not run.
         if (preg_match('/(?:^|\s)NULL(?:\s|$)/i', $definition) === 1) {
             return $definition;
         }
@@ -1314,7 +1186,7 @@ class Blueprint
      */    public function default(string|int|float|bool $value): static
     {
         // Refused before the rewrite, so a refusal leaves the column as the type
-        // method defined it rather than half-modified.
+        // method defined it.
         $column = $this->lastColumn()['name'];
 
         if (isset($this->noDefault[$column])) {
@@ -1327,11 +1199,10 @@ class Blueprint
         }
 
         $this->modifyLastColumn(function (string $definition) use ($value): string {
-            // Any existing default is replaced, not appended to. A column type
-            // may already carry one — `boolean()` does, so that an ADD COLUMN
-            // does not leave every existing row NULL — and appending would emit
-            // `DEFAULT 0 DEFAULT 1`, which is a syntax error rather than the
-            // override the caller asked for.
+            // An existing default is replaced, not appended to. A type may
+            // already carry one (`boolean()` does, so an ADD COLUMN does not
+            // leave every existing row NULL) and appending would emit
+            // `DEFAULT 0 DEFAULT 1`, a syntax error rather than an override.
             $definition = preg_replace('/ DEFAULT .*$/', '', $definition) ?? $definition;
 
             return $definition . ' DEFAULT ' . self::compileDefault($value);
@@ -1347,17 +1218,14 @@ class Blueprint
     /**
      * Default the most recently added column to the current timestamp.
      *
-     * Valid on a `timestamp` or `datetime` column only — MySQL applies
-     * `DEFAULT CURRENT_TIMESTAMP` to those types and to nothing else, so on any
-     * other type the statement is refused.
+     * Valid on a `timestamp` or `datetime` column only; MySQL applies
+     * `DEFAULT CURRENT_TIMESTAMP` to those types and to nothing else.
      *
-     * Note this is the *one* place a database-side default is the right answer
-     * in this builder. `timestamps()` refuses one deliberately, because a row's
-     * `created_at` should be the moment the application decided rather than the
-     * moment MySQL wrote it. A column like `converted_at` is different: it
-     * records when the database accepted the row, which is exactly what the
-     * application means by it, and deriving it in the schema removes a field
-     * every caller would otherwise have to remember to set.
+     * The one place in this builder where a database-side default is right.
+     * {@see timestamps()} refuses one because a row's `created_at` should be the
+     * moment the application decided rather than the moment MySQL wrote it. A
+     * column like `converted_at` records when the database accepted the row,
+     * which is what the application means by it.
      *
      * @throws SchemaException When the column is not a date/time type.
      */
@@ -1388,19 +1256,17 @@ class Blueprint
      *         $table->string('title')->after('id');
      *     });
      *
-     * Without it MySQL appends a new column to the end of the table, so a column
-     * declared between two others lands last. That is cosmetic in the schema and
-     * not at all cosmetic in `SELECT *`, where column order is what every
-     * positional `fetch_row()` index and every `while ($row = ...)` loop over
-     * named columns depends on — and it is the difference a `dbDelta()`-managed
-     * WordPress table shows after an upgrade on two sites that applied different
+     * Without it MySQL appends a new column to the end of the table. That is
+     * cosmetic in the schema but not in `SELECT *`, where column order drives
+     * every positional `fetch_row()` index, and it is the difference a
+     * `dbDelta()`-managed table shows between two sites that applied different
      * batches.
      *
-     * Also the way an *existing* column is repositioned: MySQL's `MODIFY COLUMN`
-     * takes `AFTER`, so `->after('id')->change()` moves a column that is already
-     * there. There is deliberately no separate `moveColumn()`.
+     * Also how an existing column is repositioned: MySQL's `MODIFY COLUMN`
+     * takes `AFTER`, so `->after('id')->change()` moves a column already there.
+     * There is no separate `moveColumn()`.
      *
-     * The last positioning call wins — see {@see first()}.
+     * The last positioning call wins; see {@see first()}.
      *
      * @throws SchemaException When no column has been added yet, the name is not
      *                         a usable identifier, or the table is being created.
@@ -1416,15 +1282,13 @@ class Blueprint
      * Place the column first in the table.
      *
      * A separate method rather than `after(null)`, because `FIRST` is a keyword
-     * and `AFTER NULL` is a syntax error — the distinction is in the grammar, so
-     * it is in the API.
+     * and `AFTER NULL` is a syntax error.
      *
-     * **The last positioning call wins.** `->first()->after('id')` positions
-     * after `id`; `->after('id')->first()` positions first. Both clauses cannot
-     * be emitted — `FIRST AFTER x` does not parse — so one has to win, and
-     * last-wins is the rule `default()` already follows for the same reason: a
-     * second call is a correction, not an addition. Refusing the pair instead
-     * would break the reordering idiom that makes the methods useful together.
+     * The last positioning call wins: `->first()->after('id')` positions after
+     * `id`, `->after('id')->first()` positions first. Both clauses cannot be
+     * emitted (`FIRST AFTER x` does not parse), and a second call is a
+     * correction rather than an addition. Refusing the pair would break the
+     * reordering idiom that makes the two methods useful together.
      *
      * @throws SchemaException When no column has been added yet, or the table is
      *                         being created.
@@ -1439,9 +1303,9 @@ class Blueprint
      *
      * Strips any clause a previous `after()`/`first()` appended, which is what
      * makes last-wins work: the definition carries its position, so replacing it
-     * means removing the old one rather than tracking it separately.
+     * means removing the old one.
      *
-     * @param string $clause     The SQL — `FIRST` or `AFTER \`x\``.
+     * @param string $clause     The SQL, `FIRST` or `AFTER \`x\``.
      * @param string $describeAs How the call reads, for the refusal message.
      *
      * @throws SchemaException When no column has been added, or the table is
@@ -1449,10 +1313,9 @@ class Blueprint
      */
     private function position(string $clause, string $describeAs): static
     {
-        // Refused on a CREATE rather than emitted. MySQL rejects FIRST/AFTER
-        // inside CREATE TABLE, and the request is meaningless there anyway: a new
-        // table's column order is the order the migration declared them in, so
-        // after() asks for something the caller already has.
+        // Refused on a CREATE: MySQL rejects FIRST/AFTER inside CREATE TABLE, and
+        // a new table's column order is already the order the migration declared
+        // them in.
         if ($this->creating) {
             throw new SchemaException(sprintf(
                 '%s was requested while creating table [%s]. Column position is the order the '
@@ -1490,10 +1353,10 @@ class Blueprint
      *     $table->string('status')->index();            // the last column
      *     $table->index(['user_id', 'created_at']);     // named columns
      *
-     * The composite form is what covers an `ORDER BY`: an index on the first
+     * The composite form is what covers an `ORDER BY`; an index on the first
      * column alone leaves MySQL sorting every row it returns.
      *
-     * For an **existing** table each index is its own `ALTER TABLE ... ADD KEY`.
+     * For an existing table each index is its own `ALTER TABLE ... ADD KEY`.
      * MySQL accepts several in one statement, but `dbDelta()` sees only the first
      * of them, so one statement per index is what keeps a `Schema::table()`
      * migration honest whichever path executes it.
@@ -1537,18 +1400,15 @@ class Blueprint
      *     $table->string('email')->unique();            // the last column
      *     $table->unique(['company_id', 'contact_id']); // named columns
      *
-     * A unique index is what actually enforces a rule like "one company per
-     * contact": a plain index over the same columns makes the lookup fast and
-     * leaves two writers free to store the same pair. That is why the constraint
-     * belongs in the schema rather than in a read-then-write check in the
-     * application, which can race between the read and the write.
+     * A unique index enforces a rule like "one company per contact" in the
+     * schema. The alternative, a read-then-write check in the application, can
+     * race between the read and the write.
      *
-     * A named column list *replaces* the same-named plain index rather than
-     * sitting beside it — a unique index already serves every lookup the plain
-     * one did, so keeping both would maintain a second B-tree on every write for
-     * nothing. Two indexes that differ only in uniqueness are collapsed here for
-     * that reason, which is the same reasoning
-     * `2026_10_31_222317_make_companies_name_unique.php` applies by hand.
+     * A column list replaces the same-named plain index rather than sitting
+     * beside it: a unique index serves every lookup the plain one did, so
+     * keeping both maintains a second B-tree on every write for nothing. Same
+     * reasoning as `2026_10_31_222317_make_companies_name_unique.php` applies by
+     * hand.
      *
      * @param string|list<string>|null $columns Null applies it to the column the
      *                                          chain is currently on.
@@ -1606,15 +1466,15 @@ class Blueprint
      *
      *     $table->unsignedBigInteger('note_id')->nullable()->indexWith('occurred_at');
      *
-     * The composite form exists for the query shape that has both a join and a
-     * sort — `WHERE note_id = ? ORDER BY occurred_at` — where an index on the
-     * first column alone still leaves MySQL sorting every row it returns.
+     * For the query shape with both a join and a sort (`WHERE note_id = ?
+     * ORDER BY occurred_at`), where an index on the first column alone leaves
+     * MySQL sorting every row it returns.
      *
-     * The second column is named rather than inferred, and appended rather than
-     * prepended, because the leading column is the one being filtered on. It is
-     * also always added: MySQL does not use the trailing part of a composite
-     * index to avoid a sort when the leading part is `NULL`, and a migration is
-     * not the place to guess whether a nullable column is *usually* null.
+     * The second column is named and appended rather than inferred and
+     * prepended, because the leading column is the one being filtered on. The
+     * pair is always added: MySQL will not use a composite index's trailing part
+     * to avoid a sort when the leading part is `NULL`, and a migration is not
+     * the place to guess whether a nullable column is usually null.
      *
      * @throws SchemaException When no column has been added yet.
      */
@@ -1646,29 +1506,17 @@ class Blueprint
      *         $table->string('body', 500)->nullable()->change();
      *     });
      *
-     * ## The caller states the whole definition
+     * The caller states the whole definition. Laravel reads the current one via
+     * Doctrine DBAL and applies a diff; this has no Doctrine, so `change()`
+     * emits the fluent chain's definition verbatim as `MODIFY COLUMN`. Anything
+     * not restated is lost: a `change()` on a `NOT NULL` column without
+     * `->nullable()` keeps it `NOT NULL`, and an unstated default is dropped.
+     * `$table->string('body')->change()` reads like "make body a string" and
+     * actually means `varchar(191) NOT NULL`, discarding whatever else it had.
      *
-     * This is the rule the framework settled on, and it is a deliberate cost.
-     * Laravel reads the current definition via Doctrine DBAL and applies a diff;
-     * this has no Doctrine, so `change()` takes the definition the fluent chain
-     * built and emits it verbatim as `MODIFY COLUMN`. That means a caller must
-     * restate everything they want to keep — a `->change()` on a `NOT NULL`
-     * column without `->nullable()` makes it `NOT NULL`, and a default that is
-     * not restated is dropped.
-     *
-     * The trade is worth stating plainly because it is the one place in this
-     * builder where the code does *not* say what it means: `$table->string('body')->change()`
-     * reads like "make body a string" and actually means "make body exactly
-     * `varchar(191) NOT NULL`", discarding whatever else it had. Conversely it is
-     * honest about itself — nothing is inferred, so nothing is silently guessed
-     * wrong — and it needs no schema-introspection dependency to work.
-     *
-     * ## The column must exist
-     *
-     * MySQL's `MODIFY COLUMN` is an error against a missing column, and by the
-     * time it fails the other clauses of the same `ALTER TABLE` have run. Checked
-     * first so the message names the column rather than arriving as a syntax
-     * error from the server.
+     * The column must already exist. MySQL's `MODIFY COLUMN` errors on a missing
+     * column, and by then the other clauses of the same `ALTER TABLE` have run,
+     * so this is checked first and the message names the column.
      *
      * @throws SchemaException When no column was defined before it, the column
      *                         does not exist, or the blueprint is creating a
@@ -1676,9 +1524,8 @@ class Blueprint
      */
     public function change(): static
     {
-        // Read before the guard below, because the guard needs the column's name
-        // to name it in its own message — and the "no column chained" case is
-        // reported by that same guard, with wording that mentions change().
+        // Checked before the column is popped, because this case needs the
+        // column's name for its message.
         if ($this->columns === []) {
             throw new SchemaException(sprintf(
                 'change() was called on table [%s] before any column was defined. It rewrites the '
@@ -1692,21 +1539,19 @@ class Blueprint
             $this->assertAlterable(sprintf('MODIFY COLUMN `%s`', $this->columns[count($this->columns) - 1]['name']));
         }
 
-        // Consumed from the column list, not copied from it. A `change()` is a
-        // *replacement*: leaving the column in $columns would emit both an
-        // `ADD COLUMN` and a `MODIFY COLUMN` for it, and on a table where the
-        // column already exists the ADD is the statement that fails.
+        // Popped, not copied: a `change()` replaces the column. Leaving it in
+        // $columns would emit both an `ADD COLUMN` and a `MODIFY COLUMN`, and on
+        // a table where the column exists the ADD is what fails.
         $column = array_pop($this->columns);
 
         $this->assertColumnExists($column['name']);
 
         $this->alterations[] = sprintf('MODIFY COLUMN `%s` %s', $column['name'], $column['definition']);
 
-        // The default-tracking map is keyed by name and is consulted by
-        // nullable() to keep `->default(0)->nullable()` order-independent. The
+        // The default-tracking map is keyed by name and read by nullable(). The
         // column it described is no longer in the list being compiled, so the
-        // entry is stale either way; dropped so a later same-named definition
-        // does not read the old answer.
+        // entry is dropped rather than left for a later same-named definition to
+        // read.
         unset($this->hasDefault[$column['name']]);
 
         return $this;
@@ -1738,23 +1583,19 @@ class Blueprint
      *         $table->renameColumn('body', 'content');
      *     });
      *
-     * Two names and no type, which is the whole point: the definition is read
-     * back from the database through the adapter, so a caller cannot accidentally
-     * reset a column's type or nullability while renaming it. That is the failure
-     * this signature exists to prevent — restating a definition by hand is how a
-     * `varchar(255)` quietly becomes a `varchar(191)`, or a `NOT NULL` loses its
-     * not.
+     * Two names and no type: the definition is read back from the database
+     * through the adapter, so a rename cannot reset a column's type or
+     * nullability. Restating a definition by hand is how a `varchar(255)`
+     * quietly becomes a `varchar(191)`, or a `NOT NULL` loses its not.
      *
-     * **The data is preserved.** MySQL's `CHANGE COLUMN` moves the values with
-     * the name; it is not a drop-and-add in disguise. The compiled statement is
-     * `CHANGE COLUMN` rather than the more modern `RENAME COLUMN` because that
-     * one needs MySQL 8.0, and the plugin supports hosts older than that.
+     * MySQL's `CHANGE COLUMN` moves the values with the name; the data is
+     * preserved. It is `CHANGE COLUMN` rather than the modern `RENAME COLUMN`
+     * because that one needs MySQL 8.0.
      *
-     * Refused when the source column does not exist — there is nothing to
-     * rename, and inventing a definition would create the column empty. Refused
-     * when the destination already exists, because MySQL would fail with a
-     * duplicate-column error after other clauses in the same statement had
-     * already run; catching it here names both columns instead.
+     * Refused when the source column does not exist (nothing to rename, and
+     * inventing a definition would create the column empty) and when the
+     * destination does, since MySQL would fail with a duplicate-column error
+     * after other clauses in the same statement had already run.
      *
      * @throws SchemaException When the blueprint is creating a table, the
      *                         definition cannot be read, or either name is
@@ -1765,11 +1606,10 @@ class Blueprint
         $this->assertIdentifier($from, 'column');
         $this->assertIdentifier($to, 'column');
 
-        // Checked before the definitions are read, not after. A rename inside a
-        // `CREATE TABLE` is invalid whatever the database holds, and reading it
-        // first would report "no such column" — sending an author to look at a
-        // table that is not the problem. It would also query a table that, on a
-        // first install, does not exist yet.
+        // Before the definitions are read: a rename inside a `CREATE TABLE` is
+        // invalid whatever the database holds, and reading first would report
+        // "no such column" against a table that, on a first install, does not
+        // exist yet.
         $this->assertAlterable(sprintf('RENAME COLUMN `%s` TO `%s`', $from, $to));
 
         $definition = ($this->resolveColumnDefinition)($this->table, $from);
@@ -1807,22 +1647,17 @@ class Blueprint
      *         $table->dropColumn(['slug', 'excerpt']);
      *     });
      *
-     * **This destroys the data in the column, and nothing here can undo it.**
-     * There is no soft-delete for a schema: `down()` has to re-add the column,
-     * and it comes back empty. A migration that drops a column is therefore only
-     * reversible in the structural sense, and the `down()` written beside it
-     * should say so rather than implying the values return.
+     * This destroys the data in the column and nothing here can undo it. A
+     * `down()` has to re-add the column and it comes back empty, so a migration
+     * that drops one is only reversible in the structural sense.
      *
-     * A list is compiled into one `ALTER TABLE` with a `DROP COLUMN` clause per
-     * name, rather than one statement each — see {@see toAddColumnStatements()}
-     * for why every change in a callback shares a statement. The practical
-     * consequence here is that a multi-column drop either happens or does not,
-     * so a caller who catches a failure is never left guessing which of the
-     * columns went.
+     * A list compiles into one `ALTER TABLE` with a `DROP COLUMN` clause per
+     * name, not one statement each (see {@see toAddColumnStatements()}), so a
+     * multi-column drop either happens or does not and a caller catching a
+     * failure is never left guessing which columns went.
      *
-     * Valid only when altering an existing table. MySQL rejects `DROP` inside
-     * `CREATE TABLE`, so dropping a column from a table being created is refused
-     * here, where the message can say which column and which table.
+     * Refused when creating a table, since MySQL rejects `DROP` inside
+     * `CREATE TABLE`.
      *
      * @param string|list<string> $columns
      *
@@ -1847,14 +1682,13 @@ class Blueprint
      *         $table->dropIndex(['name']);
      *     });
      *
-     * Named by *columns* rather than by index name, so a migration does not have
-     * to know how the database spelled the key it is removing — and so the same
-     * call works against an index this builder created and one created some
-     * other way, since both are looked up by what they cover.
+     * Named by columns rather than by index name, so a migration does not have
+     * to know how the database spelled the key. The same call works against an
+     * index this builder created and one created another way, since both are
+     * looked up by what they cover.
      *
-     * Valid only when altering an existing table. Dropping a key from a table
-     * being created is meaningless, and MySQL rejects `DROP` inside
-     * `CREATE TABLE` — so it is refused here, where the message can say why.
+     * Refused when creating a table, since MySQL rejects `DROP` inside
+     * `CREATE TABLE`.
      *
      * @param string|list<string> $columns
      *
@@ -1874,11 +1708,10 @@ class Blueprint
     /**
      * Drop a unique index by the columns it covers.
      *
-     * Distinct from {@see dropIndex()} in MySQL's grammar — `DROP INDEX` and
-     * `DROP KEY` are synonyms there, but a unique index whose name collides with
-     * a plain one is exactly the confusion this pairs with {@see unique()}.
-     * They compile to the same statement, deliberately: MySQL has one namespace
-     * for both, so `DROP KEY <name>` removes whichever it is.
+     * Distinct from {@see dropIndex()} in name only: they compile to the same
+     * statement, because MySQL has one namespace for both and `DROP KEY <name>`
+     * removes whichever it is. This pairs with {@see unique()} so a caller
+     * dropping a unique index says so.
      *
      * @param string|list<string> $columns
      *
@@ -1906,15 +1739,13 @@ class Blueprint
     /**
      * Refuse an alteration to a table that is being created.
      *
-     * `MySQL` has no `DROP`, `CHANGE` or `MODIFY` inside a `CREATE TABLE`, so the
-     * alternative to refusing is emitting a statement the server rejects — and
-     * the author would be reading a syntax error when the mistake is really "you
-     * altered a table you have not made yet".
+     * MySQL has no `DROP`, `CHANGE` or `MODIFY` inside a `CREATE TABLE`, so the
+     * alternative is a statement the server rejects and a syntax error where the
+     * real mistake is altering a table that does not exist yet.
      *
      * `$describeAs` lets a caller name the operation in its own vocabulary when
-     * the clause it compiles to reads differently: a rename is `CHANGE COLUMN` to
-     * MySQL but `RENAME COLUMN` to the person who wrote it, and a message
-     * quoting the second is the one that matches their code.
+     * the compiled clause reads differently: a rename is `CHANGE COLUMN` to MySQL
+     * but `RENAME COLUMN` to the person who wrote it.
      *
      * @throws SchemaException When the blueprint is creating a table.
      */
@@ -1940,22 +1771,19 @@ class Blueprint
      *     $table->foreignId('assigned_to')->nullable()->constrained('users');
      *
      * Without an argument the referenced table is derived from the column name
-     * (`company_id` → `companies`) and the referenced column is that table's
-     * `id`. With one, the table is named outright — which is what a column that
-     * does not follow the convention needs, `assigned_to` being the case in
-     * hand: no rule turns it into `users`.
+     * (`company_id` names `companies`) and the referenced column is that table's
+     * `id`. With one, the table is named outright, which a column outside the
+     * convention needs: no rule turns `assigned_to` into `users`.
      *
-     * The referenced table is stored as the *schema* name, not as a resolved
-     * one. Resolution happens at compilation, through the adapter, which
-     * resolves every name — plugin tables (`leads` → `wp_leads`) and WordPress
-     * core tables alike (`users` → `wp_users`, `posts` → `wp_posts`) — by
-     * prepending `$wpdb->prefix`, because WordPress prefixes every table with
-     * that value.
+     * The table is stored as the schema name, not a resolved one. Resolution
+     * happens at compilation, through the adapter, which prefixes every name
+     * with `$wpdb->prefix`, plugin tables (`leads` to `wp_leads`) and WordPress
+     * core tables alike (`users` to `wp_users`).
      *
-     * The constraint is left ON DELETE RESTRICT unless a deletion rule is
-     * chained after it. That default is the conservative one: a cascade is a
-     * decision about what a delete *means*, and defaulting to it would silently
-     * delete rows a migration author never thought about.
+     * The constraint stays ON DELETE RESTRICT unless a deletion rule is chained
+     * after it. A cascade is a decision about what a delete means, and
+     * defaulting to it would silently delete rows a migration author never
+     * considered.
      *
      * @throws SchemaException When the previous call was not a foreignId(), or
      *                         the derived table name is unusable.
@@ -1969,7 +1797,7 @@ class Blueprint
         if ($table === null || $table === '') {
             throw new SchemaException(sprintf(
                 'Could not derive the table [%s] on [%s] refers to. A foreign key column must be named '
-                . '<singular>_id — company_id, user_id — or the table must be named: '
+                . '<singular>_id, company_id, user_id, or the table must be named: '
                 . 'constrained(\'the_table\').',
                 $column,
                 $this->table
@@ -1980,7 +1808,7 @@ class Blueprint
 
         $this->constraints[] = sprintf(
             'CONSTRAINT `%s_%s_foreign` FOREIGN KEY (`%s`) REFERENCES `%s` (`id`)',
-            // The constraint name carries the table's resolved spelling, so two
+            // The constraint name carries the resolved table spelling, so two
             // installs sharing one database do not collide over a name MySQL
             // treats as database-global.
             $this->resolve($this->table),
@@ -2003,9 +1831,9 @@ class Blueprint
     /**
      * Delete this row when the row it references is deleted.
      *
-     * `ON DELETE CASCADE`. Correct for a row that has no meaning without its
-     * parent — a deal stage belonging to a deleted pipeline, a pivot row
-     * belonging to either side.
+     * `ON DELETE CASCADE`, for a row with no meaning without its parent: a deal
+     * stage belonging to a deleted pipeline, a pivot row belonging to either
+     * side.
      *
      * @throws SchemaException When no constraint has been declared.
      */
@@ -2017,11 +1845,9 @@ class Blueprint
     /**
      * Set this column to NULL when the row it references is deleted.
      *
-     * `ON DELETE SET NULL`. Requires a nullable column — the rule cannot set a
-     * `NOT NULL` column to null, and MySQL rejects the constraint outright — so
-     * this refuses when {@see nullable()} has not been called, rather than
-     * emitting a statement the database will refuse with a message about the
-     * constraint.
+     * `ON DELETE SET NULL`. Requires a nullable column: the rule cannot set a
+     * `NOT NULL` column to null and MySQL rejects the constraint outright, so
+     * this refuses when {@see nullable()} has not been called.
      *
      * @throws SchemaException When the column is not nullable.
      */
@@ -2044,8 +1870,8 @@ class Blueprint
     /**
      * Refuse to delete a referenced row while this one points at it.
      *
-     * `ON DELETE RESTRICT`, which is also the default. Stated explicitly by a
-     * migration that means it, so a reader does not have to know the default.
+     * `ON DELETE RESTRICT`, which is also the default. Stated explicitly so a
+     * reader does not have to know the default.
      *
      * @throws SchemaException When no constraint has been declared.
      */
@@ -2111,23 +1937,15 @@ class Blueprint
             return [];
         }
 
-        // **One statement**, with every change comma-separated inside it, and
-        // this is not an optimisation.
+        // One statement, with every change comma-separated inside it, and this
+        // is correctness rather than an optimisation.
         //
-        // A migration that replaces an index — `dropIndex(['name'])` followed by
-        // `unique('name')`, which is what making a column unique looks like when
-        // it already carried a plain index — compiles to a DROP and an ADD that
-        // name the *same* index. Split across two statements they interleave
-        // wrongly: the ADD would create the unique index and the DROP would then
-        // remove it, leaving the column unindexed and the constraint silently
-        // absent. Inside one statement MySQL evaluates DROP before ADD
-        // regardless of the order they are written, so the old index goes and
-        // the new one arrives. That is the only ordering that produces the
-        // intended result, and it is not the ordering the source reads in.
-        //
-        // The alternative — one statement per change — was the earlier shape
-        // here, and the FakeWpdb suite caught it: the two statements ran in
-        // sequence and the second undid the first.
+        // A migration that replaces an index (dropIndex followed by unique on
+        // the same column) compiles to a DROP and an ADD naming the same index.
+        // Split across two statements the ADD would create the unique index and
+        // the DROP would then remove it, leaving the column unindexed. Inside
+        // one statement MySQL evaluates DROP before ADD regardless of written
+        // order, so the old index goes and the new one arrives.
         return [sprintf('ALTER TABLE `%s` %s', $qualifiedName, implode(', ', $clauses))];
     }
 
@@ -2135,9 +1953,8 @@ class Blueprint
      * Whether anything was defined at all.
      *
      * Read by {@see Schema::table()} to decide whether there is a statement to
-     * issue: a callback that defined nothing — guarded by a conditional that did
-     * not hold, say — must not produce an `ALTER TABLE` with an empty clause,
-     * which is a syntax error rather than a no-op.
+     * issue: a callback that defined nothing must not produce an `ALTER TABLE`
+     * with an empty clause, which is a syntax error rather than a no-op.
      */
     public function isEmpty(): bool
     {
@@ -2155,6 +1972,8 @@ class Blueprint
      * @param string $type      The SQL type fragment, without the trailing
      *                          nullability or modifiers.
      * @param bool   $primary   Whether to emit a table-level PRIMARY KEY for it.
+     *
+     * @throws SchemaException When the name is not a usable identifier.
      */
     private function addColumn(string $column, string $type, bool $primary = false): static
     {
@@ -2172,10 +1991,10 @@ class Blueprint
     /**
      * Rewrite the definition of the column the chain is currently on.
      *
-     * The column's *name* is what the rewrite callback is given alongside its
-     * definition, because {@see nullable()} has to consult state keyed by name —
-     * and the alternative, passing the whole column array, invites a callback
-     * that mutates it and silently disagrees with the list it came from.
+     * The rewrite callback is given the column's name alongside its definition,
+     * because {@see nullable()} consults state keyed by name. Passing the whole
+     * column array instead would let a callback mutate it and disagree with the
+     * list it came from.
      *
      * @param callable(string, string): string $rewrite
      *
@@ -2204,9 +2023,8 @@ class Blueprint
     /**
      * A column's current compiled definition.
      *
-     * Used by the constraint rules, which have to ask about a column the chain
-     * has already moved past — whether it is nullable, whether it is a date
-     * type — rather than about the one being built.
+     * Used by the constraint rules, which ask about a column the chain has moved
+     * past (is it nullable, is it a date type) rather than the one being built.
      */
     private function definition(string $column): string
     {
@@ -2223,10 +2041,9 @@ class Blueprint
      * The column the most recent {@see foreignId()} added, which is the one a
      * `constrained()` call applies to.
      *
-     * The *most recent* rather than "the last column": `foreignId()` is
-     * routinely followed by `nullable()`, which does not disturb the pending
-     * foreign key, and by nothing else. Tracking it through a separate pointer
-     * is what lets `->nullable()->constrained()` and
+     * The most recent rather than "the last column": `nullable()` routinely sits
+     * between `foreignId()` and `constrained()` and does not disturb the pending
+     * key. Tracking it separately is what lets `->nullable()->constrained()` and
      * `->constrained()->nullable()` both work.
      *
      * @throws SchemaException When no foreignId() is awaiting one.
@@ -2272,15 +2089,13 @@ class Blueprint
     /**
      * The table a foreign key column name refers to.
      *
-     * `company_id` names `companies` — singularise the stem, then pluralise it.
-     * Both steps are needed and the order matters: `companies` is the plural of
-     * `company`, so stripping `_id` and pluralising naively gives `companys`.
+     * `company_id` names `companies`: strip `_id`, then pluralise. Pluralising
+     * the stem without removing the trailing `y` first would give `companys`.
      *
-     * English pluralisation is irregular enough that a general rule is a
-     * liability, so this covers the endings that appear in table names — a
-     * consonant before `y`, a sibilant needing `es` — and leaves anything else
-     * alone. A name it gets wrong is not a silent failure: {@see constrained()}
-     * takes the table explicitly precisely so a column that does not follow the
+     * English pluralisation is irregular, so this covers only the endings that
+     * appear in table names (a consonant before `y`, a sibilant needing `es`) and
+     * leaves the rest alone. A name it gets wrong is not a silent failure:
+     * {@see constrained()} takes the table explicitly so a column outside the
      * convention can say what it points at.
      */
     private function guessForeignTable(string $column): ?string
@@ -2300,8 +2115,7 @@ class Blueprint
             return substr($stem, 0, -1) . 'ies';
         }
 
-        // A sibilant takes `es`, which is what turns `address` into `addresses`
-        // rather than `addresss`.
+        // A sibilant takes `es`: `address` becomes `addresses`.
         if (preg_match('/(s|x|z|ch|sh)$/', $stem) === 1) {
             return $stem . 'es';
         }
@@ -2312,9 +2126,8 @@ class Blueprint
     /**
      * Refuse to index a column whose type cannot carry an index.
      *
-     * Only says anything about columns this blueprint defined; an index over a
-     * column that came from somewhere else — a table being altered — is not this
-     * class's to judge, because it never saw the type.
+     * Only columns this blueprint defined are judged: an index over a column
+     * from elsewhere was never seen, so its type is unknown here.
      *
      * @throws SchemaException
      */
@@ -2366,8 +2179,8 @@ class Blueprint
         }
 
         // Constraints before the primary key. MySQL accepts either order, but
-        // dbDelta() parses the key and constraint lines positionally and can
-        // mis-read a body whose PRIMARY KEY is not last.
+        // dbDelta() parses the key and constraint lines positionally and
+        // misreads a body whose PRIMARY KEY is not last.
         foreach ($this->constraints as $constraint) {
             $definitions[] = $constraint;
         }
@@ -2384,12 +2197,10 @@ class Blueprint
     /**
      * The column declared as the table's primary key, if any.
      *
-     * Only `id()` declares one, and it is emitted as a *table-level* key rather
-     * than the inline `PRIMARY KEY` MySQL also accepts. That is not style:
-     * `dbDelta()` is line-oriented and parses the key definitions at the end of
-     * the column list, so an inline one is invisible to it — and a table created
-     * without a primary key is a table the next `migrate` silently fails to add
-     * one to.
+     * Only `id()` declares one, emitted as a table-level key rather than the
+     * inline `PRIMARY KEY` MySQL also accepts: `dbDelta()` is line-oriented and
+     * parses key definitions at the end of the column list, so an inline one is
+     * invisible to it, and the next `migrate` would not add the key.
      */
     private function primaryKeyColumn(): ?string
     {
@@ -2411,10 +2222,10 @@ class Blueprint
     {
         $plain = $this->compileIndex($columns);
 
-        // The plain index over exactly these columns is removed rather than
-        // kept: a unique index serves the same lookups, and two B-trees over one
-        // column is pure write cost. Matched on the compiled fragment because
-        // that is the only place the column list is spelled out.
+        // The plain index over exactly these columns is removed: a unique index
+        // serves the same lookups, and two B-trees over one column is pure write
+        // cost. Matched on the compiled fragment, the only place the column list
+        // is spelled out.
         $this->indexes = array_values(array_filter(
             $this->indexes,
             static fn (string $index): bool => $index !== $plain
@@ -2428,20 +2239,14 @@ class Blueprint
     /**
      * Compile an index over $columns into a `CREATE TABLE` clause.
      *
-     * The name is always spelled out, never left to MySQL. Two reasons, and the
-     * second is the one that bites:
-     *
-     *  - `Schema::table()` drops an index by name, so an unnamed one could not be
-     *    dropped later without first asking the database what MySQL decided to
-     *    call it.
-     *  - `dbDelta()`, which compiles every `Schema::create()` here, falls back to
-     *    the *raw* statement body once the table exists — and its own parser
-     *    builds an index definition that always carries a name, reading an empty
-     *    one as `` KEY `` `` (`` `col` ) `` for an unnamed clause. That can never
-     *    match the real `SHOW INDEX` name, so every subsequent run of the same
-     *    migration re-issues `ALTER TABLE ... ADD` for an index that is already
-     *    there. On a unique index over existing duplicate rows that ALTER fails,
-     *    which is the entire migration failing on its second execution.
+     * The name is always spelled out, never left to MySQL. `Schema::table()`
+     * drops an index by name, and unnamed keys are the case that bites under
+     * `dbDelta()`: once the table exists `dbDelta()` falls back to the raw
+     * statement body, and its parser reads an unnamed clause as an empty-name
+     * `KEY`. That can never match the real `SHOW INDEX` name, so every later run
+     * of the same migration re-issues `ALTER TABLE ... ADD` for an index that is
+     * already there. On a unique index over existing duplicate rows that ALTER
+     * fails, so the whole migration fails on its second execution.
      *
      * @param list<string> $columns
      */
@@ -2469,19 +2274,15 @@ class Blueprint
     /**
      * A default value as an SQL literal.
      *
-     * Escaped rather than bound, because a `DEFAULT` is part of the schema and a
-     * prepared statement cannot carry one — this is the one place in the builder
-     * where a value becomes SQL text. `true`/`false` compile to `1`/`0`, which is
-     * what `tinyint(1)` holds; the alternative, `DEFAULT TRUE`, is accepted by
-     * MySQL 8 and rejected by 5.7 and by MariaDB, so writing the number is the
-     * only spelling that works everywhere the plugin claims to run.
+     * Escaped rather than bound: a `DEFAULT` is part of the schema and a prepared
+     * statement cannot carry one. `true`/`false` compile to `1`/`0` because
+     * `DEFAULT TRUE` is accepted by MySQL 8 but rejected by 5.7 and MariaDB.
      *
-     * Backslashes are doubled *before* quotes are doubled. MySQL treats a
-     * backslash as an escape character inside a string literal, so a Windows
-     * path ending in a separator — `C:\path\` — would otherwise escape its own
-     * closing quote and swallow the rest of the statement. The order matters:
-     * escaping quotes first would turn `\'` into `\''`, and the backslash pass
-     * would then double the backslash that was already doing the escaping.
+     * Backslashes are doubled before quotes are doubled. MySQL treats a backslash
+     * as an escape inside a string literal, so a Windows path ending in a
+     * separator (`C:\path\`) would otherwise escape its own closing quote and
+     * swallow the rest of the statement. Escaping quotes first would turn `\'`
+     * into `\''`, and the backslash pass would then double the escape character.
      */
     private static function compileDefault(string|int|float|bool $value): string
     {
@@ -2503,9 +2304,8 @@ class Blueprint
      */
     private function assertIdentifier(string $name, string $kind): void
     {
-        // A dollar sign is included because MySQL permits one and WordPress
-        // produces them in table names derived from a site's own; refusing it
-        // would reject a name the host application considers entirely normal.
+        // A dollar sign is allowed because MySQL permits one and WordPress
+        // produces it in table names derived from a site's own.
         if ($name === '' || preg_match('/^[A-Za-z0-9_$]+$/', $name) !== 1) {
             throw SchemaException::invalidIdentifier($name === '' ? '(empty ' . $kind . ' name)' : $name, $kind);
         }

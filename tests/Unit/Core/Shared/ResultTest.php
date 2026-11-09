@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Core\Shared;
 
-use Core\Shared\Result;
+use Core\Shared\Application\DTOs\Result;
 use InvalidArgumentException;
 use LogicException;
 use PHPUnit\Framework\TestCase;

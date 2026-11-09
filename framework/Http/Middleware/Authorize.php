@@ -12,7 +12,7 @@ use Framework\Http\Responses\JsonResponse;
 /**
  * Rejects the request unless the current user holds every required capability.
  *
- * Sits after {@see Authenticate} in a stack — on its own it will deny an
+ * Sits after {@see Authenticate} in a stack - on its own it will deny an
  * anonymous request, which is correct but reports it as a permission failure
  * rather than a missing login.
  *
@@ -27,20 +27,20 @@ use Framework\Http\Responses\JsonResponse;
  *         }
  *     }
  *
- * ## Capabilities, not roles
+ * Capabilities, not roles
  *
  * `current_user_can()` is the only check here. Roles are not accepted, because a
  * capability check is what survives a site installing a role-editing plugin or
  * a membership plugin that grants `edit_others_posts` without granting `editor`.
  * The same reason WordPress core moved off `current_user_can('level_10')`.
  *
- * ## Multiple capabilities
+ * Multiple capabilities
  *
  * Every capability listed must be held. This is not as obvious as it sounds:
  * `authorize() => 'edit_posts'` on a REST route accepts an *array* of
  * capabilities and grants access if **any** is held, so passing a list to this
  * middleware expecting OR semantics would silently be stricter than intended.
- * All-of is the safe default — a caller who meant "any of these" can express it
+ * All-of is the safe default - a caller who meant "any of these" can express it
  * with a subclass or a custom capability.
  */
 class Authorize implements Middleware
@@ -100,7 +100,7 @@ class Authorize implements Middleware
     private function isAuthorized(): bool
     {
         // No capabilities configured means nothing was required. That is a
-        // misconfiguration rather than an allow — but denying would make the
+        // misconfiguration rather than an allow - but denying would make the
         // mistake invisible, so it is reported into the log and treated as open,
         // matching how the container treats a parameter it cannot resolve.
         if ($this->capabilities === []) {
@@ -121,7 +121,7 @@ class Authorize implements Middleware
     /**
      * Whether the current user holds one capability.
      *
-     * Separated from the loop so a subclass has a seam to override — for a
+     * Separated from the loop so a subclass has a seam to override - for a
      * capability this middleware should always grant, or for a test that needs
      * to answer differently per capability without reaching into WordPress.
      */

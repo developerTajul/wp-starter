@@ -9,7 +9,7 @@ use Framework\Database\Exceptions\MigrationException;
 use Framework\Database\Migrator;
 
 /**
- * `wp wp_mini migrate:status` — report every migration and whether it has run.
+ * `wp wp_mini migrate:status` - report every migration and whether it has run.
  *
  * Printed as a fixed-width table because `info()` writes raw lines to the
  * terminal and WP-CLI renders them literally; building the columns here keeps the
@@ -58,7 +58,7 @@ class MigrateStatusCommand extends Command
         if ($status === [] && $missing === []) {
             // Two different situations reach this line and they must not be
             // reported the same way. With `--pending` the directory may be full of
-            // migrations that have all run — the files are right there, so "no
+            // migrations that have all run - the files are right there, so "no
             // migrations found" is false. Only a genuinely empty directory means
             // that.
             $this->info($this->wantsPendingOnly($assocArgs)
@@ -70,7 +70,7 @@ class MigrateStatusCommand extends Command
 
         // Nothing left to show, but rows are missing files. The table would be
         // empty under a header, which reads as a rendering fault rather than as
-        // the answer — so the answer is stated, and the missing files with it.
+        // the answer - so the answer is stated, and the missing files with it.
         if ($status === []) {
             $this->success('Nothing pending. Every migration on disk has been applied.');
             $this->reportMissing($missing);
@@ -107,7 +107,7 @@ class MigrateStatusCommand extends Command
      *
      * The flag exists so a deployment script can ask "is there anything to run?"
      * without parsing a table: it narrows the listing to migrations that have not
-     * run, so the count on the last line — and an empty listing — both answer that
+     * run, so the count on the last line - and an empty listing - both answer that
      * question directly.
      *
      * Reads the shared falsy list on the base class, so `--pending=off` and

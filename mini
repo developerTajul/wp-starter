@@ -60,8 +60,14 @@ declare(strict_types=1);
 /** The CLI prefix used when `.env` does not supply one. Mirrors config/app.php. */
 const MINI_DEFAULT_PREFIX = 'wp_mini';
 
-/** Where a downloaded WP-CLI is cached, relative to the plugin root. */
-const MINI_CACHE_DIRECTORY = '.cli-cache';
+/**
+ * The directory a downloaded WP-CLI is cached in, as a bare name.
+ *
+ * A name rather than a path, because this is appended to the *system* temporary
+ * directory and not to the plugin root — see {@see miniCacheDirectory()} for why
+ * that move was made.
+ */
+const MINI_CACHE_DIRECTORY = 'wp-mini-laravel-cli-cache';
 
 /** The cached binary's file name. */
 const MINI_PHAR_NAME = 'wp-cli.phar';
@@ -374,6 +380,50 @@ function miniPathCandidates(): array
 }
 
 /**
+ * The directory a downloaded WP-CLI is cached in, in the system temporary space.
+ *
+ * ## Why this is not inside the plugin
+ *
+ * It used to be `<plugin root>/.cli-cache/`, and that placement had a cost far
+ * larger than the convenience it bought. On Windows a process that has *read* a
+ * file holds a share lock on it for as long as it lives, so any WP-CLI still
+ * running — a tool that polls, a shell left open on `wp server` — keeps a lock on
+ * the cached phar. WordPress deletes a plugin by recursively removing its
+ * directory, and a recursive delete cannot remove a locked file, so deleting or
+ * updating the plugin fails with "Could not fully remove the plugin" and the
+ * cause is never named.
+ *
+ * A cache is not plugin data. It is regenerable and machine-specific, and it has
+ * no business inside the directory WordPress has to be able to delete outright.
+ * `sys_get_temp_dir()` is where PHP itself says such things belong.
+ *
+ * ## Why the directory is namespaced
+ *
+ * A shared temporary directory is shared with every other application on the
+ * machine, so a bare `wp-cli.phar` there would be a collision waiting to happen —
+ * and worse than a collision, since the first writer to arrive would decide what
+ * the other one executes. The namespace is what makes the path unique.
+ *
+ * @return non-empty-string
+ */
+function miniCacheDirectory(): string
+{
+    $base = sys_get_temp_dir();
+
+    // `sys_get_temp_dir()` falls back to the current directory when the
+    // environment names no temporary path — on Windows it reads `TMP`/`TEMP`,
+    // elsewhere `TMPDIR`, and answers "." if none of them is set. "." would put
+    // the cache back inside whatever directory the command was run from, which is
+    // the plugin root in the case this move exists to fix, so "." is treated as
+    // "unknown" and resolved by hand rather than trusted.
+    if ($base === '' || $base === '.') {
+        $base = PHP_OS_FAMILY === 'Windows' ? 'C:\\Windows\\Temp' : '/tmp';
+    }
+
+    return rtrim($base, '/\\') . DIRECTORY_SEPARATOR . MINI_CACHE_DIRECTORY;
+}
+
+/**
  * The cached WP-CLI, downloading it on first use.
  *
  * ## Why the phar is cached and not re-fetched
@@ -382,6 +432,8 @@ function miniPathCandidates(): array
  * a network round-trip on each one would make the whole entry point slower than
  * typing `wp` — at which point nobody uses it. The download happens once, and
  * never at all on a machine that already has WP-CLI.
+ *
+ * Where it goes is {@see miniCacheDirectory()}'s business, not this function's.
  *
  * ## Why the file is written to a temporary name and renamed
  *
@@ -395,7 +447,7 @@ function miniPathCandidates(): array
  */
 function miniDownloadedWpCli(string $root): string
 {
-    $directory = $root . DIRECTORY_SEPARATOR . MINI_CACHE_DIRECTORY;
+    $directory = miniCacheDirectory();
     $binary = $directory . DIRECTORY_SEPARATOR . MINI_PHAR_NAME;
 
     if (is_file($binary) && filesize($binary) > 0) {
@@ -404,7 +456,11 @@ function miniDownloadedWpCli(string $root): string
 
     miniAnnounceDownload();
 
-    if (!is_dir($directory) && !@mkdir($directory, 0777, true) && !is_dir($directory)) {
+    // 0755 rather than the 0777 a plugin-relative directory used to get. There is
+    // no reason for this one to be world-writable, and on a shared host it is the
+    // difference between a cache and a place anybody on the box can drop a file
+    // that this script will then execute.
+    if (!is_dir($directory) && !@mkdir($directory, 0755, true) && !is_dir($directory)) {
         miniFail(sprintf('could not create the cache directory %s.', $directory));
     }
 
@@ -448,7 +504,7 @@ function miniDownloadedWpCli(string $root): string
         miniFail(sprintf('could not move the download into place at %s.', $binary));
     }
 
-    fwrite(STDOUT, sprintf("  cached at %s\n\n", miniRelative($root, $binary)));
+    fwrite(STDOUT, sprintf("  cached at %s\n\n", $binary));
 
     return $binary;
 }
@@ -794,7 +850,7 @@ function miniUnquote(string $value): string
 function miniUsage(string $root): void
 {
     $prefix = miniCliPrefix($root);
-    $cache = MINI_CACHE_DIRECTORY;
+    $cache = miniCacheDirectory();
     $default = MINI_DEFAULT_PREFIX;
 
     fwrite(STDOUT, <<<TXT
@@ -822,7 +878,13 @@ function miniUsage(string $root): void
       Without that file the framework's default, "{$default}", is used.
 
       WP-CLI is taken from PATH when it is installed there. Otherwise a copy is
-      downloaded once into ./{$cache}/ and reused.
+      downloaded once and reused, at:
+
+        {$cache}
+
+      That location is outside the plugin on purpose. A cached phar inside the
+      plugin can be locked by a process that read it, and WordPress then fails
+      to delete or update the plugin with "Could not fully remove the plugin".
 
     Run `php mini help` for WP-CLI's own help, or `php mini help <command>` for
     one command's arguments.
@@ -864,22 +926,4 @@ function miniFail(string $message): void
     fwrite(STDERR, "\n  mini: {$message}\n\n");
 
     exit(1);
-}
-
-/**
- * A path relative to the plugin root, for messages.
- *
- * The reader knows where their project is; the one thing a message should add is
- * where the file sits *inside* it, and an absolute path buries that under a
- * user-specific prefix.
- */
-function miniRelative(string $root, string $path): string
-{
-    $root = rtrim($root, '/\\') . DIRECTORY_SEPARATOR;
-
-    if (str_starts_with($path, $root)) {
-        return str_replace('\\', '/', substr($path, strlen($root)));
-    }
-
-    return $path;
 }

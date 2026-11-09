@@ -7,7 +7,7 @@ use Framework\Routing\RouteRegistrar;
 use RuntimeException;
 
 /**
- * Raised when a route registration is structurally invalid — an empty path, an
+ * Raised when a route registration is structurally invalid - an empty path, an
  * unsupported HTTP method, a handler that is neither a controller action nor a
  * callable, or a conflicting duplicate.
  *
@@ -49,7 +49,7 @@ final class RouteRegistrationException extends RuntimeException
      * The action argument was not one of the accepted shapes.
      *
      * Reachable only for an array that is not a `[Controller::class, 'method']`
-     * pair — everything else is caught by the parameter type. A three-element
+     * pair - everything else is caught by the parameter type. A three-element
      * array and a string-keyed array are the shapes this exists for, and both
      * would otherwise be accepted at registration and fail at dispatch, against a
      * request that names no route.
@@ -70,7 +70,7 @@ final class RouteRegistrationException extends RuntimeException
      *
      * Raised rather than resolved because there is no safe way to pick: both
      * routes are published on one hook, `add_action()` does not replace an
-     * existing callback, and so *both* would run on one submission — leaving the
+     * existing callback, and so *both* would run on one submission - leaving the
      * second controller to act on a request the first was written for. The
      * symptom would be a handler that appears to work while doing the wrong
      * thing, which is worse than a refusal naming both routes.

@@ -22,19 +22,19 @@ use Framework\Routing\RouteRegistrar;
  * a controller be written once against `Request`/`Response` and reached from an
  * admin page, a form post and a REST endpoint without knowing which it is.
  *
- * ## Why `flush()` and not `register()`
+ * Why `flush()` and not `register()`
  *
  * Collection happens while plugins load; publication happens at the hook the
  * mechanism owns. Keeping them apart is what lets one plugin's routes coexist
  * with another's, and it is what makes a route list inspectable before anything
- * is handed to WordPress — {@see \Framework\Console\Commands\RouteListCommand}
+ * is handed to WordPress - {@see \Framework\Console\Commands\RouteListCommand}
  * depends on exactly that.
  *
  * `flush()` is therefore the only method with a side effect on the host system,
  * and it must be idempotent: WordPress can fire a hook more than once in a
  * process, and a second pass must not collide with the first.
  *
- * ## Methods are declared too, not only verbs
+ * Methods are declared too, not only verbs
  *
  * `get()`/`post()`/`put()`/`delete()` are the fluent shorthand written in a
  * routes file. `addRoute()` is the general form underneath them, and
@@ -56,7 +56,7 @@ interface RouterInterface
      * shape over two different mechanisms.
      *
      * **The declared return type is the floor, not the whole story.** A web router
-     * returns {@see \Framework\Routing\WebRouteRegistrar} — a `RouteRegistrar`
+     * returns {@see \Framework\Routing\WebRouteRegistrar} - a `RouteRegistrar`
      * subclass that also carries `adminPage()`, `adminAction()` and `page()`,
      * because a web route's mechanism cannot be inferred from its verb. A routes
      * file that only needs `group()` and the verbs is free to type against this
@@ -69,17 +69,17 @@ interface RouterInterface
      * Collect a route that has already been built.
      *
      * The general form: everything `get()` and its siblings do ultimately lands
-     * here. Kept public so a route assembled elsewhere — an attribute-driven
-     * controller, a package shipping its own endpoints — can be added without
+     * here. Kept public so a route assembled elsewhere - an attribute-driven
+     * controller, a package shipping its own endpoints - can be added without
      * going through the fluent shorthand.
      *
      * **Returns the route it was given, not void.** The route is stored the moment
-     * it is added, so that it can keep being configured — `->middleware()`,
+     * it is added, so that it can keep being configured - `->middleware()`,
      * `->name()`, `->withOptions()` all mutate the stored instance. Returning it
      * is what lets a caller write
      * `$router->addRoute(Route::make(...))->middleware(...)`, and it is why every
-     * domain-specific helper on an adapter — `adminPage()`, `adminAction()`,
-     * `page()` — can be fluent: each one builds a route, adds it and hands the
+     * domain-specific helper on an adapter - `adminPage()`, `adminAction()`,
+     * `page()` - can be fluent: each one builds a route, adds it and hands the
      * same object back. A `void` return would make all of them return null and
      * their fluent chaining fail at the first call.
      *
@@ -97,7 +97,7 @@ interface RouterInterface
     /**
      * Publish the collected routes to WordPress.
      *
-     * Called from the hook this domain owns — `admin_menu`, `rest_api_init`,
+     * Called from the hook this domain owns - `admin_menu`, `rest_api_init`,
      * `template_redirect`. Must be safe to call twice: the second call is a
      * no-op rather than a re-registration, because WordPress fires several of
      * these hooks more than once per process under a worker or a reset server.
@@ -107,7 +107,7 @@ interface RouterInterface
     /**
      * The domain this router publishes into, for diagnostics and `route:list`.
      *
-     * One of the {@see \Framework\Routing\RouteDomain} cases — "web", "admin",
+     * One of the {@see \Framework\Routing\RouteDomain} cases - "web", "admin",
      * "api". A string rather than an enum in the signature so an implementation
      * outside this framework can report a domain of its own without the enum
      * having to grow a case for it.
@@ -117,11 +117,11 @@ interface RouterInterface
     /**
      * Register one GET route.
      *
-     * ## What a GET means depends on the router
+     * What a GET means depends on the router
      *
      * The action and the verb are the same everywhere; the mechanism is not. On
      * the API router this is a REST endpoint. On a web router it is a wp-admin
-     * screen — see {@see \Framework\Routing\WebRouteRegistrar} — because WordPress
+     * screen - see {@see \Framework\Routing\WebRouteRegistrar} - because WordPress
      * has no general front-end router, so a front-end page is the case that says
      * so (`page()`).
      *
@@ -145,6 +145,18 @@ interface RouterInterface
      * @param string|array{0: string, 1: string}|callable|null $controller
      */
     public function put(string $path, string|array|callable|null $controller = null, ?string $action = null): Route;
+
+    /**
+     * Register one PATCH route.
+     *
+     * A partial update, and the verb that says so. It was missing from this
+     * contract while both the fluent registrar and {@see RouteRegistrar} offered
+     * it, so a PATCH was the one supported verb that could not be declared
+     * through a `RouterInterface` type-hint - the seam a routes file is handed.
+     *
+     * @param string|array{0: string, 1: string}|callable|null $controller
+     */
+    public function patch(string $path, string|array|callable|null $controller = null, ?string $action = null): Route;
 
     /**
      * Register one DELETE route.

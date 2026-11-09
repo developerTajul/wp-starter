@@ -5,62 +5,73 @@ return [
     'name' => env('APP_NAME', 'WP Mini Laravel'),
     'env' => env('APP_ENV', 'production'),
 
-    // Prepended to every option, transient, meta key and nonce action the
-    // plugin creates, so two installs sharing a database cannot collide.
+    // Show diagnostic detail for server errors when debug is true.
+    'debug' => env('APP_DEBUG', false),
+
+    // Prepended to every option, transient, meta key and nonce action, so two
+    // installs sharing one database do not collide.
     'prefix' => env('APP_PREFIX', 'wp_mini_laravel_'),
 
-    // Root namespace for generated/application classes. Consuming projects
-    // override this with their own (e.g. 'LeadBridge').
+    // Root namespace for generated classes; consuming projects override it with
+    // their own (e.g. 'LeadBridge').
     'namespace' => env('APP_NAMESPACE', 'App'),
 
     // Where view names resolve from, relative to the plugin root or absolute.
-    // A relative path is the normal case: an absolute one in a config file is a
-    // path that is wrong on every other machine, and the repo is what gets
-    // shared. Resolution is dotted — 'leads.index' -> views/leads/index.php.
+    // Keep it relative: an absolute path in a config file is wrong on every
+    // other machine. Resolution is dotted, 'leads.index' -> views/leads/index.php.
     'views' => env('APP_VIEWS_PATH', 'views'),
 
-    // Namespace for WP-CLI commands, so two projects bundling this framework
-    // do not register commands under the same name.
+    // Namespace for WP-CLI commands, so two projects bundling this framework do
+    // not register commands under the same name.
     'cli_prefix' => env('CLI_PREFIX', 'wp_mini'),
 
-    // Whether an uninstall is allowed to delete the plugin's data, keyed as
-    // `prefix . 'delete_data_on_uninstall'`. The default is false, which is the
-    // only safe default for a destructive action: a site that never touched the
-    // setting keeps every table when the plugin is deleted.
-    //
-    // Note this is the *default*; the setting itself is a WordPress option, so a
-    // site owner can flip it at any time and the value read at uninstall is the
-    // one that counts. See `App\Lifecycle\PluginLifecycle`.
-    'delete_data_on_uninstall' => env('DELETE_DATA_ON_UNINSTALL', false),
+    // Default for the uninstall wipe, stored as `prefix . 'delete_data_on_uninstall'`.
+    // Deleting the plugin is the consent, so the default is true: a false default
+    // left the tables behind whenever nobody ticked the Reading screen checkbox.
+    // This only seeds the option; the wipe reads the stored option at uninstall
+    // time, so a site owner can still opt out.
+    'delete_data_on_uninstall' => env('DELETE_DATA_ON_UNINSTALL', true),
 
-    // The REST namespace every route is published under. WordPress exposes it
-    // at /wp-json/{rest_namespace}/ and uses it to scope route discovery, so it
-    // must be unique per plugin — two plugins sharing one would have their
-    // route tables merged and their `permission_callback`s both consulted.
+    // The REST namespace every route is published under, exposed at
+    // /wp-json/{rest_namespace}/. It must be unique per plugin: sharing one with
+    // another plugin merges both route tables and consults both callbacks.
     'rest_namespace' => env('REST_NAMESPACE', 'wp-mini-laravel/v1'),
 
     'providers' => [
         \App\Providers\AppServiceProvider::class,
 
-        // Binds Core\Note\Domain\NoteRepositoryContract to its $wpdb-backed
-        // adapter, which is what lets the container build NoteService. Listed
-        // before the routing providers so a route that resolves the service
-        // during boot finds the binding already in place.
+        // Binds the lead write and read ports to their $wpdb-backed adapters.
+        // Listed before the routing providers so a service resolved during boot
+        // finds the binding in place.
         \App\Providers\RepositoryServiceProvider::class,
+
+        // Binds the company module's repositories, mappers and services. It
+        // depends on the shared-kernel bindings above (transactions, translation
+        // and logging), so it is listed after them.
+        \App\Providers\CompanyServiceProvider::class,
 
         \App\Providers\RouteServiceProvider::class,
         \Framework\Database\MigrationServiceProvider::class,
 
-        // After the migration provider, whose `Migrator` and
-        // `MigrationStorageInterface` bindings it composes. Listed here rather
-        // than before it so the file reads in dependency order; the bindings are
-        // lazy, so the order is not load-bearing.
+        // Binds QueryBuilderInterface. Separate from the migration provider because
+        // the migrator runs DDL and never builds a query, while a repository builds
+        // queries and never migrates; merging them couples both consumers.
+        \Framework\Database\QueryServiceProvider::class,
+
+        // Binds the seeder registry and `db:seed`. Separate from the migration
+        // provider: a migration transforms the schema once and is recorded; a
+        // seeder makes data present and is re-runnable. The registry points at
+        // `database/seeders/`.
+        \Framework\Database\SeedingServiceProvider::class,
+
+        // Composes the `Migrator` and `MigrationStorageInterface` bindings, so it
+        // is listed after the migration provider. The bindings are lazy, so the
+        // order is not load-bearing.
         \App\Providers\LifecycleServiceProvider::class,
 
-        // Binds Framework\Http\Request (captured from the superglobals) and the
-        // middleware Pipeline, so both can be type-hinted anywhere a service is
-        // resolved. Listed last: it captures the request, and nothing else needs
-        // to run before that happens.
+        // Binds Framework\Http\Request, captured from the superglobals, and the
+        // middleware Pipeline. Listed last: it captures the request, and nothing
+        // before it depends on that happening first.
         \Framework\Http\HttpServiceProvider::class,
     ],
 ];

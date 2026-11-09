@@ -14,7 +14,7 @@ use Framework\Http\Request;
  * Passes a request through a stack of middleware to a destination.
  *
  * The stack is an onion: each layer runs its own code, calls `$next`, and then
- * gets the response back on the way out. That round trip is the point — a layer
+ * gets the response back on the way out. That round trip is the point - a layer
  * can add a CORS header or a cookie to whatever the destination produced, and
  * can short-circuit by returning a response without calling `$next` at all.
  *
@@ -22,16 +22,16 @@ use Framework\Http\Request;
  *         ->through([VerifyAdminNonce::class, Authenticate::class])
  *         ->then(fn (Request $request) => new ViewResponse($path));
  *
- * ## Why this is a separate layer from Routing middleware
+ * Why this is a separate layer from Routing middleware
  *
  * `Framework\Routing\Contracts\Middleware` runs inside WordPress's
  * `permission_callback`, which is a yes/no seam WordPress owns; it can only
- * deny. This pipeline is for requests the application dispatches itself — an
- * admin-post handler, an AJAX action, a shortcode that renders a form — where
+ * deny. This pipeline is for requests the application dispatches itself - an
+ * admin-post handler, an AJAX action, a shortcode that renders a form - where
  * the application owns the response and middleware needs to be able to rewrite
  * the request and decorate the response. The two do not call each other.
  *
- * ## Middleware parameters
+ * Middleware parameters
  *
  * A stack entry may carry parameters, separated from the class name by a colon:
  *
@@ -47,22 +47,22 @@ use Framework\Http\Request;
  *     public function handle(Request $request, Closure $next, string ...$arguments)
  *
  * A bare class name passes nothing, and a middleware with no variadic parameter
- * ignores whatever it is given — which is why passing parameters to one is
+ * ignores whatever it is given - which is why passing parameters to one is
  * **reported rather than shrugged off**. The container drops an override the
  * method has no parameter for, silently, and a silently-dropped
  * `capability:manage_options` is an unenforced authorization check. The pipeline
  * refuses it up front instead. See {@see carry()}.
  *
- * ## Aliases
+ * Aliases
  *
- * An entry may name a middleware by an alias — `'capability'`, `'nonce'` —
+ * An entry may name a middleware by an alias - `'capability'`, `'nonce'` -
  * instead of by class. Aliases are resolved through {@see MiddlewareAliases},
  * which is optional: with none bound, every entry is treated as a class name and
  * a project that never registers an alias notices nothing.
  *
- * ## A terminating middleware still declares `$next`
+ * A terminating middleware still declares `$next`
  *
- * A middleware that always answers — a rejection, a cache hit — declares
+ * A middleware that always answers - a rejection, a cache hit - declares
  * `handle(Request $request, Closure $next)` and never calls `$next`. Dropping
  * the parameter is **not** an option: PHP rejects an implementation whose
  * signature omits a parameter the interface requires, at class-load time. The
@@ -73,8 +73,8 @@ final class Pipeline
     /**
      * Middleware classes for this pass, outermost first, with any parameters.
      *
-     * Each entry is `[class-string, list<string>]` — the parameters already split
-     * out — so the split happens once, when the stack is set, rather than on every
+     * Each entry is `[class-string, list<string>]` - the parameters already split
+     * out - so the split happens once, when the stack is set, rather than on every
      * request through {@see carry()}.
      *
      * @var list<array{0: class-string<Middleware>, 1: list<string>}>
@@ -89,7 +89,7 @@ final class Pipeline
     /**
      * @param MiddlewareAliases|null $aliases Short names for middleware classes.
      *      Optional so the dozens of existing `new Pipeline($container)`
-     *      constructions — tests, probes, a project building one by hand — keep
+     *      constructions - tests, probes, a project building one by hand - keep
      *      working. When omitted, every stack entry is treated as a class name.
      */
     public function __construct(
@@ -149,11 +149,11 @@ final class Pipeline
      * the class `redirect` and the single parameter `https://example.test`.
      * Splitting on every colon would shred it into three.
      *
-     * ## A loadable class name is never split, colon or no colon
+     * A loadable class name is never split, colon or no colon
      *
      * This is checked *before* splitting, and it is not a micro-optimisation. An
-     * **anonymous class name contains a colon** —
-     * `class@anonymous /path/to/File.php:42$0` — and splitting on it would
+     * **anonymous class name contains a colon** -
+     * `class@anonymous /path/to/File.php:42$0` - and splitting on it would
      * truncate the name to something the container cannot resolve, failing a
      * middleware that is perfectly valid. A test fixture built with `new class
      * extends Authorize {...}` is the ordinary way to hit this, and the failure
@@ -170,7 +170,7 @@ final class Pipeline
      * load-bearing: `'capability:manage_options'` must become the entry
      * `capability` plus one parameter, and only then the framework's
      * `CheckCapability`. Resolving first would look up the alias
-     * `'capability:manage_options'` — which does not exist, and could not, since
+     * `'capability:manage_options'` - which does not exist, and could not, since
      * {@see MiddlewareAliases::alias()} refuses a name containing a colon.
      *
      * A trailing colon with nothing after it (`'capability:'`) yields one empty
@@ -202,7 +202,7 @@ final class Pipeline
      * The class name for one entry, through the alias registry when there is one.
      *
      * A no-op without a registry, and a no-op for a name that is already a
-     * loadable class — {@see MiddlewareAliases::resolve()} owns that ordering and
+     * loadable class - {@see MiddlewareAliases::resolve()} owns that ordering and
      * explains why it matters.
      */
     private function resolveAlias(string $entry): string
@@ -213,7 +213,7 @@ final class Pipeline
     /**
      * Run the stack, ending at $destination.
      *
-     * The pipeline instance is single-use in practice — built, sent, discarded —
+     * The pipeline instance is single-use in practice - built, sent, discarded -
      * but sending one twice re-runs the stack from the top, which is what a test
      * comparing two stacks wants.
      *
@@ -229,7 +229,7 @@ final class Pipeline
         }
 
         $pipeline = array_reduce(
-            // Reversed, so the first middleware listed is the outermost layer —
+            // Reversed, so the first middleware listed is the outermost layer -
             // the order a reader expects and the order middleware is declared in.
             array_reverse($this->middleware),
             fn (Closure $next, array $layer): Closure => $this->carry($layer[0], $layer[1], $next),
@@ -272,9 +272,9 @@ final class Pipeline
             // The overrides are keyed by the parameter names the **interface**
             // declares. That is the whole reason those names are part of the
             // contract rather than a style choice: the container matches an
-            // override against `$parameter->getName()` and nothing else — an
+            // override against `$parameter->getName()` and nothing else - an
             // integer key is ignored outright, and a `$request` spelling resolves
-            // to nothing — so a middleware that renames `$request` or `$next` gets
+            // to nothing - so a middleware that renames `$request` or `$next` gets
             // `BindingResolutionException: Unresolvable dependency` the moment the
             // stack runs. There is no fallback by type: `Closure` is looked up as
             // a class and fails as "[Closure] is not instantiable".
@@ -283,13 +283,13 @@ final class Pipeline
             // the container spreads an array override into a **variadic**
             // parameter of that name (Container::resolveDependencies()), which is
             // how a middleware receives `'capability:manage_options'` as a plain
-            // `'manage_options'`. It is passed unconditionally — the container
+            // `'manage_options'`. It is passed unconditionally - the container
             // ignores it for a method with no such parameter, and
             // assertAcceptsArguments() above has already refused the case where
             // ignoring it would silently drop a parameter the route supplied.
             //
             // Calling the method directly would be duck-typed and immune to the
-            // naming — and would lose the constructor injection, which is the
+            // naming - and would lose the constructor injection, which is the
             // property tests in this repository actually depend on.
             $response = $this->container->call([$instance, 'handle'], [
                 'request' => $request,
@@ -306,14 +306,14 @@ final class Pipeline
      *
      * The container drops an override a method has no parameter for, **silently**.
      * For most arguments that would be a harmless no-op; here it is not, because
-     * the arguments this pipeline carries are guards — `capability:manage_options`
+     * the arguments this pipeline carries are guards - `capability:manage_options`
      * on a middleware that never sees it is an authorization check that silently
      * does not run, and the route looks protected in the routes file while being
      * open at runtime.
      *
      * So the mismatch is reported at dispatch, naming the middleware and what it
-     * was given. It is a routes-file error — the parameter only ever comes from
-     * `->middleware([...])` — and it is the kind that a silent drop would hide
+     * was given. It is a routes-file error - the parameter only ever comes from
+     * `->middleware([...])` - and it is the kind that a silent drop would hide
      * indefinitely.
      *
      * Membership is decided by reflection on the resolved instance rather than by
@@ -366,7 +366,7 @@ final class Pipeline
      *
      *  - **A middleware.** The interface declares `: ResponseInterface` and PHP
      *    allows no loosening of a return type, so anything that implements it
-     *    cannot return null or a WP_REST_Response — a class that tried would be
+     *    cannot return null or a WP_REST_Response - a class that tried would be
      *    a fatal at load, not a surprise at runtime. For this caller the check
      *    is a cheap assertion against a future signature change.
      *  - **The destination.** A closure, so the compiler checks nothing. This is

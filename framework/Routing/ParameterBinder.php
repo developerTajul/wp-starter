@@ -18,11 +18,11 @@ use Throwable;
 /**
  * Binds a request's values onto a controller action's parameters.
  *
- * ## Why this is shared rather than duplicated per domain
+ * Why this is shared rather than duplicated per domain
  *
- * The two domains receive their inputs from genuinely different places — a REST
+ * The two domains receive their inputs from genuinely different places - a REST
  * request arrives as a `WP_REST_Request` WordPress already parsed, a web request
- * is captured from the superglobals — but everything *after* that point is the
+ * is captured from the superglobals - but everything *after* that point is the
  * same decision: which request values fill which parameters, in what order, and
  * what happens when a value cannot satisfy a declared type.
  *
@@ -31,35 +31,35 @@ use Throwable;
  * which PHP coerces to `true` and silently publishes the record. A matched route
  * placeholder must outrank a body parameter of the same name, or a client can
  * address one record and act on another. Both of those are properties of *binding*
- * — not of REST, and not of the web — so they live in one place, and a fix to
+ * - not of REST, and not of the web - so they live in one place, and a fix to
  * either one fixes both domains rather than half of each.
  *
- * ## How the two domains differ, and how little
+ * How the two domains differ, and how little
  *
  * They differ in exactly two seams, and both are injected:
  *
- *  - **Where the values come from** — {@see ParameterSource}. A REST source reads
+ *  - **Where the values come from** - {@see ParameterSource}. A REST source reads
  *    through `WP_REST_Request`; an HTTP source reads through `Framework\Http\Request`.
- *  - **Whether the request object itself is injectable** — `$requestClass`. A
+ *  - **Whether the request object itself is injectable** - `$requestClass`. A
  *    controller may type-hint the request it is being handed by declaring that
  *    class, and a non-builtin parameter of that type receives the request rather
  *    than any of its values. It is passed in rather than hard-coded to
  *    `Request::class` because the REST domain dispatches with a `WP_REST_Request`
  *    and must keep being able to hand one over.
  *
- * ## What it does not decide
+ * What it does not decide
  *
- * It does not resolve the controller — the caller has already done that, because
+ * It does not resolve the controller - the caller has already done that, because
  * each adapter resolves through the same container but reports a failure in its
  * own response shape. It does not choose an action. It returns the action's
  * value untouched, so each domain renders it as it must.
  *
- * ## A `FormRequest` parameter short-circuits the call
+ * A `FormRequest` parameter short-circuits the call
  *
  * A parameter typed as a {@see FormRequest} subclass is built around the request
  * and validated *before* the action runs. When validation fails the action is
- * never entered, and the form request's own failure response — a redirect for a
- * browser, a `422` for a JSON client — is returned in place of the action's
+ * never entered, and the form request's own failure response, a redirect for a
+ * browser, a `422` for a JSON client - is returned in place of the action's
  * value.
  *
  * This is the one place a controller's contract can be enforced without the
@@ -68,11 +68,11 @@ use Throwable;
  * code that reads it before the call.
  *
  * The returned response is a {@see ResponseInterface}. Every domain can render
- * one — the web adapter sends it as-is — and a domain that cannot translate it
+ * one - the web adapter sends it as-is - and a domain that cannot translate it
  * yet reports that rather than swallowing it, so a half-wired surface is loud.
  *
  * A failure short-circuits the *call*, not the *binding*. Every parameter is
- * still bound — and a parameter no request value can satisfy still raises — so
+ * still bound - and a parameter no request value can satisfy still raises - so
  * the two defects stay distinguishable: a rejected form is something the user
  * can fix, and an unbindable parameter is something only the route author can.
  * Binding the rest also keeps the result independent of where in the signature
@@ -84,23 +84,23 @@ final class ParameterBinder
      * The response a failing `FormRequest` produced, if any.
      *
      * Held rather than thrown because the framework has no global exception
-     * handler to catch a `ValidationException` from — see {@see FormRequest} for
+     * handler to catch a `ValidationException` from - see {@see FormRequest} for
      * the full reasoning. The value travels back through `call()`'s return, which
      * is the same channel an action's response uses, so every caller already
      * handles it.
      *
      * Widened past {@see ResponseInterface} because a REST route's failure is a
-     * `WP_Error` — the only shape WordPress's REST server renders. The binder
+     * `WP_Error` - the only shape WordPress's REST server renders. The binder
      * does not care which it is; it hands the value back untouched, exactly as it
      * does with an action's own return value.
      *
-     * ## Why it is scoped to one dispatch and not merely cleared
+     * Why it is scoped to one dispatch and not merely cleared
      *
      * This is mutable state on a collaborator that outlives the request: one
      * binder is held by a resolver, and the resolver by an adapter, for the
      * lifetime of the process. Any path that *arms* this and then leaves without
-     * consuming it — a handler that throws, an adapter that discards the
-     * arguments, a future entry point that calls {@see arguments()} directly —
+     * consuming it - a handler that throws, an adapter that discards the
+     * arguments, a future entry point that calls {@see arguments()} directly -
      * leaves a failure response pointing at the request that is already over. The
      * next dispatch on the same worker would then return that stale redirect (or
      * `WP_Error`) instead of running its action, which reads as an intermittent
@@ -123,8 +123,8 @@ final class ParameterBinder
     /**
      * Call one action on an already-resolved controller.
      *
-     * Returns the action's value, or — when a `FormRequest` parameter it declared
-     * failed validation — that request's failure response, with the action never
+     * Returns the action's value, or, when a `FormRequest` parameter it declared
+     * failed validation - that request's failure response, with the action never
      * invoked.
      *
      * @param class-string $requestClass The type a parameter must declare to
@@ -143,7 +143,7 @@ final class ParameterBinder
         ParameterSource $source,
         string $requestClass
     ): mixed {
-        // Scoped to this one dispatch — see $shortCircuit. The reset on entry is
+        // Scoped to this one dispatch - see $shortCircuit. The reset on entry is
         // what makes a leak *impossible* rather than merely unlikely: even if
         // some future path left the property armed, the next dispatch clears it
         // before it can be read.
@@ -152,7 +152,7 @@ final class ParameterBinder
         try {
             $arguments = $this->arguments($controller, $action, $request, $source, $requestClass);
 
-            // Validation refused the request. The action is not called at all —
+            // Validation refused the request. The action is not called at all -
             // that is the whole contract of a FormRequest, and calling through
             // anyway to let the controller "decide" is how a half-validated
             // record gets saved.
@@ -184,7 +184,7 @@ final class ParameterBinder
         ParameterSource $source,
         string $requestClass
     ): mixed {
-        // Scoped to this one dispatch, exactly as call() does — see $shortCircuit.
+        // Scoped to this one dispatch, exactly as call() does - see $shortCircuit.
         $this->shortCircuit = null;
 
         try {
@@ -268,7 +268,7 @@ final class ParameterBinder
         $arguments = [];
 
         // Route placeholders are read before anything else. WordPress ranks
-        // request sources JSON/body, then query, then URL last — so a POST body
+        // request sources JSON/body, then query, then URL last - so a POST body
         // of `{"id": 999}` would otherwise fill an `$id` parameter that the URL
         // matched as 123, letting a client address one resource and act on
         // another.
@@ -290,7 +290,7 @@ final class ParameterBinder
 
             // A FormRequest type-hint is built around the request and validated
             // here, before anything else reads a parameter. Checked ahead of the
-            // value lookup because a FormRequest is not a *source* of values —
+            // value lookup because a FormRequest is not a *source* of values -
             // it is a gate in front of the action.
             if ($this->isFormRequest($type)) {
                 /** @var class-string $formClass */
@@ -307,7 +307,7 @@ final class ParameterBinder
                     // not the form happened to pass.
                     //
                     // Returning early hid that defect behind the validation
-                    // failure — fix the form, and the `TypeError` appears — and it
+                    // failure - fix the form, and the `TypeError` appears - and it
                     // made binding depend on parameter order, because a parameter
                     // declared *before* the form was bound and then discarded.
                     continue;
@@ -345,7 +345,7 @@ final class ParameterBinder
      * Whether a declared type is a FormRequest subclass.
      *
      * `is_subclass_of` rather than `is_a`, because the type is a *name* here and
-     * `is_a` with a string is happy to match the abstract base itself — a
+     * `is_a` with a string is happy to match the abstract base itself - a
      * parameter typed as `FormRequest` directly could never be built (it is
      * abstract, and has no `rules()`), so it is left to fail where it is
      * resolved, with the container's own message about an abstract class.
@@ -368,7 +368,7 @@ final class ParameterBinder
     /**
      * Build and validate a FormRequest, recording its failure response.
      *
-     * Returns null when validation failed — the failure response has been
+     * Returns null when validation failed - the failure response has been
      * recorded on {@see $shortCircuit}, the action will not be called, and this
      * parameter is left out of the argument list. The caller keeps binding the
      * remaining parameters. Returns the validated request otherwise.
@@ -377,7 +377,7 @@ final class ParameterBinder
      * which is why this takes `mixed`: a REST dispatch passes the framework
      * `Request` built by {@see \Framework\Http\Request::fromRestRequest()}, and a
      * web dispatch passes the captured one. Both are `Framework\Http\Request`,
-     * which is what {@see FormRequest::fromRequest()} declares — and the `mixed`
+     * which is what {@see FormRequest::fromRequest()} declares - and the `mixed`
      * here is the same seam `call()` already has for that reason.
      *
      * @param class-string $class
@@ -385,7 +385,7 @@ final class ParameterBinder
     private function bindFormRequest(string $class, mixed $request): ?FormRequest
     {
         // A REST dispatch hands the binder a `WP_REST_Request`, because that is
-        // what a REST controller action's own parameters read — but a
+        // what a REST controller action's own parameters read, but a
         // `FormRequest` validates a framework `Request`, which is the only object
         // that merges the sources and decodes a JSON body. Translating here rather
         // than in the adapter keeps the rule in one place: a form request works on
@@ -444,7 +444,7 @@ final class ParameterBinder
      *
      * Only `bool` needs this, and it needs it badly. A request body of
      * `{"published": "false"}` reaches a `bool $published` parameter as the
-     * non-empty string `"false"`, and PHP coerces a non-empty string to `true` —
+     * non-empty string `"false"`, and PHP coerces a non-empty string to `true` -
      * so the controller publishes the record. `"0"` happens to coerce correctly,
      * which is what makes this treacherous: only some of the false-y spellings
      * invert.
@@ -502,7 +502,7 @@ final class ParameterBinder
             // Case-insensitive, and including the empty string, because these
             // arrive from query strings and form bodies where `?published=FALSE`
             // and `published=` are both ordinary. Every accepted spelling is
-            // converted by normalize() before it reaches reflection — a bare
+            // converted by normalize() before it reaches reflection - a bare
             // in_array() here would have let 'false' through as the *string*
             // "false", which PHP then coerces to true.
             'bool' => self::isBoolLike($value),
@@ -534,7 +534,7 @@ final class ParameterBinder
      * Delegates to the container, so the same three forms it accepts for any
      * callback apply here: a plain function name (`my_check`), a static method
      * (`Checks::canEdit`), or an instance method on a resolvable class
-     * (`Checks@canEdit`). A bare method name such as `canEdit` is not among them —
+     * (`Checks@canEdit`). A bare method name such as `canEdit` is not among them -
      * nothing associates it with the route's controller, so it is reflected as a
      * plain function and does not resolve.
      *
@@ -550,7 +550,7 @@ final class ParameterBinder
             return $this->container->call($callback, ['request' => $request]);
         } catch (Throwable $e) {
             // Re-thrown so the caller can report it in the response shape its own
-            // domain renders — a REST denial is a WP_Error, a web one is a page.
+            // domain renders - a REST denial is a WP_Error, a web one is a page.
             // Caught and re-thrown rather than left alone only to add the
             // context the container's message lacks.
             throw new RouteResolutionException(sprintf(

@@ -8,6 +8,8 @@ use DevLinkStudios\WPServiceContainer\Container;
 use Framework\Console\Commands\MakeControllerCommand;
 use Framework\Console\Commands\MakeProviderCommand;
 use Framework\Console\Commands\MakeRouteCommand;
+use Framework\Database\Commands\DbSeedCommand;
+use Framework\Database\Commands\MakeSeederCommand;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -23,6 +25,23 @@ final class ConsoleWiringTest extends TestCase
         $this->assertContains(MakeProviderCommand::class, $commands);
         $this->assertContains(MakeControllerCommand::class, $commands);
         $this->assertContains(MakeRouteCommand::class, $commands);
+    }
+
+    /**
+     * The seeding commands are registered.
+     *
+     * Pinned because a command absent from this array is not merely undocumented —
+     * it does not exist as far as WP-CLI is concerned, and nothing else in the
+     * suite would notice. `make:seeder` and `db:seed` are separately tested for
+     * behaviour, so a file that was deleted from the kernel would leave both of
+     * those green while the pair became unreachable.
+     */
+    public function test_the_project_registers_the_seeding_commands(): void
+    {
+        $commands = (new \App\Console\Kernel(new Container()))->getCommands();
+
+        $this->assertContains(MakeSeederCommand::class, $commands);
+        $this->assertContains(DbSeedCommand::class, $commands);
     }
 
     /**
@@ -51,6 +70,7 @@ final class ConsoleWiringTest extends TestCase
         $this->assertSame("{$prefix} make:provider", (new MakeProviderCommand())->getName());
         $this->assertSame("{$prefix} make:controller", (new MakeControllerCommand())->getName());
         $this->assertSame("{$prefix} make:route", (new MakeRouteCommand())->getName());
+        $this->assertSame("{$prefix} make:seeder", (new MakeSeederCommand())->getName());
     }
 
     /**

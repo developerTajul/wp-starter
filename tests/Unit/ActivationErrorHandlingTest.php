@@ -255,7 +255,7 @@ final class ActivationErrorHandlingTest extends TestCase
         ob_start();
 
         try {
-            app()->resolve(\App\Lifecycle\ActivationFailureNotice::class)->render();
+            app()->resolve(\Framework\Lifecycle\ActivationFailureNotice::class)->render();
         } finally {
             $html = (string) ob_get_clean();
         }

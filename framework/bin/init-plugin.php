@@ -15,7 +15,7 @@ declare(strict_types=1);
  * It performs the ten steps the README documents by hand, plus the two the
  * README omits. Add `--dry-run` to see every change without writing anything.
  *
- * ## What it deliberately does not do
+ * What it deliberately does not do
  *
  * It does not touch `framework/`. That directory is a separate Composer package
  * whose `Framework\` namespace belongs to the library; renaming it here forks the
@@ -23,25 +23,25 @@ declare(strict_types=1);
  * opening table says "leave the library's alone", and steps 7 and 8 of its
  * checklist contradict that by asking you to hand-edit files under `framework/`.
  *
- * The strings those steps name — `wp_mini_laravel_` error codes, the
- * `wp-mini-laravel` text domain in `framework/`'s `__()` calls — are **fallback
+ * The strings those steps name - `wp_mini_laravel_` error codes, the
+ * `wp-mini-laravel` text domain in `framework/`'s `__()` calls, are **fallback
  * defaults**, reached only when config is missing a key. `config('app.prefix',
  * 'wp_mini_laravel_')` returns *your* prefix on every real install, because your
  * config sets it. The library falls back to its own name because it cannot know
  * yours, and that is correct library behaviour. See `reportFrameworkDefaults()`
  * for the list this script prints rather than rewrites.
  *
- * ## Why it is a PHP script and not a shell one
+ * Why it is a PHP script and not a shell one
  *
  * Because the replacements are identity-dependent, not textual. `App\` must
  * become `LeadBridge\App\` in a namespace declaration and in a `use` statement
  * and in a PSR-4 key, but `App` must **not** be replaced inside the word
  * `Application`, must not be prefixed twice in a tree that has already been
  * rebranded, and must not be touched where it is a *path segment* rather than a
- * namespace — `tests/Integration/App/Repositories/` declares
+ * namespace - `tests/Integration/App/Repositories/` declares
  * `Tests\Integration\App\Repositories`.
  * Doing that correctly needs word boundaries and a file-type-aware pass, which is
- * painful in `sed` and unpleasant in PowerShell — and this repository is
+ * painful in `sed` and unpleasant in PowerShell - and this repository is
  * deliberately cross-platform, so a `.sh` script would exclude half its users.
  *
  * @package WP Mini Laravel
@@ -60,9 +60,9 @@ if (PHP_SAPI !== 'cli') {
     exit(1);
 }
 
-// The repository root, two levels above bin/ — bin/ is now under framework/.
+// The repository root, two levels above bin/ - bin/ is now under framework/.
 // Resolved from __DIR__ rather than from getcwd(), so the script works when
-// invoked by an absolute path from anywhere — `php /path/to/framework/bin/init-plugin.php` is a normal way to run this.
+// invoked by an absolute path from anywhere - `php /path/to/framework/bin/init-plugin.php` is a normal way to run this.
 define('INIT_PLUGIN_ROOT', dirname(__DIR__, 2));
 
 require __DIR__ . '/lib/RebrandPlan.php';
@@ -84,9 +84,9 @@ if ($options === null) {
 $plan = RebrandPlan::fromOptions($options);
 
 // The plan validates before the rebrander runs. Every rule it enforces is one
-// whose violation fails *quietly* — a slug with a capital letter produces a
+// whose violation fails *quietly* - a slug with a capital letter produces a
 // plugin folder WordPress cannot address, a namespace `App` collides with the
-// default it is meant to replace — so a report here is the only warning anyone
+// default it is meant to replace - so a report here is the only warning anyone
 // gets. See RebrandPlan::validate().
 $problems = $plan->validate();
 
@@ -132,7 +132,7 @@ function parseArguments(array $argv): ?array
         'namespace' => '',
 
         // Derived-valued overrides. Left empty, they are computed from the
-        // identity above — which is the point: a user who supplies only the four
+        // identity above - which is the point: a user who supplies only the four
         // required values should not have to invent a REST namespace, and the
         // derived one is guaranteed to match the README's conventions.
         'constant-prefix' => '',
@@ -170,8 +170,8 @@ function parseArguments(array $argv): ?array
         }
 
         // `--key=value` only. A bare `--key value` spelling would make an
-        // omitted value swallow the *next* flag — `--name --slug=foo` would set
-        // the name to the literal string "--slug=foo" — and silently rebrand
+        // omitted value swallow the *next* flag - `--name --slug=foo` would set
+        // the name to the literal string "--slug=foo" - and silently rebrand
         // the plugin to a nonsense name.
         if (!str_contains($argument, '=')) {
             fwrite(STDERR, "Expected --key=value, got: {$argument}\n");
@@ -250,7 +250,7 @@ function printUsage(): void
       --dry-run    Print every change without writing anything.
       --help       Show this message.
 
-    The framework/ directory is never modified — see the script's own docblock.
+    The framework/ directory is never modified - see the script's own docblock.
 
     TXT;
 

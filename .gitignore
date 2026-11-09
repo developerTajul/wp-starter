@@ -26,6 +26,9 @@ node_modules/
 # the report stays a working document rather than becoming a claim about
 # the current state of the code.
 /.audit/
+# IDE & Tooling folders
+.audit/
+.claude/
 
 # PHP CS Fixer / PHPStan / Psalm / Rector
 .php-cs-fixer.cache
@@ -68,10 +71,11 @@ composer.phar
 /build/
 /dist/
 
-# WP-CLI downloaded by the `mini` entry point on a machine that has none.
-# Machine-specific by definition — a developer with `wp` on their PATH never
-# creates it, and a committed .phar would be a 7 MB binary that goes stale.
-/.cli-cache/
+# WP-CLI downloaded by the `mini` entry point on a machine that has none lives
+# in the system temporary directory, not here — so there is no entry to add.
+# It was `/.cli-cache/` until a cached phar inside the plugin was found to hold
+# a Windows share lock, which made WordPress fail to delete or update the
+# plugin. A stray `.cli-cache/` from an older checkout can be deleted by hand.
 
 # ---------------------------------------------------------------
 # IDE & Editor files

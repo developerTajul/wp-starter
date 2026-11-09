@@ -18,14 +18,14 @@ use Framework\Http\Responses\JsonResponse;
  * process ends. This middleware answers with a response instead, so the caller
  * decides what a rejection looks like.
  *
- * ## Which nonce, and why it is a parameter
+ * Which nonce, and why it is a parameter
  *
  * `wp_verify_nonce()` needs the action the nonce was created for, and WordPress
- * puts it in `wp_nonce_field()`'s second argument — not in the HTML it emits.
+ * puts it in `wp_nonce_field()`'s second argument, not in the HTML it emits.
  * There is no way to recover it from the request, so it has to be configured.
  * The default action is `'-1'`. That is the value `wp_nonce_field()` bakes into
  * a form when no action is given, so **a standard WordPress form post satisfies
- * the default with no change** — and a nonce minted for a *specific* action does
+ * the default with no change** - and a nonce minted for a *specific* action does
  * not, which is the behaviour you want from a middleware that a controller
  * reaches for without thinking about the action.
  *
@@ -34,7 +34,7 @@ use Framework\Http\Responses\JsonResponse;
  * real install: `wp_create_nonce('save_lead')` fails both `wp_verify_nonce($n)`
  * and a no-action `check_admin_referer()`. If you need a nonce to be accepted
  * regardless of the action it was created under, this middleware does not
- * offer it — pass the action you minted with instead.
+ * offer it - pass the action you minted with instead.
  *
  *     $router->post('leads', LeadController::class, 'store')
  *         ->middleware(VerifyAdminNonce::class);
@@ -48,8 +48,8 @@ use Framework\Http\Responses\JsonResponse;
  *         }
  *     }
  *
- * **{@see VerifyNonce} is the same check configured per route** —
- * `->middleware('nonce:save_lead')` — and is what this class's own docblock above
+ * **{@see VerifyNonce} is the same check configured per route** -
+ * `->middleware('nonce:save_lead')` - and is what this class's own docblock above
  * would otherwise be teaching by subclass. Reach for this one when the action is
  * a property of the class's meaning (a guard that is always the same guard, named
  * once); reach for `VerifyNonce` when it is a property of the route.
@@ -90,7 +90,7 @@ class VerifyAdminNonce implements Middleware
         if (!function_exists('wp_verify_nonce')) {
             // Failing closed. A middleware whose whole job is a security check
             // must not degrade into a pass-through when the function it needs is
-            // absent — that would make a broken install look like a working one.
+            // absent - that would make a broken install look like a working one.
             return $this->reject($request, 'The security check could not be performed.');
         }
 
@@ -100,7 +100,7 @@ class VerifyAdminNonce implements Middleware
         // falsy-but-valid cases PHP could produce are not treated as failures.
         // Omitting the action is safe rather than sloppy: WordPress's parameter
         // default is the integer `-1`, `(string) -1 === '-1'`, and `wp_hash()`
-        // casts before hashing — so the default and `check_admin_referer()`'s
+        // casts before hashing - so the default and `check_admin_referer()`'s
         // no-action path hash identical input and accept the same nonces.
         // Verified against a real install, not inferred.
         $verified = $this->action === null
@@ -142,7 +142,7 @@ class VerifyAdminNonce implements Middleware
             );
         }
 
-        // wp_die() is absent — a non-WordPress context, or a filtered install.
+        // wp_die() is absent - a non-WordPress context, or a filtered install.
         // Falling through to $next() would silently drop the check, so the only
         // safe answer is to refuse, however plainly. Escaping is skipped for the
         // same reason: a message this class composes is not user input, and

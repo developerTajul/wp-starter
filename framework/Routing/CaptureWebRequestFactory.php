@@ -8,33 +8,33 @@ use Framework\Http\Request;
 /**
  * The production request factory: captures from the superglobals.
  *
- * ## Why this class also reads the superglobals
+ * Why this class also reads the superglobals
  *
  * `Framework\Http\Request` documents itself as "the **only** place in the
  * framework allowed to read `$_GET`, `$_POST`, `$_SERVER`", and this class is
- * the deliberate exception — with the reason written down rather than assumed.
+ * the deliberate exception - with the reason written down rather than assumed.
  *
  * A matched route placeholder has to outrank a body parameter of the same name:
  * a form that posts `id=999` to `/leads/123` must not let the client choose
  * which record the controller acts on. `Request` is immutable and exposes no
- * setter and no whole-array accessor — it offers `input($key)`, `query($key)`
- * and `post($key)`, one key at a time — so a request carrying an overlaid
+ * setter and no whole-array accessor - it offers `input($key)`, `query($key)`
+ * and `post($key)`, one key at a time - so a request carrying an overlaid
  * parameter cannot be built from a captured one through its public surface.
  *
  * The two alternatives were both worse. Widening `Request`'s public API with
  * whole-array getters would add a Phase 5 need to a Phase 4 type every consumer
  * sees, and would hand callers a way to read the raw bags that the keyed methods
  * deliberately do not offer. Rebuilding the request from `Request::capture()`
- * and mutating it is impossible, because it is immutable — which is the property
+ * and mutating it is impossible, because it is immutable - which is the property
  * worth keeping.
  *
  * So the overlay is built here, at the seam, where the values are read once and
  * handed straight to the constructor. Nothing downstream reads a superglobal.
  *
- * ## The overlay is layered, not merged
+ * The overlay is layered, not merged
  *
  * URL parameters are folded over the **body** layer, which is the later of the
- * sources `input()` consults — the same structural move
+ * sources `input()` consults - the same structural move
  * `Request::fromRestRequest()` makes, for the same reason. They are also placed
  * over the query layer so that `query('id')` and `input('id')` agree about a
  * request where a placeholder and a query parameter share a name; the REST path
@@ -84,7 +84,7 @@ final class CaptureWebRequestFactory implements WebRequestFactory
      * The request headers, from `$_SERVER`.
      *
      * A copy of `Request::captureHeaders()` rather than a call to it, because
-     * that method is private and the alternative — making it public — would
+     * that method is private and the alternative - making it public - would
      * expose a Phase 4 internal for this one caller. The duplication is
      * deliberate and narrow; the mapping it encodes is the CGI spec's, not a
      * decision either class gets to make differently.

@@ -18,4 +18,16 @@ final class StringController
 
         return '<p>index</p>';
     }
+
+    /**
+     * A form-handler action, so a dispatched submission has a distinct name to
+     * record — an assertion cannot tell `index` from `store` if both call the
+     * same method.
+     */
+    public function store(): string
+    {
+        WebRecorder::$calls[] = 'StringController@store';
+
+        return '<p>stored</p>';
+    }
 }

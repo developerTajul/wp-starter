@@ -11,7 +11,7 @@ use WP_REST_Request;
  *
  * Reads through `has_param()`/`get_param()` rather than reaching into the
  * parameter array, so a controller sees the same value WordPress itself would
- * return for that name — with the same source precedence (JSON, body, query,
+ * return for that name - with the same source precedence (JSON, body, query,
  * URL) and the same JSON decoding applied to a raw body.
  */
 final class RestParameterSource implements ParameterSource

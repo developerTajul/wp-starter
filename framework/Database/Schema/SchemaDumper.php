@@ -10,19 +10,19 @@ use Framework\Database\Schema\Exceptions\SchemaException;
 /**
  * Reads a live database and writes the migrations that would rebuild it.
  *
- * ## What it is for
+ * What it is for
  *
  * The one thing a migration history cannot tell you is what the database
  * *actually* looks like. A schema edited by hand, a migration that half-applied,
- * a table an earlier developer added through phpMyAdmin or a GUI — none of those
+ * a table an earlier developer added through phpMyAdmin or a GUI - none of those
  * appear in `database/migrations`, and all of them are in the database. This
  * reads the catalogue and emits `Schema::create()` calls describing what is
  * there, so the migration history can be brought back in line with reality.
  *
- * ## What it will not do
+ * What it will not do
  *
  * **It emits one `create` per table and one `down()` per table.** It does not
- * reconstruct the migration history — it has no way to know which migration
+ * reconstruct the migration history - it has no way to know which migration
  * produced which column, and guessing from timestamps would be inventing
  * information. The output is a *snapshot*, meant to be read, kept, or used to
  * rebuild a schema from scratch.
@@ -34,13 +34,13 @@ use Framework\Database\Schema\Exceptions\SchemaException;
  *
  * **It is not lossless, and says so where it is not.** What `SHOW COLUMNS` and
  * `SHOW INDEX` report is what can be reconstructed: names, types, nullability,
- * scalar defaults, auto-increment, and keys. What they do not report — an
+ * scalar defaults, auto-increment, and keys. What they do not report - an
  * enum's value list beyond what the type string carries, a foreign key's delete
- * rule, a table or column comment, the storage engine — is not invented. The
+ * rule, a table or column comment, the storage engine - is not invented. The
  * dumper emits what it can prove and {@see SchemaException} names anything it
  * cannot, rather than emitting a plausible-looking approximation.
  *
- * ## Why it refuses rather than approximates
+ * Why it refuses rather than approximates
  *
  * A dump that ran cleanly and produced a subtly different schema is worse than
  * one that failed, because the failure is discovered later and by someone who
@@ -55,7 +55,7 @@ final class SchemaDumper
      *
      * The migrator's own bookkeeping is the table that *records* what has been
      * migrated. A dump containing it would emit a `down()` that drops the table
-     * holding the history the dump exists to describe — and it is recreated
+     * holding the history the dump exists to describe - and it is recreated
      * automatically by every entry point, so there is nothing to preserve.
      */
     private const NEVER_DUMP = ['plugin_migrations'];
@@ -66,7 +66,7 @@ final class SchemaDumper
      * Keyed on the type **without** its length or precision, because
      * `varchar(191)` and `varchar(50)` are the same builder call with a different
      * argument. A type absent from {@see builderCall()}'s match is a type the
-     * dumper cannot reconstruct, and that is reported rather than defaulted — see
+     * dumper cannot reconstruct, and that is reported rather than defaulted - see
      * the class docblock.
      */
 
@@ -78,7 +78,7 @@ final class SchemaDumper
      * Compile the named tables into migration source.
      *
      * @param list<string> $tables Table names as the application thinks of them,
-     *                             without the prefix — the same spelling
+     *                             without the prefix - the same spelling
      *                             `Schema::create()` takes.
      *
      * @throws MigrationException When a named table is not in the database.
@@ -123,7 +123,7 @@ final class SchemaDumper
         // application names (`notes`), but the framework's own bookkeeping is
         // named in the database (`wp_plugin_migrations`), and a dump asked for
         // "every table" on a real install reaches this method with the prefixed
-        // name — which a bare-name comparison would wave straight through, in the
+        // name - which a bare-name comparison would wave straight through, in the
         // one call shape where the damage is worst.
         if (in_array($this->bareName($table), self::NEVER_DUMP, true)) {
             throw new MigrationException(sprintf(
@@ -146,7 +146,7 @@ final class SchemaDumper
         $indexes = $this->adapter->indexDetails($table);
 
         // Which single-column indexes belong on their column, so they are not
-        // emitted twice — once inline and once as a standalone statement.
+        // emitted twice - once inline and once as a standalone statement.
         $inline = $this->inlineIndexes($columns, $indexes);
 
         $lines = [];
@@ -199,7 +199,7 @@ final class SchemaDumper
 
         if ($column['nullable']) {
             // A column on an auto-increment key is never nullable, so this cannot
-            // collide with the primary-key spelling below — and if it somehow did,
+            // collide with the primary-key spelling below - and if it somehow did,
             // the nullable() would be the wrong half to drop.
             $modifiers .= '->nullable()';
         }
@@ -240,7 +240,7 @@ final class SchemaDumper
             // else in the vocabulary emits AUTO_INCREMENT. Reported rather than
             // approximated, because emitting `unsignedBigInteger('x')` would run
             // cleanly and produce a table whose next insert fails on a missing
-            // auto-increment — a schema that differs from the one dumped in the
+            // auto-increment - a schema that differs from the one dumped in the
             // one way that breaks writes.
             throw new SchemaException(sprintf(
                 'Cannot dump the column [%s]: it is AUTO_INCREMENT but is not named [id], and the schema '
@@ -295,8 +295,8 @@ final class SchemaDumper
     /**
      * Whether a MySQL type carries the `unsigned` attribute.
      *
-     * The builder spells unsigned as a *different method* — `unsignedInteger()`,
-     * not `integer()->unsigned()` — because there is no generic modifier, so this
+     * The builder spells unsigned as a *different method* - `unsignedInteger()`,
+     * not `integer()->unsigned()` - because there is no generic modifier, so this
      * decides which method name is emitted rather than appending a suffix. Getting
      * it wrong widens or narrows a column's range silently.
      */
@@ -308,8 +308,8 @@ final class SchemaDumper
     /**
      * `tinyint(1)` is MySQL's boolean; any other width is a small integer.
      *
-     * The width is the only signal there is — MySQL stores a boolean as a
-     * one-digit tinyint, and nothing else distinguishes them — and getting it
+     * The width is the only signal there is - MySQL stores a boolean as a
+     * one-digit tinyint, and nothing else distinguishes them - and getting it
      * wrong flips a column between "true/false" and "0–127" in every reader's
      * head while remaining valid SQL.
      *
@@ -340,10 +340,10 @@ final class SchemaDumper
     /**
      * The builder call for a `BINARY(n)` or `VARBINARY(n)` column.
      *
-     * ## Why this is not just `binary()`
+     * Why this is not just `binary()`
      *
-     * `BINARY`/`VARBINARY` are not `BLOB`, and mapping both onto `binary()` —
-     * which emits `blob NOT NULL` — produced a dump that described a different
+     * `BINARY`/`VARBINARY` are not `BLOB`, and mapping both onto `binary()` -
+     * which emits `blob NOT NULL` - produced a dump that described a different
      * column than the one it had read. `BINARY(n)` is fixed-width and pads with
      * `\0`; `BLOB` is variable-width with a length prefix. They differ in storage
      * and, for the same 16 bytes, can compare unequal against the same literal.
@@ -351,12 +351,12 @@ final class SchemaDumper
      * exists to prevent, so it is not excused here just because a plausible call
      * was available.
      *
-     * ## Why the length is required, not defaulted
+     * Why the length is required, not defaulted
      *
      * MySQL has no default for either type, so there is no correct value to
      * supply when the server did not report one. Inventing `255` would run
-     * cleanly and silently truncate or pad — changing the stored value rather
-     * than failing — so a `BINARY` with no length in its `SHOW COLUMNS` row is
+     * cleanly and silently truncate or pad - changing the stored value rather
+     * than failing - so a `BINARY` with no length in its `SHOW COLUMNS` row is
      * reported instead. That is not a hypothetical: an unparseable type is
      * exactly what a hand-created column can produce.
      */
@@ -368,7 +368,7 @@ final class SchemaDumper
         if ($length === null || preg_match('/^\d+$/', (string) $length) !== 1 || (int) $length < 1) {
             throw new SchemaException(sprintf(
                 'Cannot dump the column [%s]: MySQL reported its type as %s but gave no usable length, and '
-                . '%s requires one. There is no default to fall back on — guessing would produce a column '
+                . '%s requires one. There is no default to fall back on, guessing would produce a column '
                 . 'that silently pads or truncates. Restore this column by hand.',
                 $name,
                 $base . ($length === null ? '' : '(' . $length . ')'),
@@ -393,7 +393,7 @@ final class SchemaDumper
      * An `enum` type back into `enum('col', ['a', 'b'])`.
      *
      * MySQL reports the members as a quoted list inside the type string, and they
-     * have to be re-quoted for the builder — which is why this cannot go through
+     * have to be re-quoted for the builder - which is why this cannot go through
      * the generic argument path, where every argument becomes a bare literal.
      *
      * @param list<string> $arguments The raw member list, unsplit, as one entry.
@@ -401,7 +401,7 @@ final class SchemaDumper
     private function enumCall(string $name, array $arguments): string
     {
         // `splitType()` splits on commas at the top level, and enum members can
-        // contain none — MySQL forbids an unescaped comma inside a member — so
+        // contain none - MySQL forbids an unescaped comma inside a member - so
         // the reconstruction below re-reads the original quoted list instead.
         $members = array_map(
             static fn (string $member): string => "'" . str_replace("'", "\\'", trim($member, " '\"") ) . "'",
@@ -431,7 +431,7 @@ final class SchemaDumper
      *
      * `CURRENT_TIMESTAMP` is the case that matters: MySQL reports it as that
      * bare word and drops the parentheses, so a dumper treating it as a literal
-     * would emit `->default('CURRENT_TIMESTAMP')` — a column whose default is
+     * would emit `->default('CURRENT_TIMESTAMP')` - a column whose default is
      * *that string*, which MySQL accepts and which is not remotely the same
      * thing. The distinct modifier exists for exactly this.
      */
@@ -452,8 +452,8 @@ final class SchemaDumper
      * Split a MySQL type into its base name and its parenthesised arguments.
      *
      * `varchar(191)` becomes `['varchar', ['191']]` and `int` becomes
-     * `['int', []]`. The arguments stay strings — they are re-emitted as source,
-     * not evaluated — and are split on commas at the top level so a `decimal`'s
+     * `['int', []]`. The arguments stay strings - they are re-emitted as source,
+     * not evaluated - and are split on commas at the top level so a `decimal`'s
      * two arguments separate while an `enum`'s quoted member list, whose commas
      * are inside quotes, does not.
      *
@@ -549,7 +549,7 @@ final class SchemaDumper
      * Returns index name => the modifier that attaches it. A key with exactly one
      * column that matches its own name is the one the blueprint would have
      * declared inline, so re-emitting it that way is what a hand-written
-     * migration looks like — and it keeps a column's constraints next to the
+     * migration looks like - and it keeps a column's constraints next to the
      * column instead of in a block at the bottom of the table.
      *
      * A primary key is never inlined: the builder writes it, and an extra
@@ -571,7 +571,7 @@ final class SchemaDumper
 
             // Inlined only when the key is named after its single column, which
             // is the blueprint's own convention. A differently-named key has to
-            // keep its name — attaching it to the column would let the builder
+            // keep its name - attaching it to the column would let the builder
             // re-derive a name that does not match the one in the database.
             if ($index['name'] !== $index['columns'][0]) {
                 continue;
@@ -588,7 +588,7 @@ final class SchemaDumper
     }
 
     /**
-     * The keys that need their own statement — everything not inlined.
+     * The keys that need their own statement - everything not inlined.
      *
      * @param list<array{name: string, columns: list<string>, unique: bool, primary: bool}> $indexes
      * @param array<string, string>                                                        $inline
@@ -604,7 +604,7 @@ final class SchemaDumper
     }
 
     /**
-     * A table name as the schema language spells it — prefix stripped.
+     * A table name as the schema language spells it - prefix stripped.
      *
      * The adapter resolves `notes` to `wp_notes` on the way out, so the inverse
      * is what a dump needs on the way in. Stripping only a *leading* prefix
@@ -633,13 +633,13 @@ final class SchemaDumper
      *
      * `$up` and `$down` are separate parameters rather than one body split here,
      * because a writer that received them joined has no way to tell where one
-     * ended — which is exactly the mistake that put every table's `down()` into
+     * ended - which is exactly the mistake that put every table's `down()` into
      * its `up()`.
      */
     private function file(string $up, string $down): string
     {
         // A table list with no tables, or a project that dumps nothing, would
-        // otherwise emit a method with an empty body — legal PHP, and a
+        // otherwise emit a method with an empty body - legal PHP, and a
         // `down()` that reads as though someone forgot to write it. The
         // comment is the same one the template always carried.
         $downBody = trim($down) === ''

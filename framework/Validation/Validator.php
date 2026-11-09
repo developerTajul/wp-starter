@@ -6,46 +6,38 @@ namespace Framework\Validation;
 /**
  * The rule engine: data in, errors out.
  *
- * ## What this class deliberately is not
- *
  * It does not throw, does not redirect, does not read a request, and does not
- * know WordPress exists. Every one of those is a temptation that would make it
- * usable from exactly one caller:
- *
- *  - A validator that **threw** on the first failure could not report the second
- *    field the user got wrong, and a form that reveals its errors one reload at
- *    a time is the reason people hate forms.
- *  - A validator that **redirected** would be bound to the web domain, and the
- *    same rules could not check a WP-CLI import, a settings screen's option, or
- *    a REST payload — all of which are the reason the rules live here.
- *  - A validator that **knew about `Request`** could not validate the `$_POST`
- *    array a legacy handler already holds, or a decoded CSV row.
+ * know WordPress exists. Each of those would bind it to one caller: a validator
+ * that threw on the first failure could not report the second bad field, and a
+ * form revealing errors one reload at a time is the reason people hate forms; one
+ * that redirected would be bound to the web domain, so the same rules could not
+ * check a WP-CLI import, a settings option or a REST payload; one that knew about
+ * `Request` could not validate the `$_POST` array a legacy handler holds, or a
+ * decoded CSV row.
  *
  * {@see \Framework\Http\Requests\FormRequest} is the HTTP-shaped wrapper that
- * supplies the redirect-or-422 decision. This class only ever answers "which
- * rules failed, and why".
- *
- * ## Shape of the result
+ * supplies the redirect-or-422 decision. This class only answers which rules
+ * failed and why.
  *
  * `errors()` is `field => list of messages`, not `field => message`. A field with
- * two broken rules — an email that is both empty and malformed — has two things
- * to say, and collapsing them to one loses whichever rule ran second. The view
- * layer can join them; it cannot un-lose them.
+ * two broken rules (an email both empty and malformed) has two things to say, and
+ * collapsing them loses whichever ran second. The view layer can join them; it
+ * cannot un-lose them.
  *
- * ## Rule strings
+ * Rule strings:
  *
  *     'email'    => 'required|email|max:255'
  *     'tags.*'   => 'string|max:20'
  *     'age'      => ['nullable', 'integer', Rule::between(18, 120)]
  *
- * A rule is `name` or `name:arg,arg`. Arguments are passed as strings and each
- * rule decides what they mean — `max` compares against a length or a value,
- * `in` splits on commas, `regex` takes the pattern verbatim (including any
- * commas or pipes inside it, which is why the splitter is careful).
+ * A rule is `name` or `name:arg,arg`. Arguments arrive as strings and each rule
+ * decides what they mean: `max` compares a length or a value, `in` splits on
+ * commas, `regex` takes the pattern verbatim including any commas or pipes inside
+ * it, which is why the splitter is careful.
  *
- * A rule may also be a *closure*, which receives `(string $attribute, mixed
- * $value)` and reports failure by throwing or by returning false — see
- * {@see passes()} for why both spellings are accepted.
+ * A rule may be a closure receiving `(string $attribute, mixed $value)` and
+ * reporting failure by throwing or by returning false; {@see passes()} explains
+ * why both spellings are accepted.
  */
 class Validator
 {
@@ -61,7 +53,7 @@ class Validator
      *
      * A map rather than a `method_exists()` convention, because the convention
      * would make `validateFoo()` on a subclass silently callable as a rule named
-     * `foo` — a subclass could not add a private helper without it becoming part
+     * `foo`  -  a subclass could not add a private helper without it becoming part
      * of the DSL. Listing them here keeps the rule set a closed, documented set,
      * and makes `validate('rule:that_does_not_exist')` a reportable mistake
      * rather than a silent pass.
@@ -131,7 +123,7 @@ class Validator
     /**
      * Validate data against rules, returning the messages that failed.
      *
-     * Runs every field and every rule — it does not stop at the first failure —
+     * Runs every field and every rule  -  it does not stop at the first failure  - 
      * because the whole point of validating on the server is to tell the user
      * everything that is wrong in one pass.
      *
@@ -195,7 +187,6 @@ class Validator
         return $this->errors[$attribute][0] ?? null;
     }
 
-    // ------------------------------------------------------------ field walking
 
     /**
      * Run one attribute's rules, applying the modifiers first.
@@ -236,7 +227,7 @@ class Validator
         $required = in_array('required', $names, true);
 
         // Absent, and not required: there is nothing to check. Every rule below
-        // would otherwise report a missing field as a malformed one — "email must
+        // would otherwise report a missing field as a malformed one  -  "email must
         // be a valid email address" for a field the user never filled in is the
         // single most common bad error message in web forms.
         if (!$present && !$required) {
@@ -245,7 +236,7 @@ class Validator
 
         // Present but null, with `nullable`: the author has said an explicit null
         // is an acceptable answer, so the type rules stand down. `required` still
-        // wins — `required|null` is a contradiction, and explaining it as "you
+        // wins  -  `required|null` is a contradiction, and explaining it as "you
         // must send something" is more useful than silently accepting null.
         if ($nullable && $value === null && !$required) {
             return;
@@ -267,7 +258,7 @@ class Validator
             if ($method === null) {
                 // An unknown rule is a mistake in the rules definition, not data
                 // the user got wrong. Reported against the field so the author
-                // sees which one, and raised rather than passed — a typo'd
+                // sees which one, and raised rather than passed  -  a typo'd
                 // `requird` that silently accepted everything would ship.
                 throw new \InvalidArgumentException(sprintf(
                     'Unknown validation rule [%s] on attribute [%s].',
@@ -308,13 +299,12 @@ class Validator
         }
     }
 
-    // ------------------------------------------------------------- data access
 
     /**
      * Whether a dotted path was supplied at all.
      *
      * `array_key_exists` rather than `isset`, so a key sent as an explicit null
-     * counts as present — which is what makes `nullable` meaningful instead of
+     * counts as present  -  which is what makes `nullable` meaningful instead of
      * indistinguishable from "absent".
      */
     private function has(string $attribute): bool
@@ -358,7 +348,7 @@ class Validator
      * The name a message uses for an attribute.
      *
      * Falls back to the attribute with its underscores turned into spaces, and
-     * its wildcard index stripped, so `tags.0` reads "tags" — a message that says
+     * its wildcard index stripped, so `tags.0` reads "tags"  -  a message that says
      * "tags.0 must be a string" is a message about the implementation.
      */
     private function label(string $attribute): string
@@ -382,7 +372,6 @@ class Validator
         return str_replace(['_', '.'], ' ', $key);
     }
 
-    // ------------------------------------------------------------ rule parsing
 
     /**
      * Turn one field's rule definition into a uniform list.
@@ -409,7 +398,7 @@ class Validator
                 continue;
             }
 
-            // Any other callable — a Closure, an invokable object, a first-class
+            // Any other callable  -  a Closure, an invokable object, a first-class
             // callable. Stored as-is; {@see runClosure()} reflects over it later
             // to decide how many arguments it wants.
             if (is_callable($rule)) {
@@ -431,7 +420,7 @@ class Validator
      * Split a pipe-delimited rule string, respecting a regex's own pipes.
      *
      * `regex:/^a|b$/` is a legitimate rule whose argument contains a pipe, and a
-     * naive `explode('|')` would tear it in half — producing a rule named
+     * naive `explode('|')` would tear it in half  -  producing a rule named
      * `regex:/^a` and a rule named `b$/`, neither of which exists, and an
      * "unknown rule" error that points at the wrong thing entirely. The splitter
      * therefore tracks whether it is inside a `/.../` pattern.
@@ -466,7 +455,7 @@ class Validator
 
             if ($inPattern) {
                 // A backslash escapes the next character, so `\/` does not close
-                // the pattern — the same rule PCRE itself applies.
+                // the pattern  -  the same rule PCRE itself applies.
                 if ($char === '\\') {
                     $buffer .= $char . ($rules[$i + 1] ?? '');
                     $i++;
@@ -514,7 +503,7 @@ class Validator
 
         [$name, $argument] = explode(':', $rule, 2);
 
-        // `regex` keeps its argument whole — a pattern may contain commas
+        // `regex` keeps its argument whole  -  a pattern may contain commas
         // (`{1,3}`) and splitting on them would truncate it into a different,
         // still-valid, silently-wrong pattern.
         if (strtolower(trim($name)) === 'regex') {
@@ -527,7 +516,6 @@ class Validator
         ];
     }
 
-    // --------------------------------------------------------------- modifiers
 
     /**
      * Record a failure against an attribute.
@@ -543,7 +531,7 @@ class Validator
     private function validateRequired(string $attribute, mixed $value, array $args): void
     {
         // An empty *string* is missing for a required field, and so is an empty
-        // array — a form that submits `tags[]` with nothing selected sends `[]`,
+        // array  -  a form that submits `tags[]` with nothing selected sends `[]`,
         // and accepting it would let a "choose at least one" rule pass vacuously.
         // `0` and `false` are NOT empty: they are values a user deliberately
         // chose, and treating them as missing is the classic bug where "0 items"
@@ -575,7 +563,6 @@ class Validator
     {
     }
 
-    // ------------------------------------------------------------- type checks
 
     /**
      * @param list<string> $args
@@ -595,7 +582,7 @@ class Validator
         // A digit-string is accepted because every value from a form or a query
         // string *is* a string. Demanding a PHP int here would make the rule
         // unusable on real input while looking correct in a unit test that built
-        // its data by hand — which is the trap {@see validateNumeric()} avoids
+        // its data by hand  -  which is the trap {@see validateNumeric()} avoids
         // differently.
         $ok = is_int($value) || (is_string($value) && preg_match('/^-?\d+$/', $value) === 1);
 
@@ -651,7 +638,7 @@ class Validator
     private function validateEmail(string $attribute, mixed $value, array $args): void
     {
         // `filter_var` rather than a hand-rolled pattern, and not the deprecated
-        // FILTER_SANITIZE_EMAIL — sanitizing silently rewrites `a@b` into
+        // FILTER_SANITIZE_EMAIL  -  sanitizing silently rewrites `a@b` into
         // something else and validates the rewrite, which is how an address the
         // user cannot receive mail at gets stored.
         if (!is_string($value) || filter_var($value, FILTER_VALIDATE_EMAIL) === false) {
@@ -682,7 +669,7 @@ class Validator
 
         // The rule is "a date `strtotime` can read", and that is the whole check.
         // The `date` rule deliberately accepts relative and natural-language
-        // forms — "next tuesday", "+1 week", "now" — because `strtotime` does and
+        // forms  -  "next tuesday", "+1 week", "now"  -  because `strtotime` does and
         // because a human filling in a date field may reasonably write one. A
         // caller that needs a machine-parsable format should pin it with
         // `date_format`, which is a different rule with a different contract.
@@ -690,8 +677,8 @@ class Validator
         // An earlier version of this comment described a round-trip check that
         // compared the formatted timestamp back against the input. The code never
         // did it, and it is not what this rule should do: the round trip rejects
-        // almost every legitimate spelling — `2026-11-05 09:30:00` gains a
-        // timezone, `05/11/2026` normalizes to `2026-11-05` — so it would refuse
+        // almost every legitimate spelling  -  `2026-11-05 09:30:00` gains a
+        // timezone, `05/11/2026` normalizes to `2026-11-05`  -  so it would refuse
         // far more correct input than it caught.
         $timestamp = strtotime($value);
 
@@ -700,7 +687,6 @@ class Validator
         }
     }
 
-    // --------------------------------------------------------- value checks
 
     /**
      * @param list<string> $args
@@ -741,7 +727,7 @@ class Validator
     /**
      * Whether a value equals any of a rule's string arguments.
      *
-     * An array value matches when *every* element is allowed — that is what makes
+     * An array value matches when *every* element is allowed  -  that is what makes
      * `roles` => `in:admin,editor` behave for a multi-select, which is the shape
      * a checkbox group actually posts.
      *
@@ -788,7 +774,7 @@ class Validator
 
     /**
      * The shared body of min/max, because the *only* difference between them is
-     * the comparison direction — and duplicating the measure-selection logic
+     * the comparison direction  -  and duplicating the measure-selection logic
      * would be duplicating the part that is easy to get wrong.
      *
      * The measure is chosen by the value's own type, which is what makes
@@ -813,7 +799,7 @@ class Validator
         if (is_array($value)) {
             $measure = (float) count($value);
         } elseif (is_numeric($value)) {
-            // A digit-string is ambiguous — "10" is both ten and two characters.
+            // A digit-string is ambiguous  -  "10" is both ten and two characters.
             // Read as a *number*, because a rule author writing `min:18` on an age
             // field means eighteen years, and the form sent "18". A length check
             // on a numeric string is what `size` is for.
@@ -1001,7 +987,7 @@ class Validator
             ));
         }
 
-        // Absent means "no conflict" — `different` asks that two values not be
+        // Absent means "no conflict"  -  `different` asks that two values not be
         // equal, and a field that was not sent is not equal to anything. Making
         // it an error would mean an optional field could never be left blank.
         if ($this->has($other) && $this->value($other) == $value) {
@@ -1014,7 +1000,7 @@ class Validator
     }
 
     /**
-     * `confirmed` — the value must equal `{attribute}_confirmation`.
+     * `confirmed`  -  the value must equal `{attribute}_confirmation`.
      *
      * Laravel's spelling, and worth keeping: the pairing convention is the useful
      * part, and every developer arriving from Laravel already knows it means the
@@ -1035,7 +1021,7 @@ class Validator
     }
 
     /**
-     * `accepted` — a terms checkbox, or any field that must be affirmative.
+     * `accepted`  -  a terms checkbox, or any field that must be affirmative.
      *
      * @param list<string> $args
      */
@@ -1051,7 +1037,6 @@ class Validator
         }
     }
 
-    // ---------------------------------------------------------------- closures
 
     /**
      * Run a caller-supplied rule.
@@ -1064,7 +1049,7 @@ class Validator
      *
      * A **third** parameter is passed when the closure accepts one, so the
      * `$fail` form can report a specific message. Reflection is used to decide,
-     * rather than passing `$fail` always — a closure declaring only two
+     * rather than passing `$fail` always  -  a closure declaring only two
      * parameters would be a fatal if it were handed three, and a two-parameter
      * closure is the more common spelling.
      */
@@ -1090,7 +1075,7 @@ class Validator
         }
 
         // A closure that reported a message has spoken, whatever it returned. Only
-        // when it said nothing does a falsy return mean "failed" — so a rule
+        // when it said nothing does a falsy return mean "failed"  -  so a rule
         // written as `fn () => $value !== 'x'` works, and a rule written with
         // `$fail` and no `return` does not fail twice.
         if ($reported === [] && $result === false) {

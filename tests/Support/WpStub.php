@@ -146,6 +146,42 @@ final class WpStub
     public static array $transientWrites = [];
 
     /**
+     * The object cache, as group => key => value.
+     *
+     * Grouped rather than flat because `wp_cache_delete()` needs the group, and
+     * a flat map would let a test pass while the implementation deleted from the
+     * wrong group — a no-op in WordPress, and a silent one.
+     *
+     * Cleared by {@see reset()}, which is the point: with no persistent backend
+     * a real object cache does not survive the request, so a store that cached
+     * something and expected it back in a later test would be caught here rather
+     * than in production.
+     *
+     * @var array<string, array<string, mixed>>
+     */
+    public static array $objectCache = [];
+
+    /**
+     * Every call to `wp_cache_set()`, in order, so a test can tell a write that
+     * happened from one that was skipped. `WpCacheStore` must not write to the
+     * object cache when there is no persistent backend, and only the calls
+     * themselves show that.
+     *
+     * @var list<array{key: string, group: string, value: mixed, expiration: int}>
+     */
+    public static array $objectCacheWrites = [];
+
+    /**
+     * What `wp_using_ext_object_cache()` reports.
+     *
+     * False by default, matching a stock WordPress with no Redis or Memcached.
+     * That is the branch worth defaulting to: a store that assumed the object
+     * cache persisted would work in a test that flipped this to true and lose
+     * every entry in production.
+     */
+    public static bool $usingExtObjectCache = false;
+
+    /**
      * Every call to `setcookie()`, captured rather than emitted — a real
      * setcookie() in a test process fails with "headers already sent".
      *
@@ -255,7 +291,7 @@ final class WpStub
      * writes an option that is *present* in the submission, and an unchecked
      * checkbox is not submitted — so registering it would leave a previous
      * `true` in place when the user unchecks the box. See
-     * {@see \App\Lifecycle\UninstallSettings}.
+     * {@see \Framework\Lifecycle\UninstallSettings}.
      *
      * @var list<array<string, mixed>>
      */
@@ -306,6 +342,9 @@ final class WpStub
         self::$redirects = [];
         self::$jsonResponses = [];
         self::$transientWrites = [];
+        self::$objectCache = [];
+        self::$objectCacheWrites = [];
+        self::$usingExtObjectCache = false;
         self::$cookies = [];
         self::$died = [];
         self::$statusHeaders = [];

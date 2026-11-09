@@ -23,11 +23,18 @@ use Tests\Support\WpStub;
  * ## What is actually at risk here
  *
  * This is the only file in the plugin that can destroy a site's data on a
- * request the operator initiates by clicking "Delete" in a list of plugins. Its
- * safety rests on two things, and both are asserted below: the
- * `WP_UNINSTALL_PLUGIN` guard, without which the path is reachable over HTTP by
- * anyone who can guess the filename; and the option gate, without which every
- * uninstall wipes data the user never agreed to lose.
+ * request the operator initiates by clicking "Delete" in a list of plugins. What
+ * it must get right, and what is asserted below:
+ *
+ *  - The `WP_UNINSTALL_PLUGIN` guard, without which the path is reachable over
+ *    HTTP by anyone who can guess the filename.
+ *  - That the wipe *actually runs* by default. It is easy to write this file so
+ *    that it only runs when some other box was ticked somewhere, and the failure
+ *    is invisible: the plugin disappears, the tables stay, and nothing says why.
+ *  - That the documented opt-out is honoured, so keeping your data is still
+ *    reachable for someone migrating off the plugin.
+ *  - That no failure in between escapes into WordPress's delete request and
+ *    aborts it with the files half-removed.
  */
 final class UninstallFileTest extends TestCase
 {
@@ -144,45 +151,59 @@ final class UninstallFileTest extends TestCase
     }
 
     /**
-     * With the option off — which is the default, and the state of every install
-     * that never visited the settings screen — the tables stay.
-     */
-    #[RunInSeparateProcess]
-    public function test_it_keeps_everything_when_the_option_is_off(): void
-    {
-        WpStub::reset();
-
-        $db = $this->installDatabase();
-
-        // Nothing writes the option, and that is the point: this is the state of
-        // an install where no one touched the setting.
-        $this->includeUninstall();
-
-        $this->assertTrue($db->tableExists(self::MIGRATED_TABLE), 'The default wiped a site\'s data.');
-        $this->assertTrue($db->tableExists('wp_plugin_migrations'), 'The ledger was dropped without consent.');
-    }
-
-    /**
-     * With the option on, the tables and the ledger go.
+     * **The default path: nothing was ever configured, and the tables go anyway.**
      *
-     * This is the whole of requirement 3, end to end: the file bootstraps the
-     * plugin by hand — no `plugins_loaded` fires in a delete request — resolves
-     * the migrator through the container, and runs every `down()`.
+     * This is the case the plugin got wrong. WordPress asked the site owner "are
+     * you sure you want to delete *X* and its data?", they said yes, and the
+     * plugin deleted its files and left every table behind — because the wipe was
+     * gated on a separate checkbox on the Reading screen that defaults to off and
+     * that nobody had ticked. The operator's consent was recorded in the wrong
+     * place, and the symptom only showed up after the files were gone.
+     *
+     * So this test deliberately writes *nothing*. No option, no setting, no
+     * preference — the state of every install that never visited that screen.
+     * The tables must still be dropped, and this is what fails if the gate is
+     * ever wired back into `uninstall.php`.
      */
     #[RunInSeparateProcess]
-    public function test_it_removes_everything_when_the_option_is_on(): void
+    public function test_it_removes_everything_when_nothing_was_ever_configured(): void
     {
         WpStub::reset();
 
         $db = $this->installDatabase();
-        $this->enableWipe();
 
         $this->assertTrue($db->tableExists(self::MIGRATED_TABLE), 'Precondition: no migration ran.');
 
+        // Nothing writes the option, and that is the whole point.
         $this->includeUninstall();
 
-        $this->assertFalse($db->tableExists(self::MIGRATED_TABLE), 'The migration-created table survived an agreed wipe.');
-        $this->assertFalse($db->tableExists('wp_plugin_migrations'), 'The tracking table survived an agreed wipe.');
+        $this->assertFalse(
+            $db->tableExists(self::MIGRATED_TABLE),
+            'Deleting the plugin left its tables behind because a hidden opt-in was never ticked.'
+        );
+        $this->assertFalse($db->tableExists('wp_plugin_migrations'), 'The tracking table outlived the plugin.');
+    }
+
+    /**
+     * The opt-out: an operator who deliberately unticked the box keeps everything.
+     *
+     * The counterpart to the test above, and the reason the option still exists.
+     * Keeping your data has to remain reachable — someone migrating off the
+     * plugin, or reinstalling over the top, needs the schema to survive a delete.
+     */
+    #[RunInSeparateProcess]
+    public function test_it_keeps_everything_when_the_operator_opted_out(): void
+    {
+        WpStub::reset();
+
+        $db = $this->installDatabase();
+
+        \Framework\Lifecycle\PluginLifecycle::setDeleteDataOnUninstall(false);
+
+        $this->includeUninstall();
+
+        $this->assertTrue($db->tableExists(self::MIGRATED_TABLE), 'An explicit opt-out did not keep the data.');
+        $this->assertTrue($db->tableExists('wp_plugin_migrations'), 'The ledger went despite the opt-out.');
     }
 
     /**
@@ -196,8 +217,6 @@ final class UninstallFileTest extends TestCase
         WpStub::reset();
 
         $db = $this->installDatabase();
-        $this->enableWipe();
-
         $option = $db->prefix . \Framework\Database\Storage\WpMigrationStorage::HIGH_WATER_OPTION_SUFFIX;
         $this->assertArrayHasKey($option, WpStub::$options, 'Precondition: no high-water mark was written.');
 
@@ -212,8 +231,10 @@ final class UninstallFileTest extends TestCase
      * The trap this guards is the one a plugin walks into by writing one routine
      * for both events: `uninstall.php` includes the entry file, which is where
      * the activation and deactivation hooks are registered, so a shared code path
-     * would run the wipe on every deactivation on a site that had opted in — and
-     * a deactivation is a pause button, not a deletion.
+     * would run the wipe on every deactivation — and a deactivation is a pause
+     * button, not a deletion. It matters more now than it did: the wipe is on by
+     * default, so a shared path would destroy the schema of every site that
+     * merely paused the plugin.
      *
      * ## What is asserted, and what deliberately is not
      *
@@ -227,9 +248,9 @@ final class UninstallFileTest extends TestCase
      *
      * **Not** `app()->isBooted()` either. The container *is* booted by the time
      * this returns, and correctly so: {@see \App\Lifecycle\PluginLifecycle::uninstall()}
-     * boots it once the option says the wipe is wanted, because resolving the
-     * migrator depends on providers having run. Asserting it stays un-booted
-     * would be asserting the wipe did not happen.
+     * boots it once the wipe is going ahead, because resolving the migrator
+     * depends on providers having run. Asserting it stays un-booted would be
+     * asserting the wipe did not happen.
      *
      * What is asserted is the thing that would actually hurt: the callbacks were
      * never *invoked*. A hook that fires here would run `activate()`, which
@@ -241,8 +262,6 @@ final class UninstallFileTest extends TestCase
         WpStub::reset();
 
         $db = $this->installDatabase();
-        $this->enableWipe();
-
         $this->assertFalse(
             app()->isBooted(),
             'Precondition: the install step should have left the container un-booted.'
@@ -286,8 +305,6 @@ final class UninstallFileTest extends TestCase
         WpStub::reset();
 
         $db = $this->installDatabase();
-        $this->enableWipe();
-
         // Run a copy of `uninstall.php` from a directory with no entry file
         // beside it. The copy is what makes `__DIR__` resolve somewhere empty —
         // the real file cannot be moved, because the rest of the suite needs it.
@@ -332,8 +349,6 @@ final class UninstallFileTest extends TestCase
         WpStub::reset();
 
         $db = $this->installDatabase();
-        $this->enableWipe();
-
         $db->query(
             "UPDATE `wp_plugin_migrations` SET `migration` = '"
             . self::PHANTOM_MIGRATION
@@ -352,6 +367,61 @@ final class UninstallFileTest extends TestCase
         // failed the test. The table survives, which is the honest outcome — the
         // plugin reports it through the log rather than pretending.
         $this->assertTrue($db->tableExists(self::MIGRATED_TABLE));
+    }
+
+    /**
+     * A provider that throws from `boot()` does not abort the deletion.
+     *
+     * ## The failure this pins, and why the existing test did not catch it
+     *
+     * `test_a_failing_wipe_does_not_escape()` above covers a failure *inside* the
+     * removal, which `RemovesPluginData::runWithoutThrowing()` already catches.
+     * That is not the whole path. Before the wipe runs, `uninstall()` calls
+     * `$container->boot()`, and boot runs every provider's `boot()` — which
+     * resolves services and can reach a database, a remote API, or a filesystem
+     * that is gone. A provider throwing there escapes `uninstall()`, escapes the
+     * include, and lands in `delete_plugins()`.
+     *
+     * That ordering matters more than it looks. WordPress calls
+     * `uninstall_plugin()` — which includes this file — *before* it deletes
+     * anything, so a throwable here aborts the request with the plugin's files
+     * still on disk. The operator sees "Could not fully remove the plugin",
+     * investigates the filesystem, and finds nothing wrong with it: the actual
+     * cause is a database service that failed to boot, and nothing in the message
+     * says so.
+     *
+     * ## Why the provider is registered at runtime
+     *
+     * Because the realistic trigger is a project's own provider failing on a
+     * broken environment, not a broken framework. Registering a deliberately
+     * failing one is how that is reproduced without a broken environment. It goes
+     * through the same public `register()` the Kernel uses, so the container
+     * treats it exactly as it treats a real provider.
+     */
+    #[RunInSeparateProcess]
+    public function test_a_provider_that_throws_while_booting_does_not_escape(): void
+    {
+        WpStub::reset();
+
+        $db = $this->installDatabase();
+        // Registered after `installDatabase()` has already booted the container
+        // once for the migration run, which is what makes this a *second* boot —
+        // the state a real delete request is in, where the container has
+        // registered its providers but not booted them.
+        app()->register(FailingBootProvider::class);
+
+        $this->assertTrue($db->tableExists(self::MIGRATED_TABLE), 'Precondition: nothing to uninstall.');
+
+        $this->includeUninstall();
+
+        // Reaching here is the assertion: the throwable was contained rather than
+        // propagating into WordPress's delete request. The data survives, which is
+        // the honest outcome — a boot that failed cannot be trusted to run
+        // migrations, so the tables are reported rather than half-removed.
+        $this->assertTrue(
+            $db->tableExists(self::MIGRATED_TABLE),
+            'A boot failure left the schema in an indeterminate state; it must be reported, not half-removed.'
+        );
     }
 
     // -------------------------------------------------------------- plumbing
@@ -396,14 +466,6 @@ final class UninstallFileTest extends TestCase
         $this->defineGuard();
 
         require $this->uninstallPath();
-    }
-
-    /**
-     * Opt in to the wipe, the way the settings screen would have.
-     */
-    private function enableWipe(): void
-    {
-        \App\Lifecycle\PluginLifecycle::setDeleteDataOnUninstall(true);
     }
 
     /**

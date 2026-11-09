@@ -10,13 +10,13 @@ use Throwable;
 /**
  * Reads a routes file into a router.
  *
- * ## Why this is a class and not three lines in the service provider
+ * Why this is a class and not three lines in the service provider
  *
  * A routes file is normally loaded from inside a WordPress action, which is fine
  * while the running request is the one being routed. `wp wp_mini route:list` is
  * the case that breaks: WP-CLI fires none of `rest_api_init`, `admin_menu`,
  * `admin_post` or `template_redirect`, so a command that wants to list the routes
- * would find two empty tables and report "no routes" — a wrong answer, not an
+ * would find two empty tables and report "no routes" - a wrong answer, not an
  * error, which is the worst kind.
  *
  * So the load has to be callable *outside* the hooks, and the caller that does it
@@ -24,9 +24,9 @@ use Throwable;
  * entry point: both the provider and the command go through it, which is also
  * what keeps the two from disagreeing about what loading a routes file means.
  *
- * ## It owns which router a file writes into
+ * It owns which router a file writes into
  *
- * A routes file calls `Route::get(...)` — a static facade with no idea which of
+ * A routes file calls `Route::get(...)` - a static facade with no idea which of
  * the two routers is loading it, because the same call appears in `web.php` and
  * `api.php` and must land in different tables. Resolving that is this class's job:
  * each load aims {@see RouteFacade} at the router it was handed, restores the
@@ -37,16 +37,16 @@ use Throwable;
  * (`$router`), and the file had to declare its type. Now it travels as loader
  * state, which is why this class is the only place allowed to set it.
  *
- * ## Loading twice is the failure to avoid
+ * Loading twice is the failure to avoid
  *
  * The routers are singletons holding their route tables, so loading the same
  * file twice adds every route a second time. For REST that trips the duplicate
  * guard and throws; for the web table it would produce a doubled listing. The
  * `$loaded` map below is therefore keyed by **file path and router**, and lives on
- * the loader — which is itself bound as a singleton, so the record survives from
+ * the loader - which is itself bound as a singleton, so the record survives from
  * the CLI entry point through to whatever else asks.
  *
- * ## Failures are reported, never thrown
+ * Failures are reported, never thrown
  *
  * A broken routes file must not take down the request that discovered it. Every
  * entry point here returns a result instead of throwing: the provider logs, the
@@ -61,7 +61,7 @@ final class RouteLoader
      *
      * Keyed by absolute path plus the router class it was loaded into, because the
      * same file must not load into a router twice *and* one file must not load
-     * into two routers at all — the second would put web routes in the API table.
+     * into two routers at all - the second would put web routes in the API table.
      * Path keying expresses the first; the router class is what lets two domains
      * each read their own file through this one loader.
      *
@@ -95,7 +95,7 @@ final class RouteLoader
         }
 
         // Keyed by path *and* router class. One file must not load twice into one
-        // router — that is the duplicate-registration failure this map exists for —
+        // router - that is the duplicate-registration failure this map exists for -
         // but two routers asking for the same file is a different situation and not
         // an error: `route:list` reads both domains through this one loader, and
         // each domain's table has to be filled for the command to have anything to
@@ -109,7 +109,7 @@ final class RouteLoader
 
         // Marked before the file runs, not after. A routes file that throws
         // half-way has still executed its top-level statements, and re-running it
-        // on the next hook would re-apply them — for a file that registers routes
+        // on the next hook would re-apply them - for a file that registers routes
         // before failing, that means a duplicate-guard throw from inside an action
         // the next time round, which is a far more confusing symptom than the
         // original mistake.
@@ -119,7 +119,7 @@ final class RouteLoader
             /**
              * The facade is aimed at *this* router for the duration of the
              * `require`, which is what lets a routes file call `Route::get(...)`
-             * without knowing — or being able to know — which router is loading
+             * without knowing - or being able to know - which router is loading
              * it. See {@see \Framework\Support\Facades\Route}.
              *
              * @var mixed $routes
@@ -164,7 +164,7 @@ final class RouteLoader
      * Whether a file has already been loaded.
      *
      * Answers about *any* router, which is what this predicate always meant to
-     * callers asking "has this file run yet" — the second half of the load key is
+     * callers asking "has this file run yet" - the second half of the load key is
      * about de-duplication, not about identity.
      */
     public function hasLoaded(string $file): bool
@@ -191,7 +191,7 @@ final class RouteLoader
 
     private function absolute(string $file): string
     {
-        // A leading slash or a drive letter means the caller gave a full path —
+        // A leading slash or a drive letter means the caller gave a full path -
         // `base_path()` would then prepend the base again and never find it.
         if (str_starts_with($file, '/') || preg_match('#^[A-Za-z]:[\\\\/]#', $file) === 1) {
             return $file;

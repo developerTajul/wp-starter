@@ -11,7 +11,7 @@ use RuntimeException;
  * Extends `RuntimeException` so a catch block written against the framework's
  * other database failures ({@see \Framework\Database\Exceptions\MigrationException})
  * keeps working: both are runtime problems, and a migration catches neither
- * deliberately — the migrator wraps whatever a migration throws.
+ * deliberately - the migrator wraps whatever a migration throws.
  *
  * The three constructors below are the only ways this is raised, and they exist
  * so that every message contains the two things an operator needs: **which**
@@ -28,7 +28,7 @@ final class SchemaException extends RuntimeException
      * @param string $operation What the statement was doing, e.g.
      *                          "create the notes table".
      * @param string $reason    The database's own message, or a stand-in when it
-     *                          supplied none. Never empty — an empty reason reads
+     *                          supplied none. Never empty - an empty reason reads
      *                          as "no error", which is the one thing this is not.
      */
     public static function statementFailed(string $operation, string $reason): self
@@ -43,7 +43,7 @@ final class SchemaException extends RuntimeException
      * A name containing a backtick is the specific case that matters: MySQL's
      * escape for one is to double it, which is correct in every position except
      * inside dbDelta's line-oriented parser, so a name that reached the adapter
-     * would produce a statement that is either a syntax error or — worse — a
+     * would produce a statement that is either a syntax error or - worse - a
      * `CREATE TABLE` whose body has a line injected into it.
      *
      * Nothing in an application generates such a name, which is exactly why

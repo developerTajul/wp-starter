@@ -70,12 +70,39 @@ final class FakeWpdb extends wpdb
     private array $failOn = [];
 
     /**
+     * The error to report per injected fragment, keyed by the fragment.
+     *
+     * A fragment with no entry here reports the generic `'Injected failure.'`.
+     * Stored per fragment rather than as one current message so that injecting
+     * two failures in one test — each expecting a different translation — cannot
+     * have them overwrite each other. See {@see failOn()}.
+     *
+     * @var array<string, string>
+     */
+    private array $failureMessages = [];
+
+    /**
      * Every statement issued, in order. Lets a test assert that, say, no DELETE
      * ran after a failure.
      *
      * @var list<string>
      */
     public array $queries = [];
+
+    /**
+     * The tables the statement being evaluated may reference, prefixed.
+     *
+     * Set by {@see selectRows()} from its own `FROM`/`JOIN` clauses before any
+     * clause is evaluated, and read by {@see assertQualifierIsInScope()} so a
+     * qualifier naming a table the statement never mentioned fails the way MySQL
+     * fails it (error 1054) instead of quietly resolving to nothing.
+     *
+     * @var list<string>
+     */
+    private array $tablesInScope = [];
+
+    /** Which clause is being evaluated, for the 1054 message. */
+    private string $clauseInScope = 'field list';
 
     /**
      * What `GET_LOCK()` answers, as a string.
@@ -129,10 +156,48 @@ final class FakeWpdb extends wpdb
 
     /**
      * Make any statement containing $fragment fail, as the database would.
+     *
+     * ## Why the message can be chosen
+     *
+     * The default `'Injected failure.'` is right for a test that only wants the
+     * statement to fail — it is obviously artificial, so nobody mistakes it for a
+     * real error. It is wrong for a test verifying how a *specific* error is
+     * translated: `$wpdb->insert()` has no exception channel, so `last_error` is
+     * the only way the message reaches the caller, and a fixed string cannot
+     * exercise a branch that keys on MySQL's wording. A unique-key violation is
+     * the case that matters, because the repositories translate it into a domain
+     * exception.
+     *
+     * Passing `$message` sets `last_error` to it and leaves it in place: the
+     * injection sites assign the default but never overwrite a message that was
+     * already set for the statement, so a chosen message survives the statement
+     * that triggers it.
      */
-    public function failOn(string $fragment): void
+    public function failOn(string $fragment, ?string $message = null): void
     {
         $this->failOn[] = $fragment;
+
+        if ($message !== null) {
+            $this->failureMessages[$fragment] = $message;
+        }
+    }
+
+    /**
+     * The message to report for `$sql` when it is made to fail.
+     *
+     * The first matching fragment wins, mirroring `shouldFail()`, so a test that
+     * injected two fragments gets the message belonging to the one that matched
+     * rather than an arbitrary one.
+     */
+    private function injectedMessage(string $sql): string
+    {
+        foreach ($this->failOn as $fragment) {
+            if (str_contains($sql, $fragment)) {
+                return $this->failureMessages[$fragment] ?? 'Injected failure.';
+            }
+        }
+
+        return 'Injected failure.';
     }
 
     /**
@@ -428,7 +493,7 @@ final class FakeWpdb extends wpdb
         $this->rows_affected = 0;
 
         if ($this->shouldFail($sql)) {
-            $this->last_error = 'Injected failure.';
+            $this->last_error = $this->injectedMessage($sql);
             $this->insert_id = 0;
 
             return false;
@@ -497,6 +562,20 @@ final class FakeWpdb extends wpdb
 
         $this->queries[] = (string) $query;
 
+        // Injected failures are honoured on the read helpers too, because
+        // `get_var()` is how a real `$wpdb` reports a failed aggregate: it
+        // returns null *and* sets `last_error`. Without this, a caller that
+        // distinguishes "no rows" from "the query broke" by reading
+        // `last_error` — which is what every repository here does — could not be
+        // tested on that branch at all, and the branch would ship unexercised.
+        if ($this->shouldFail((string) $query)) {
+            $this->last_error = $this->injectedMessage((string) $query);
+
+            return null;
+        }
+
+        $this->last_error = '';
+
         // MySQL's advisory locks are scalar functions, so WordPress reaches them
         // through `get_var('SELECT GET_LOCK(...)')`. Answered before the SELECT
         // path below, which would otherwise parse them as a table query and
@@ -535,6 +614,15 @@ final class FakeWpdb extends wpdb
         }
 
         $this->queries[] = (string) $query;
+
+        if ($this->shouldFail((string) $query)) {
+            $this->last_error = $this->injectedMessage((string) $query);
+
+            return null;
+        }
+
+        $this->last_error = '';
+
         $rows = $this->select((string) $query);
 
         if ($rows === []) {
@@ -610,6 +698,17 @@ final class FakeWpdb extends wpdb
         }
 
         $this->queries[] = (string) $query;
+
+        // A failed SELECT is `false` here, not an empty array — the distinction
+        // the repositories depend on. See the note in get_var() above.
+        if ($this->shouldFail((string) $query)) {
+            $this->last_error = $this->injectedMessage((string) $query);
+
+            return false;
+        }
+
+        $this->last_error = '';
+
         $rows = $this->select((string) $query);
 
         if ($output === ARRAY_A || $output === ARRAY_N) {
@@ -1413,6 +1512,20 @@ final class FakeWpdb extends wpdb
      */
     private function runInsert(string $sql)
     {
+        // `INSERT … ON DUPLICATE KEY UPDATE` is split off first, because the
+        // plain-insert pattern below anchors on the statement *ending* after the
+        // VALUES list — and an upsert does not end there, so it would fall
+        // through to the "cannot parse" throw.
+        //
+        // Handled as its own path rather than by loosening that regex: the two
+        // statements have genuinely different semantics (one fails on a duplicate,
+        // the other updates), and a single regex covering both would have to
+        // decide which it was from a capture group, which is harder to read than
+        // two methods.
+        if (preg_match('/\s+ON\s+DUPLICATE\s+KEY\s+UPDATE\s+(.+)$/is', $sql, $upsert, PREG_OFFSET_CAPTURE) === 1) {
+            return $this->runUpsert(substr($sql, 0, (int) $upsert[0][1]), $upsert[1][0]);
+        }
+
         if (preg_match('/^\s*insert\s+into\s+`?([a-z0-9_]+)`?\s*\(([^)]*)\)\s*values\s*\((.*)\)\s*$/is', $sql, $m) !== 1) {
             throw new \LogicException('FakeWpdb cannot parse INSERT: ' . $sql);
         }
@@ -1451,6 +1564,368 @@ final class FakeWpdb extends wpdb
         $this->tables[$table][] = $row;
 
         return 1;
+    }
+
+    /**
+     * `INSERT … ON DUPLICATE KEY UPDATE`, as MySQL evaluates it.
+     *
+     * The rate limiter depends on this statement's *atomicity*, and the fake
+     * cannot reproduce concurrency — but it can reproduce the semantics that make
+     * the atomicity meaningful, which is what a test needs to assert the limiter
+     * counts correctly:
+     *
+     *  - The duplicate is detected on a **unique key**, so the target table must
+     *    actually declare one. The fake reads the constraint it recorded from the
+     *    `CREATE TABLE` rather than assuming `rate_key` is unique — assuming would
+     *    let a migration that forgot the index pass this fake while the real
+     *    database inserted a new row per hit, which is a limiter that always
+     *    allows.
+     *  - `IF(cond, a, b)` is evaluated, because the limiter's window reset is
+     *    expressed that way. A fake that ignored the condition would report every
+     *    hit as the first in its window.
+     *  - Column references on the right of an assignment read the **existing**
+     *    row, which is MySQL's behaviour for the UPDATE branch — the values
+     *    supplied in `VALUES(...)` are not what `attempts + 1` sees.
+     *  - `$this->rows_affected` is 1 for an insert and 2 for an update, matching
+     *    MySQL (class-wpdb.php surfaces this through the return of `query()`).
+     *
+     * What it deliberately does not do: `VALUES(col)` in the update clause, and
+     * multi-row inserts. The suite issues neither, and a parser that accepted them
+     * would be claiming fidelity it does not have — the same reasoning as
+     * {@see query()}'s "throw rather than silently return 0".
+     *
+     * @param string $insertPart The statement up to (not including) `ON DUPLICATE`.
+     * @param string $updatePart The assignment list after `ON DUPLICATE KEY UPDATE`.
+     *
+     * @return int|false
+     */
+    private function runUpsert(string $insertPart, string $updatePart)
+    {
+        if (preg_match('/^\s*insert\s+into\s+`?([a-z0-9_]+)`?\s*\(([^)]*)\)\s*values\s*\((.*)\)\s*$/is', trim($insertPart), $m) !== 1) {
+            throw new \LogicException('FakeWpdb cannot parse the INSERT half of an upsert: ' . $insertPart);
+        }
+
+        $table = $m[1];
+        $columns = array_map(
+            static fn (string $c): string => trim($c, " `\t\n\r\0\x0B"),
+            explode(',', $m[2])
+        );
+        $values = $this->splitValues($m[3]);
+        $incoming = array_combine($columns, $values);
+
+        if (!isset($this->tables[$table])) {
+            throw new \LogicException("FakeWpdb: no such table [{$table}].");
+        }
+
+        if ($incoming === false) {
+            throw new \LogicException('FakeWpdb: an upsert\'s column and value counts differ: ' . $insertPart);
+        }
+
+        // Which column carries the unique key is read from the schema the fake
+        // recorded, not assumed — see the method docblock.
+        $unique = $this->uniqueColumns($table);
+
+        if ($unique === []) {
+            throw new \LogicException(
+                "FakeWpdb: [{$table}] has no unique key, so ON DUPLICATE KEY UPDATE can never match a "
+                . 'duplicate. The real database would insert a row per statement.'
+            );
+        }
+
+        $existingIndex = $this->findByUniqueKey($table, $unique, $incoming);
+
+        if ($existingIndex === null) {
+            $this->insert_id = $this->autoIncrement[$table]++;
+            $incoming['id'] = $this->insert_id;
+            $this->tables[$table][] = $incoming;
+            $this->rows_affected = 1;
+
+            return 1;
+        }
+
+        // The UPDATE branch. Each assignment is evaluated against the *existing*
+        // row and written back in place, so a later assignment in the same list
+        // sees an earlier one's result — which is the order MySQL applies them.
+        $updates = $this->splitUpsertAssignments($updatePart);
+
+        foreach ($updates as $column => $expression) {
+            $this->tables[$table][$existingIndex][$column] =
+                $this->evaluateExpression($expression, $this->tables[$table][$existingIndex]);
+        }
+
+        $this->rows_affected = 2;
+        $this->insert_id = 0;
+
+        return 2;
+    }
+
+    /**
+     * The columns a table's unique keys cover, flattened.
+     *
+     * Read from the constraints the fake recorded while running `CREATE TABLE` or
+     * `ALTER TABLE` — `$indexes` holds uniqueness per index name and
+     * `$indexColumns` the columns each covers — so an upsert's duplicate
+     * detection is only as good as the schema actually declared. Assuming a
+     * particular column was unique would let a migration that forgot the index
+     * pass here while the real database inserted a row per statement.
+     *
+     * @return list<string>
+     */
+    private function uniqueColumns(string $table): array
+    {
+        $columns = [];
+
+        foreach ($this->indexes[$table] ?? [] as $index => $isUnique) {
+            if (!$isUnique) {
+                continue;
+            }
+
+            foreach ($this->indexColumns[$table][$index] ?? [] as $row) {
+                // `indexRows()` stores the shape `information_schema` reports, so
+                // the column name is under `Column_name` — the same shape
+                // `addIndex()` builds for the schema dumper.
+                $name = is_array($row) ? ($row['Column_name'] ?? null) : $row;
+
+                if (is_string($name) && $name !== '') {
+                    $columns[] = $name;
+                }
+            }
+        }
+
+        return array_values(array_unique($columns));
+    }
+
+    /**
+     * The index of the row an incoming set of values collides with, or null.
+     *
+     * @param list<string>                $unique
+     * @param array<string, mixed>|false  $incoming
+     */
+    private function findByUniqueKey(string $table, array $unique, array|false $incoming): ?int
+    {
+        if ($incoming === false) {
+            return null;
+        }
+
+        foreach ($this->tables[$table] as $index => $row) {
+            $matches = true;
+
+            foreach ($unique as $column) {
+                // A column the statement did not supply cannot match: MySQL only
+                // detects a duplicate on the columns actually written (plus a
+                // default), and treating an absent column as matching would
+                // collapse unrelated rows.
+                if (!array_key_exists($column, $incoming)) {
+                    $matches = false;
+
+                    break;
+                }
+
+                if (($row[$column] ?? null) !== $incoming[$column]) {
+                    $matches = false;
+
+                    break;
+                }
+            }
+
+            if ($matches) {
+                return (int) $index;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Split an update clause into column => expression.
+     *
+     * Commas inside parentheses are not separators — the limiter's own clause is
+     * `attempts = IF(a, 1, b), expires_at = IF(a, c, d)`, and splitting naively on
+     * every comma would tear each `IF()` in half. The pre-existing
+     * {@see splitAssignments()} does not track depth, which is correct for the
+     * flat `col = value` lists the repository issues and wrong here, so this is a
+     * separate method rather than a change to that one.
+     *
+     * Returns a map rather than a list because the update branch applies
+     * assignments to a row by column name, and a list would need re-parsing there.
+     *
+     * @return array<string, string>
+     */
+    private function splitUpsertAssignments(string $clause): array
+    {
+        $assignments = [];
+        $current = '';
+        $depth = 0;
+        $inString = false;
+
+        $push = function (string $piece) use (&$assignments): void {
+            $piece = trim($piece);
+
+            if ($piece === '') {
+                return;
+            }
+
+            [$column, $expression] = array_pad(explode('=', $piece, 2), 2, '');
+
+            $column = trim($column, " `\t\n\r\0\x0B");
+
+            if ($column === '' || $expression === '') {
+                throw new \LogicException("FakeWpdb cannot parse the upsert assignment [{$piece}].");
+            }
+
+            $assignments[$column] = trim($expression);
+        };
+
+        for ($i = 0, $length = strlen($clause); $i < $length; $i++) {
+            $char = $clause[$i];
+
+            if ($char === "'" && ($clause[$i - 1] ?? '') !== '\\') {
+                $inString = !$inString;
+            }
+
+            if (!$inString) {
+                if ($char === '(') {
+                    $depth++;
+                } elseif ($char === ')') {
+                    $depth--;
+                }
+            }
+
+            if ($char === ',' && $depth === 0 && !$inString) {
+                $push($current);
+                $current = '';
+
+                continue;
+            }
+
+            $current .= $char;
+        }
+
+        $push($current);
+
+        return $assignments;
+    }
+
+    /**
+     * Evaluate the small expression subset an upsert clause uses.
+     *
+     * Three forms, which is all the limiter and a repository's counter would
+     * issue: a bare literal, a bare column, and `IF(cond, then, else)` where the
+     * condition is `<column> <op> <literal>` and the branches are literals or
+     * `column <op> literal` arithmetic.
+     *
+     * Anything else throws. A fake that guessed at an unparsed expression would
+     * silently store the wrong value, and a limiter whose counter is wrong is a
+     * limiter that reports nothing while being bypassed — the failure this whole
+     * component exists to prevent.
+     *
+     * @param array<string, mixed> $row The existing row, for column references.
+     *
+     * @return int|string
+     */
+    private function evaluateExpression(string $expression, array $row): int|string
+    {
+        $expression = trim($expression);
+
+        // IF(condition, then, else)
+        if (preg_match('/^IF\s*\((.*)\)$/is', $expression, $m) === 1) {
+            [$condition, $then, $else] = $this->splitArguments($m[1]);
+
+            return $this->evaluateExpression(
+                $this->evaluateCondition($condition, $row) ? $then : $else,
+                $row
+            );
+        }
+
+        // `column + 1` / `column - 1`
+        if (preg_match('/^`?([a-z0-9_]+)`?\s*([+\-])\s*(\d+)$/i', $expression, $m) === 1) {
+            $base = (int) ($row[$m[1]] ?? 0);
+
+            return $m[2] === '+' ? $base + (int) $m[3] : $base - (int) $m[3];
+        }
+
+        // A quoted literal.
+        if (preg_match("/^'(.*)'$/s", $expression, $m) === 1) {
+            return $m[1];
+        }
+
+        // A bare integer.
+        if (preg_match('/^-?\d+$/', $expression) === 1) {
+            return (int) $expression;
+        }
+
+        // A bare column reference.
+        if (preg_match('/^`?([a-z0-9_]+)`?$/i', $expression, $m) === 1) {
+            return $row[$m[1]] ?? '';
+        }
+
+        throw new \LogicException("FakeWpdb cannot evaluate the upsert expression [{$expression}].");
+    }
+
+    /**
+     * Evaluate a comparison inside an `IF()`.
+     *
+     * @param array<string, mixed> $row
+     */
+    private function evaluateCondition(string $condition, array $row): bool
+    {
+        if (preg_match('/^`?([a-z0-9_]+)`?\s*(<=|>=|<>|!=|=|<|>)\s*(.+)$/is', trim($condition), $m) !== 1) {
+            throw new \LogicException("FakeWpdb cannot evaluate the upsert condition [{$condition}].");
+        }
+
+        $left = $row[$m[1]] ?? null;
+        $right = $this->evaluateExpression($m[3], $row);
+
+        return match ($m[2]) {
+            '='          => $left == $right,
+            '<>' , '!='  => $left != $right,
+            '<'          => $left < $right,
+            '>'          => $left > $right,
+            '<='         => $left <= $right,
+            '>='         => $left >= $right,
+        };
+    }
+
+    /**
+     * Split a function's argument list at top-level commas.
+     *
+     * @return list<string>
+     */
+    private function splitArguments(string $list): array
+    {
+        $arguments = [];
+        $current = '';
+        $depth = 0;
+        $inString = false;
+
+        for ($i = 0, $length = strlen($list); $i < $length; $i++) {
+            $char = $list[$i];
+
+            if ($char === "'") {
+                $inString = !$inString;
+            }
+
+            if (!$inString) {
+                if ($char === '(') {
+                    $depth++;
+                } elseif ($char === ')') {
+                    $depth--;
+                }
+            }
+
+            if ($char === ',' && $depth === 0 && !$inString) {
+                $arguments[] = trim($current);
+                $current = '';
+
+                continue;
+            }
+
+            $current .= $char;
+        }
+
+        $arguments[] = trim($current);
+
+        return $arguments;
     }
 
     /**
@@ -1777,7 +2252,89 @@ final class FakeWpdb extends wpdb
         // only `*`, only equality conjunctions, and only `ORDER BY` over real
         // columns.
         if (preg_match('/^\s*select\s+\*\s+from\s+`?([a-z0-9_]+)`?(.*)$/is', $sql, $m) === 1) {
-            return $this->selectRows($m[1], trim($m[2]));
+            return array_map(
+                static fn (array $row): array => self::withoutQualifiedKeys($row),
+                $this->selectRows($m[1], trim($m[2]))
+            );
+        }
+
+        // An explicit column list — `SELECT attempts, expires_at FROM …`. The
+        // rate limiter issues this and nothing else in the suite did before it.
+        //
+        // Added as its own branch rather than by widening the `*` pattern to any
+        // projection, because the projection has to be *applied* and the `*` path
+        // never needed to be: widening it would mean every existing `SELECT *`
+        // read now goes through a projection step that is a no-op for it, which is
+        // a change to working code to serve a new caller.
+        //
+        // Columns are returned as MySQL returns them — every named column present,
+        // even when the row lacks it (as null) — because a caller reading a column
+        // that is simply absent would get a PHP notice rather than the null the
+        // database would have given it.
+        //
+        // A term may be qualified (`deal_stages`.`id`) and aliased
+        // (`deal_stages`.`id` AS `stage_id`). Both are what a joined read needs:
+        // the qualifier says which table an ambiguous name belongs to, and the
+        // alias is the key the caller reads the value back under - which is the
+        // name that must appear in the returned row, not the column's own.
+        $term = '`?[a-z0-9_]+`?(?:\.`?[a-z0-9_]+`?)?(?:\s+as\s+`?[a-z0-9_]+`?)?';
+
+        if (preg_match('/^\s*select\s+(' . $term . '(?:\s*,\s*' . $term . ')*)\s+from\s+`?([a-z0-9_]+)`?(.*)$/is', $sql, $m) === 1) {
+            $columns = [];
+
+            foreach (explode(',', $m[1]) as $projection) {
+                $projection = trim($projection);
+
+                $alias = null;
+
+                if (preg_match('/^(.*?)\s+as\s+(.+)$/is', $projection, $parts) === 1) {
+                    $projection = trim($parts[1]);
+                    $alias = trim($parts[2], " `\t\n\r\0\x0B");
+                }
+
+                $columns[] = $this->projectionTerm($projection, $alias, $m[2]);
+            }
+
+            // The FROM table is the statement's own scope, and it is not known
+            // until `selectRows()` parses the tail - so the projection is
+            // validated first, against the tables this statement declares, and
+            // then resolved per row. Validating here rather than only in the row
+            // mapper is what makes an unknown column independent of the result
+            // set: a real server raises 1054 at prepare time, before it knows
+            // whether any row exists, and a mapper that only runs for a non-empty
+            // result would let invalid SQL through whenever the WHERE happened to
+            // match nothing.
+            $scope = $this->tablesInScopeFor($m[2], trim($m[3]));
+
+            foreach ($columns as $column) {
+                if ($column['qualifier'] !== null) {
+                    $this->clauseInScope = 'field list';
+                    $this->assertQualifierIsInScope($column['qualifier'], $scope);
+                }
+            }
+
+            $rows = $this->selectRows($m[2], trim($m[3]));
+
+            return array_map(
+                static function (array $row) use ($columns): array {
+                    $projected = [];
+
+                    foreach ($columns as $column) {
+                        // A qualified term is read from its own `table.column`
+                        // key, which is either present or was already refused
+                        // above - so no fallback applies to it. A bare term falls
+                        // back to the `FROM` table's key: the `FROM` table is
+                        // always in scope, so that can only resolve to a column
+                        // MySQL would also have resolved.
+                        $key = $column['source'] ?? $column['fallback'];
+
+                        $projected[$column['key']] = $row[$key] ?? null;
+                    }
+
+                    return $projected;
+                },
+                $rows
+            );
         }
 
         throw new \LogicException('FakeWpdb cannot parse SELECT: ' . $sql);
@@ -1792,6 +2349,65 @@ final class FakeWpdb extends wpdb
     {
         $rows = array_values($this->tables[$table] ?? []);
 
+        // Joins come first: SQL requires them between FROM and WHERE, and they
+        // change what the rest of the tail has to evaluate against.
+        $remaining = trim($tail);
+        $joins = [];
+
+        // The join is consumed by index rather than by the match's own length:
+        // the operand pattern is greedy and would swallow the following clause
+        // (`where`, `order by`) as part of a qualified name if the whole match
+        // decided where to resume. The lookahead ends the join at the next clause
+        // keyword, or at the end of the tail.
+        $joinPattern = '/^(inner|left)\s+join\s+`?([a-z0-9_]+)`?\s+on\s+'
+            . '(`?[a-z0-9_]+`?(?:\.`?[a-z0-9_]+`?)?)\s*(=|!=|<>|<=|>=|<|>)\s*'
+            . '(`?[a-z0-9_]+`?(?:\.`?[a-z0-9_]+`?)?)'
+            . '(?=\s+where\s|\s+order\s+by\s|\s+limit\s|\s+offset\s|\s*$)/is';
+
+        while (preg_match($joinPattern, $remaining, $m, PREG_OFFSET_CAPTURE) === 1) {
+            $joins[] = [
+                'left' => strtolower($m[1][0]) === 'left',
+                'table' => $m[2][0],
+                'first' => $m[3][0],
+                'operator' => $m[4][0],
+                'second' => $m[5][0],
+            ];
+            $remaining = substr($remaining, strlen($m[0][0]));
+        }
+
+        // The `FROM` table's own columns are keyed bare by the store, and a
+        // predicate or projection may qualify them. The qualified key is the
+        // **prefixed** table name, which is the only spelling MySQL resolves:
+        // `FROM `wp_leads`` creates no alias, so `leads.id` is error 1054. Writing
+        // a bare-qualified key here would let such a statement pass the fake and
+        // fail on a real server.
+        $qualified = $this->prefixed($table);
+
+        // Declared before any clause is compiled, because every clause below is
+        // validated against it: a qualifier is legal only if it names one of the
+        // tables this statement actually reads.
+        $this->tablesInScope = [$qualified];
+
+        foreach ($joins as $join) {
+            $this->tablesInScope[] = $this->prefixed($join['table']);
+        }
+
+        foreach ($rows as $index => $row) {
+            foreach ($row as $column => $value) {
+                if (str_contains((string) $column, '.')) {
+                    continue;
+                }
+
+                $rows[$index][$qualified . '.' . $column] = $value;
+            }
+        }
+
+        foreach ($joins as $join) {
+            $rows = $this->applyJoin($rows, $join);
+        }
+
+        $tail = $remaining;
+
         // Clauses are pulled off the tail in the order SQL requires them, one
         // regex each. A single combined pattern would have to express the
         // optional-ness and the ordering at once, and the failure mode of
@@ -1804,14 +2420,21 @@ final class FakeWpdb extends wpdb
         $offset = 0;
 
         if (preg_match('/^where\s+(.+?)(?=\s+order\s+by\s+|\s+limit\s+\d|\s+offset\s+\d|$)/is', $remaining, $m) === 1) {
+            $this->clauseInScope = 'where clause';
             $matches = $this->compileEqualityPredicate(trim($m[1]));
             $remaining = trim(substr($remaining, strlen($m[0])));
         }
 
         if (preg_match('/^order\s+by\s+(.+?)(?=\s+limit\s+\d|\s+offset\s+\d|$)/is', $remaining, $m) === 1) {
+            $this->clauseInScope = 'order clause';
             $orders = $this->parseOrderBy(trim($m[1]));
             $remaining = trim(substr($remaining, strlen($m[0])));
         }
+
+        // No clause validation happens past this point, so the label is reset -
+        // otherwise a later statement reusing this instance would report its
+        // failure against a clause it never had.
+        $this->clauseInScope = 'field list';
 
         if (preg_match('/^limit\s+(\d+)/i', $remaining, $m) === 1) {
             $limit = (int) $m[1];
@@ -1863,8 +2486,188 @@ final class FakeWpdb extends wpdb
     }
 
     /**
+     * Join fetched rows by a single `ON` comparison.
+     *
+     * An inner join drops the left row when nothing matches; a left join keeps
+     * it and fills every right-hand column with null, which is the whole
+     * difference between the two and the reason a repository uses one or the
+     * other deliberately.
+     *
+     * The right side is read whole and matched in PHP rather than indexed by the
+     * join column. That is O(n*m) and would be wrong for a large table, but this
+     * is a fixture whose tables have a handful of rows, and a straightforward
+     * scan is far easier to read back against the SQL it is standing in for.
+     *
+     * @param list<array<string, mixed>>                          $rows
+     * @param array{left: bool, table: string, first: string,
+     *              operator: string, second: string}            $join
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function applyJoin(array $rows, array $join): array
+    {
+        // The SQL names the table bare and the store keys it prefixed, so the
+        // join's own spelling is resolved the same way `FROM` is.
+        $right = $this->tables[$this->prefixed($join['table'])] ?? [];
+        $joined = [];
+
+        foreach ($rows as $row) {
+            $matched = false;
+
+            foreach ($right as $candidate) {
+                // Columns are addressed by their bare name: the row store is flat
+                // and a qualifier is a spelling the SQL carries, not a second
+                // namespace to look in.
+                $left = $row[$this->unqualify($join['second'])] ?? null;
+                $rightside = $candidate[$this->unqualify($join['first'])] ?? null;
+
+                if (!$this->joinValuesMatch($left, $rightside, $join['operator'])) {
+                    continue;
+                }
+
+                $matched = true;
+                $joined[] = $this->mergeJoinedRow($row, $candidate, $join['table']);
+            }
+
+            if (!$matched && $join['left']) {
+                $joined[] = $this->mergeJoinedRow($row, [], $join['table']);
+            }
+        }
+
+        return $joined;
+    }
+
+    /**
+     * Compare two join operands the way MySQL's loose typing would.
+     */
+    private function joinValuesMatch(mixed $left, mixed $right, string $operator): bool
+    {
+        // A null operand never matches, including `null = null`: SQL's `=` is
+        // unknown for a null, which is why an outer join's unfilled column is
+        // reported as a missing stage rather than as a stage with a null id.
+        if ($left === null || $right === null) {
+            return false;
+        }
+
+        $bothNumeric = is_numeric($left) && is_numeric($right);
+        $a = $bothNumeric ? (float) $left : (string) $left;
+        $b = $bothNumeric ? (float) $right : (string) $right;
+
+        return match ($operator) {
+            '=', '!=', '<>', '<', '<=', '>', '>=' => match ($operator) {
+                '=' => $a == $b,
+                '!=', '<>' => $a != $b,
+                '<' => $a < $b,
+                '<=' => $a <= $b,
+                '>' => $a > $b,
+                '>=' => $a >= $b,
+            },
+            default => throw new \LogicException('FakeWpdb cannot evaluate join operator: ' . $operator),
+        };
+    }
+
+    /**
+     * Merge a joined table's columns into a row.
+     *
+     * The joined columns are keyed under the table's **prefixed** name, and under
+     * nothing else. That is not a convenience: it is the one spelling MySQL
+     * resolves. `FROM `wp_deals` INNER JOIN `wp_companies`` creates no alias, so
+     * `companies.name` is error 1054 on a real server, and a row that also
+     * carried a `companies.name` key would let such a query pass here and fail in
+     * production.
+     *
+     * A bare column key is still written for a column the left side does not
+     * already have, because `SELECT *` legitimately returns the joined table's
+     * columns under their plain names.
+     *
+     * @param array<string, mixed> $left  The accumulated left-hand row.
+     * @param array<string, mixed> $right A matching row from the joined table.
+     * @param string               $table The joined table, as the SQL names it.
+     *
+     * @return array<string, mixed>
+     */
+    private function mergeJoinedRow(array $left, array $right, string $table): array
+    {
+        // Resolved to the store's prefixed key once, so the qualified keys written
+        // below are the same spelling the `FROM` table uses.
+        $qualified = $this->prefixed($table);
+
+        foreach ($this->tables[$qualified][0] ?? [] as $column => $_) {
+            if (!array_key_exists($column, $left)) {
+                $left[$column] = $right[$column] ?? null;
+            }
+
+            $left[$qualified . '.' . $column] = $right[$column] ?? null;
+        }
+
+        return $left;
+    }
+
+    /**
+     * The bare name of a table the store keys prefixed.
+     */
+    private function unprefixed(string $table): string
+    {
+        $table = trim($table, ' `');
+
+        return str_starts_with($table, $this->prefix)
+            ? substr($table, strlen($this->prefix))
+            : $table;
+    }
+
+    /**
+     * Strip the backticks from a possibly qualified identifier.
+     *
+     * `trim($s, ' `')` is not enough: it removes backticks from the ends only and
+     * leaves the inner pair of a qualified name, so `` `leads`.`name` `` becomes
+     * `` leads`.`name `` - a key that matches no column and silently falls
+     * through to whatever else the lookup tries. Each part is unquoted on its
+     * own instead.
+     */
+    private function normalizeIdentifier(string $identifier): string
+    {
+        $parts = explode('.', trim($identifier));
+
+        return implode('.', array_map(
+            static fn (string $part): string => trim($part, " `\t\n\r\0\x0B"),
+            $parts
+        ));
+    }
+
+    /**
+     * Drop a table qualifier from a column reference.
+     */
+    private function unqualify(string $column): string
+    {
+        $column = trim($column, ' `');
+        $dot = strrpos($column, '.');
+
+        return $dot === false ? $column : trim(substr($column, $dot + 1), ' `');
+    }
+
+    /**
+     * The name a table is stored under, from the bare name SQL uses.
+     *
+     * A statement names tables bare and the row store keys them prefixed, so
+     * every lookup by table name - `FROM` and a `JOIN` alike - goes through here
+     * rather than assuming which spelling it was handed.
+     */
+    private function prefixed(string $table): string
+    {
+        $table = trim($table, ' `');
+
+        return str_starts_with($table, $this->prefix) ? $table : $this->prefix . $table;
+    }
+
+    /**
      * Parse an ORDER BY list into `[column, descending]` pairs, in precedence
      * order.
+     *
+     * A qualifier is validated against the statement's own tables, so a sort on a
+     * column of a table the query never named fails here the way MySQL fails it.
+     * Without that check the sort key resolves to null for every row, `usort`
+     * compares `null` to `null`, and the statement silently returns insertion
+     * order - a wrong answer that looks like a right one.
      *
      * @return list<array{0: string, 1: bool}>
      */
@@ -1880,10 +2683,15 @@ final class FakeWpdb extends wpdb
             }
 
             $descending = (bool) preg_match('/\s+desc\s*$/i', $term);
-            $column = trim(
-                preg_replace('/\s+(asc|desc)\s*$/i', '', $term) ?? $term,
-                " `\t\n\r\0\x0B"
+            $column = $this->normalizeIdentifier(
+                preg_replace('/\s+(asc|desc)\s*$/i', '', $term) ?? $term
             );
+
+            $dot = strpos($column, '.');
+
+            if ($dot !== false) {
+                $this->assertQualifierIsInScope(substr($column, 0, $dot));
+            }
 
             $orders[] = [$column, $descending];
         }
@@ -1892,59 +2700,494 @@ final class FakeWpdb extends wpdb
     }
 
     /**
-     * Compile an equality conjunction — `\`a\` = 1`, `\`a\` = 'x'`,
-     * `\`a\` = 1 AND \`b\` = 2` — into a row predicate.
+     * Compile a WHERE clause into a row predicate.
      *
-     * Deliberately narrow. Anything else throws rather than guessing, because a
-     * fake that quietly accepted an unsupported clause would answer with the
-     * wrong rows and make a broken query look correct.
+     * Supports the vocabulary the query builder can emit: an equality/comparison
+     * conjunction (`` `a` = 1 ``, `` `a` != 'x' ``, `` `a` >= 3 ``), `LIKE` and
+     * `NOT LIKE`, `IS NULL` / `IS NOT NULL`, `IN (…)` / `NOT IN (…)`, parenthesised
+     * groups, and `OR` between terms at any of those levels.
+     *
+     * Deliberately narrow beyond that. Anything else throws rather than guessing,
+     * because a fake that quietly accepted an unsupported clause would answer with
+     * the wrong rows and make a broken query look correct.
+     *
+     * Columns may be bare, backquoted, table-qualified (`` `t`.`c` ``) or aliased;
+     * the qualifier is dropped for lookup, which mirrors what a single-table read
+     * of the fake's flat row store can meaningfully answer.
      *
      * @return callable(array<string, mixed>): bool
      */
     private function compileEqualityPredicate(string $clause): callable
     {
-        $conditions = [];
+        $predicate = $this->parseOrPredicate(trim($clause));
 
-        foreach (preg_split('/\s+and\s+/i', $clause) ?: [] as $term) {
-            if (preg_match('/^\s*`?([a-z0-9_]+)`?\s*=\s*(.+?)\s*$/is', $term, $m) !== 1) {
-                throw new \LogicException('FakeWpdb cannot parse WHERE term: ' . $term);
+        return static fn (array $row): bool => $predicate($row);
+    }
+
+    /**
+     * Parse a term sequence joined by `OR`, where each term may itself be an
+     * `AND` conjunction or a bracketed group.
+     *
+     * @return callable(array<string, mixed>): bool
+     */
+    private function parseOrPredicate(string $clause): callable
+    {
+        $terms = [];
+        $depth = 0;
+        $current = '';
+
+        // Split on `OR` only at bracket depth zero, so an `OR` inside a group
+        // stays with its group. A flat split would tear `(a OR b) AND c` apart.
+        for ($i = 0, $length = strlen($clause); $i < $length; $i++) {
+            $char = $clause[$i];
+
+            if ($char === '(') {
+                $depth++;
+            } elseif ($char === ')') {
+                $depth--;
             }
 
-            $raw = trim($m[2]);
+            if ($depth === 0 && $this->matchesKeywordAt($clause, $i, 'OR')) {
+                $terms[] = trim($current);
+                $current = '';
+                $i += 1;
 
-            if (strlen($raw) >= 2 && $raw[0] === "'" && str_ends_with($raw, "'")) {
-                $value = str_replace("''", "'", substr($raw, 1, -1));
-            } elseif (is_numeric($raw)) {
-                $value = str_contains($raw, '.') ? (float) $raw : (int) $raw;
-            } else {
-                throw new \LogicException('FakeWpdb cannot parse WHERE value: ' . $raw);
+                continue;
             }
 
-            $conditions[] = [$m[1], $value];
+            $current .= $char;
         }
 
-        return static function (array $row) use ($conditions): bool {
-            foreach ($conditions as [$column, $value]) {
-                $actual = $row[$column] ?? null;
+        $terms[] = trim($current);
 
-                // Loose comparison on purpose: `$wpdb->prepare('%d')` produces an
-                // unquoted digit and the stored column may be a numeric string,
-                // so the two must compare equal the way MySQL would.
-                if (is_numeric($actual) && is_numeric($value)) {
-                    if ((float) $actual !== (float) $value) {
-                        return false;
-                    }
+        $predicates = array_map($this->parseAndPredicate(...), $terms);
 
-                    continue;
+        return static function (array $row) use ($predicates): bool {
+            foreach ($predicates as $predicate) {
+                if ($predicate($row)) {
+                    return true;
                 }
+            }
 
-                if ((string) $actual !== (string) $value) {
+            return false;
+        };
+    }
+
+    /**
+     * Parse a term sequence joined by `AND`, where each term may be a bracketed
+     * group.
+     *
+     * @return callable(array<string, mixed>): bool
+     */
+    private function parseAndPredicate(string $clause): callable
+    {
+        $terms = $this->splitTopLevel($clause, 'AND');
+
+        $predicates = array_map($this->parseTerm(...), $terms);
+
+        return static function (array $row) use ($predicates): bool {
+            foreach ($predicates as $predicate) {
+                if (!$predicate($row)) {
                     return false;
                 }
             }
 
             return true;
         };
+    }
+
+    /**
+     * Compile one term: a bracketed group, or a single comparison.
+     *
+     * @return callable(array<string, mixed>): bool
+     */
+    private function parseTerm(string $term): callable
+    {
+        $term = trim($term);
+
+        if ($term !== '' && $term[0] === '(' && str_ends_with($term, ')')) {
+            return $this->parseOrPredicate(substr($term, 1, -1));
+        }
+
+        return $this->compileSingleComparison($term);
+    }
+
+    /**
+     * Split a clause on a keyword that appears at bracket depth zero.
+     *
+     * @return list<string>
+     */
+    private function splitTopLevel(string $clause, string $keyword): array
+    {
+        $parts = [];
+        $depth = 0;
+        $current = '';
+
+        for ($i = 0, $length = strlen($clause); $i < $length; $i++) {
+            $char = $clause[$i];
+
+            if ($char === '(') {
+                $depth++;
+            } elseif ($char === ')') {
+                $depth--;
+            }
+
+            if ($depth === 0 && $this->matchesKeywordAt($clause, $i, $keyword)) {
+                $parts[] = trim($current);
+                $current = '';
+                $i += strlen($keyword) - 1;
+
+                continue;
+            }
+
+            $current .= $char;
+        }
+
+        $parts[] = trim($current);
+
+        return array_values(array_filter($parts, static fn (string $p): bool => $p !== ''));
+    }
+
+    /**
+     * Whether a standalone keyword begins at an offset, delimited by whitespace
+     * or the string's bounds.
+     */
+    private function matchesKeywordAt(string $clause, int $offset, string $keyword): bool
+    {
+        $length = strlen($keyword);
+
+        if (strcasecmp(substr($clause, $offset, $length), $keyword) !== 0) {
+            return false;
+        }
+
+        $before = $offset === 0 ? ' ' : $clause[$offset - 1];
+        $after = $clause[$offset + $length] ?? ' ';
+
+        return ctype_space($before) && ctype_space($after);
+    }
+
+    /**
+     * Compile one comparison term - equality, comparison, `LIKE`, `IS NULL` or
+     * `IN`.
+     *
+     * @return callable(array<string, mixed>): bool
+     */
+    private function compileSingleComparison(string $term): callable
+    {
+        $column = '`?([a-z0-9_]+)`?(?:\.`?([a-z0-9_]+)`?)?';
+
+        // IN / NOT IN
+        if (preg_match('/^\s*' . $column . '\s+(not\s+)?in\s*\((.*)\)\s*$/is', $term, $m) === 1) {
+            return $this->compileInPredicate($this->qualifiedName($m), $m[4], $this->negation($m));
+        }
+
+        // IS NULL / IS NOT NULL
+        if (preg_match('/^\s*' . $column . '\s+is\s+(not\s+)?null\s*$/is', $term, $m) === 1) {
+            $name = $this->qualifiedName($m);
+            $negated = $this->negation($m);
+
+            return fn (array $row): bool => $negated
+                ? $this->rowValue($row, $name) !== null
+                : $this->rowValue($row, $name) === null;
+        }
+
+        // LIKE / NOT LIKE
+        if (preg_match('/^\s*' . $column . '\s+(not\s+)?like\s+(.+)$/is', $term, $m) === 1) {
+            $name = $this->qualifiedName($m);
+            $negated = $this->negation($m);
+            $pattern = $this->literalValue(trim($m[4]), $term);
+
+            return fn (array $row): bool => $this->likeMatches((string) $pattern, (string) $this->rowValue($row, $name)) !== $negated;
+        }
+
+        // Comparison
+        if (preg_match('/^\s*' . $column . '\s*(=|!=|<>|<=|>=|<|>)\s*(.+?)\s*$/is', $term, $m) !== 1) {
+            throw new \LogicException('FakeWpdb cannot parse WHERE term: ' . $term);
+        }
+
+        $name = $this->qualifiedName($m);
+        $operator = $m[3];
+        $value = $this->literalValue(trim($m[4]), $term);
+
+        return fn (array $row): bool => $this->compare(
+            $this->rowValue($row, $name),
+            $value,
+            $operator
+        );
+    }
+
+    /**
+     * Read a predicate's column out of a row.
+     *
+     * A bare name is the `FROM` table's own column and is read as written, which
+     * is what makes `where('name', …)` keep meaning the left table's `name` once
+     * a join is added. A qualified name is read from the `table.column` key a
+     * join writes, and reads as null when that key is absent - a joined table
+     * with no match has one, holding null, and the two are the same answer here.
+     *
+     * @param array<string, mixed> $row
+     */
+    private function rowValue(array $row, string $name): mixed
+    {
+        return $row[$name] ?? null;
+    }
+
+    /**
+     * Drop the synthetic `table.column` keys from a returned row.
+     *
+     * Those keys are how the fake resolves a qualified reference against its flat
+     * row store; they are not columns, and a real server never returns them.
+     * `SELECT * FROM `wp_deals`` answers `id, name` and nothing else, so leaking
+     * `wp_deals.id` here would hand a repository a row shape the database cannot
+     * produce - and a caller iterating the row would see phantom columns.
+     *
+     * Stripping happens on the way out of {@see select()} only, after every
+     * clause has been evaluated, because the clauses need the keys while they run.
+     *
+     * @param array<string, mixed> $row
+     *
+     * @return array<string, mixed>
+     */
+    private static function withoutQualifiedKeys(array $row): array
+    {
+        return array_filter(
+            $row,
+            static fn (string $column): bool => !str_contains($column, '.'),
+            ARRAY_FILTER_USE_KEY
+        );
+    }
+
+    /**
+     * Compare two values the way MySQL's loose typing would.
+     *
+     * A null on either side is unknown rather than false, which is why it is
+     * answered before the operator is: `null = 1` and `null != 1` are both
+     * unknown, and neither row matches.
+     */
+    private function compare(mixed $actual, mixed $value, string $operator): bool
+    {
+        if ($actual === null || $value === null) {
+            return false;
+        }
+
+        // Loose comparison on purpose: `$wpdb->prepare('%d')` produces an
+        // unquoted digit and the stored column may be a numeric string, so the
+        // two must compare equal the way MySQL would.
+        $bothNumeric = is_numeric($actual) && is_numeric($value);
+        $left = $bothNumeric ? (float) $actual : (string) $actual;
+        $right = $bothNumeric ? (float) $value : (string) $value;
+
+        return match ($operator) {
+            '=' => $left == $right,
+            '!=', '<>' => $left != $right,
+            '<' => $left < $right,
+            '<=' => $left <= $right,
+            '>' => $left > $right,
+            '>=' => $left >= $right,
+            default => throw new \LogicException('FakeWpdb cannot evaluate operator: ' . $operator),
+        };
+    }
+
+    /**
+     * Whether a `NOT` was captured in the negation group of `IN`/`LIKE`/`IS`.
+     *
+     * The group sits at index 3 in each of those patterns, and PHP omits a
+     * trailing unmatched group from the match array entirely - so it is read
+     * through `??`, where a missing group means "not negated" rather than an
+     * error.
+     *
+     * @param array<int, string> $matches
+     */
+    private function negation(array $matches): bool
+    {
+        return isset($matches[3]) && $matches[3] !== '';
+    }
+
+    /**
+     * The column name from a comparison match, dropping any table qualifier.
+     *
+     * The pattern captures a bare name in group 1 and, when the term is
+     * qualified, the column in group 2 and the table in group 1. A single-table
+     * row store has nothing to qualify against, so the column is whichever group
+     * carries it: the outer one is empty in the bare case and the qualifier in
+     * the qualified one.
+     *
+     * @param array<int, string> $matches
+     */
+    private function qualifiedName(array $matches): string
+    {
+        // The qualifier is kept when the term carries one. Dropping it would make
+        // `companies.name` and `leads.name` the same key, and the predicate would
+        // then read whichever table's column the row happened to hold under the
+        // bare name - the left table's, for a joined read.
+        if (($matches[2] ?? '') === '') {
+            return $matches[1];
+        }
+
+        $this->assertQualifierIsInScope($matches[1]);
+
+        // The qualifier is returned exactly as written, because that is the only
+        // spelling the check above can have accepted. It is also the key the row
+        // store writes for a joined table, since `join()` in the builder prefixes
+        // the same way `FROM` does.
+        return $matches[1] . '.' . $matches[2];
+    }
+
+    /**
+     * Fall over a qualifier that names a table the statement never mentioned.
+     *
+     * A real server answers error 1054 here, and the fake has to as well or it is
+     * not standing in for one: a predicate qualified with a table that is not in
+     * the `FROM`/`JOIN` list reads `null` from the flat row store, so the WHERE
+     * quietly matches nothing instead of failing. A query that returns no rows
+     * looks exactly like a query that found nothing.
+     *
+     * The comparison is **literal**: the qualifier as written is matched against
+     * the table names as written, with no prefix applied to either. MySQL accepts
+     * a qualifier only when it is the name its own `FROM`/`JOIN` gave the table -
+     * `FROM `wp_deals`` binds `wp_deals` and creates no `deals` alias, so
+     * `deals.id` is error 1054 even though the table is right there. Measured on
+     * MySQL 5.7.33:
+     *
+     *     SELECT `wp_deals`.`id` FROM `wp_deals`;              -- rows
+     *     SELECT `deals`.`id`    FROM `wp_deals`;              -- error 1054
+     *     SELECT `deals`.`id`    FROM `wp_deals` AS `deals`;   -- rows (an alias)
+     *
+     * Mapping the qualifier through the prefix before comparing is the specific
+     * leniency that let the production prefixing bug pass this fake, and it is
+     * not repeated here.
+     *
+     * @param string $qualifier The table name written in the statement.
+     * @param list<string>|null $scope Tables to check against; defaults to the
+     *                                 statement's own, set once its `FROM`/`JOIN`
+     *                                 have been parsed.
+     *
+     * @throws \LogicException When the qualifier is not one of the statement's tables.
+     */
+    private function assertQualifierIsInScope(string $qualifier, ?array $scope = null): void
+    {
+        if (in_array($qualifier, $scope ?? $this->tablesInScope, true)) {
+            return;
+        }
+
+        throw new \LogicException(sprintf(
+            "FakeWpdb: Unknown column '%s' in '%s' - no table named [%s] is in this statement's FROM/JOIN.",
+            $qualifier,
+            $this->clauseInScope,
+            $qualifier
+        ));
+    }
+
+    /**
+     * The tables a statement reads, in the spelling its own `FROM`/`JOIN` gave them.
+     *
+     * Read out of the `FROM` table and each `JOIN` table without evaluating any
+     * clause, so the projection can be validated before `selectRows()` runs and
+     * independently of whether the statement returns any row.
+     *
+     * The names come back prefixed because that is how the builder writes them
+     * into the statement, and they are compared literally against the qualifier
+     * as written - never re-prefixed. See {@see assertQualifierIsInScope()}.
+     *
+     * @return list<string>
+     */
+    private function tablesInScopeFor(string $table, string $tail): array
+    {
+        $scope = [$this->prefixed($table)];
+
+        preg_match_all(
+            '/\b(?:inner|left)\s+join\s+`?([a-z0-9_]+)`?/i',
+            $tail,
+            $matches
+        );
+
+        foreach ($matches[1] as $joined) {
+            $scope[] = $this->prefixed($joined);
+        }
+
+        return $scope;
+    }
+
+    /**
+     * One term of a `SELECT` list, resolved to the key the row store uses.
+     *
+     * `qualifier` is kept separate from `source` so the caller can validate it
+     * against the statement's tables before any row is read.
+     *
+     * @return array{source: ?string, fallback: ?string, qualifier: ?string, key: string}
+     */
+    private function projectionTerm(string $projection, ?string $alias, string $table): array
+    {
+        $source = $this->normalizeIdentifier($projection);
+        $dot = strpos($source, '.');
+        $qualifier = $dot === false ? null : substr($source, 0, $dot);
+        $column = $dot === false ? $source : substr($source, $dot + 1);
+
+        // The qualified key keeps the qualifier as written: it is matched against
+        // the statement's tables literally (see assertQualifierIsInScope()), and
+        // it is the same spelling the row store keys a joined table under.
+        return [
+            'source' => $dot === false ? null : $source,
+            'fallback' => $this->prefixed($table) . '.' . $column,
+            'qualifier' => $qualifier,
+            'key' => $alias ?? $column,
+        ];
+    }
+
+    /**
+     * Compile an `IN`/`NOT IN` list into a row predicate.
+     *
+     * @return callable(array<string, mixed>): bool
+     */
+    private function compileInPredicate(string $column, string $list, bool $negated): callable
+    {
+        $values = [];
+
+        foreach ($this->splitValues($list) as $value) {
+            $values[] = $value;
+        }
+
+        return static function (array $row) use ($column, $values, $negated): bool {
+            $actual = $row[$column] ?? null;
+
+            $found = false;
+
+            foreach ($values as $value) {
+                if (is_numeric($actual) && is_numeric($value)) {
+                    if ((float) $actual === (float) $value) {
+                        $found = true;
+                        break;
+                    }
+
+                    continue;
+                }
+
+                if ((string) $actual === (string) $value) {
+                    $found = true;
+                    break;
+                }
+            }
+
+            return $found !== $negated;
+        };
+    }
+
+    /**
+     * Parse a WHERE literal - a quoted string or a number - for a comparison.
+     *
+     * @return string|int|float
+     */
+    private function literalValue(string $raw, string $term): string|int|float
+    {
+        if (strlen($raw) >= 2 && $raw[0] === "'" && str_ends_with($raw, "'")) {
+            return str_replace("''", "'", substr($raw, 1, -1));
+        }
+
+        if (is_numeric($raw)) {
+            return str_contains($raw, '.') ? (float) $raw : (int) $raw;
+        }
+
+        throw new \LogicException('FakeWpdb cannot parse WHERE value: ' . $raw . ' (in: ' . $term . ')');
     }
 
     /**

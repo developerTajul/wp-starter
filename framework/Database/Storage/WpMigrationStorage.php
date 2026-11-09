@@ -9,14 +9,14 @@ use wpdb;
 /**
  * The migration book-keeping, over `$wpdb`.
  *
- * This is where the migrator's SQL now lives — the tracking table's shape, its
+ * This is where the migrator's SQL now lives, the tracking table's shape, its
  * probes, its reads and writes, the batch high-water mark in an option, and the
  * advisory lock that serialises runs.
  *
- * ## Why the handle is optional and resolved lazily
+ * Why the handle is optional and resolved lazily
  *
  * `$wpdb` is a WordPress global that does not exist until WordPress has loaded,
- * and this is constructed during a service provider's `register()` — which runs
+ * and this is constructed during a service provider's `register()`, which runs
  * before that. Resolving in the constructor would make the binding order
  * load-bearing for no reason, so the handle is taken on first use instead. An
  * explicit handle is still accepted, because that is how a test drives this
@@ -41,8 +41,8 @@ class WpMigrationStorage implements MigrationStorageInterface
     /**
      * Width of the `migration` column.
      *
-     * 191 is the utf8mb4 index limit on the oldest supported MySQL — 767 bytes at
-     * four bytes per character — and the column carries a UNIQUE key, so a wider
+     * 191 is the utf8mb4 index limit on the oldest supported MySQL - 767 bytes at
+     * four bytes per character - and the column carries a UNIQUE key, so a wider
      * one would fail to index on those servers.
      */
     private const MIGRATION_COLUMN_LENGTH = 191;
@@ -87,7 +87,7 @@ class WpMigrationStorage implements MigrationStorageInterface
 
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- table existence probe
         // The pattern's `_` and `%` are LIKE metacharacters, and the WordPress
-        // table prefix contains underscores — so `wp_plugin_migrations` would
+        // table prefix contains underscores - so `wp_plugin_migrations` would
         // match a sibling like `wpxpluginxmigrations` and a missing table would
         // be reported as present, skipping the CREATE and failing every later
         // query. Escaped with a backslash, which MySQL's LIKE honours by default.
@@ -137,7 +137,7 @@ class WpMigrationStorage implements MigrationStorageInterface
         );
 
         // DDL implicitly commits, so `$wpdb->query()` returning false is the only
-        // signal available — and on a CREATE TABLE it returns false for "the
+        // signal available - and on a CREATE TABLE it returns false for "the
         // statement failed", never for "zero rows affected". Checking it is
         // therefore meaningful here in a way it is not for a DELETE.
         if ($this->db()->query($sql) === false) {
@@ -304,7 +304,7 @@ class WpMigrationStorage implements MigrationStorageInterface
         if ($db->query($sql) === false) {
             throw new MigrationException(sprintf(
                 'Unable to unrecord the migration [%s] from [%s]: %s. The migration\'s `down()` has run, '
-                . 'so the schema change IS reversed — delete the row by hand before re-running `migrate`.',
+                . 'so the schema change IS reversed, delete the row by hand before re-running `migrate`.',
                 $identifier,
                 $this->tableName(),
                 $this->error()
@@ -355,7 +355,7 @@ class WpMigrationStorage implements MigrationStorageInterface
 
         throw new MigrationException(sprintf(
             'Timed out after %d seconds waiting for the migration lock [%s], which another process holds. '
-            . 'No migration was run — this usually means another deploy or `migrate` is still in progress. '
+            . 'No migration was run, this usually means another deploy or `migrate` is still in progress. '
             . 'Wait for it to finish and try again. If nothing is running, the holder has a hung connection; '
             . '`SELECT IS_USED_LOCK(\'%s\')` names the connection id.',
             $timeoutSeconds,
@@ -370,7 +370,7 @@ class WpMigrationStorage implements MigrationStorageInterface
 
         // Deliberately silent about failure. `RELEASE_LOCK()` returns NULL when
         // this connection does not hold the named lock, which happens when the
-        // connection was dropped mid-run — and in that case MySQL has *already*
+        // connection was dropped mid-run - and in that case MySQL has *already*
         // released it, so there is nothing to report and nothing to fix. Throwing
         // here would turn a successful migration into a failed command for a
         // reason that is not a problem. A lock that genuinely outlives its holder
@@ -382,7 +382,7 @@ class WpMigrationStorage implements MigrationStorageInterface
      * The name this database's migration lock is taken under.
      *
      * Derived from the table prefix so two plugins sharing a database do not
-     * serialise against each other — they touch different tables and have no
+     * serialise against each other - they touch different tables and have no
      * reason to wait for one another. The prefix is the same value that already
      * distinguishes their tables, so it distinguishes their locks for the same
      * reason.
@@ -391,7 +391,7 @@ class WpMigrationStorage implements MigrationStorageInterface
      * truncated rather than rejected, so the name is built short: the prefix plus
      * a fixed suffix, with no attempt to make it descriptive. A truncated name
      * would still be *a* lock, but two different long names that truncate to the
-     * same 64 characters would share one — which is why length is checked rather
+     * same 64 characters would share one - which is why length is checked rather
      * than assumed.
      */
     private function lockName(): string
@@ -424,8 +424,8 @@ class WpMigrationStorage implements MigrationStorageInterface
     /**
      * The database's last error, or a stand-in when it reported none.
      *
-     * A failure with an empty `last_error` is possible — a driver that lost the
-     * connection before it could set one — and "unknown database error" in the
+     * A failure with an empty `last_error` is possible - a driver that lost the
+     * connection before it could set one - and "unknown database error" in the
      * message is far better than an empty pair of brackets that reads like a
      * formatting bug.
      */
@@ -439,8 +439,8 @@ class WpMigrationStorage implements MigrationStorageInterface
     /**
      * Make an identifier safe to interpolate inside backticks.
      *
-     * Identifiers cannot be bound as parameters — `prepare()` only quotes
-     * *values*, and a quoted table name is a syntax error — so they are escaped
+     * Identifiers cannot be bound as parameters - `prepare()` only quotes
+     * *values*, and a quoted table name is a syntax error - so they are escaped
      * here instead. Every name this class builds comes from the prefix and a
      * constant, so this is belt-and-braces rather than a live injection path; it
      * exists so that no caller has to reason about that.
@@ -454,7 +454,7 @@ class WpMigrationStorage implements MigrationStorageInterface
      * The WordPress database handle, resolved on first use.
      *
      * Resolved lazily rather than in the constructor so this can be built and
-     * injected before WordPress has finished loading — which is exactly what a
+     * injected before WordPress has finished loading - which is exactly what a
      * provider's `register()` does.
      */
     private function db(): wpdb

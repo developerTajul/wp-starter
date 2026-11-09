@@ -7,31 +7,31 @@ use Framework\Config\Config;
 use Framework\Console\GeneratorCommand;
 
 /**
- * `wp wp_mini make:request StoreCompanyRequest` — scaffold a form request.
+ * `wp wp_mini make:request StoreCompanyRequest` - scaffold a form request.
  *
- * ## Why this exists
+ * Why this exists
  *
  * `make:controller Admin/CompanyController --resource` generates handlers whose
  * signatures name `StoreCompanyRequest` and `UpdateCompanyRequest`. Those names
- * are the right ones — they are what the project's own controllers use — but the
+ * are the right ones - they are what the project's own controllers use - but the
  * controller generator writes one file and cannot write them, so before this
  * command they were two classes every project hand-wrote from a neighbouring
  * example.
  *
  * A form request is a small, highly patterned class: a `rules()` method, and
  * nothing else that varies between one and the next. That is exactly the shape
- * worth generating, and exactly the shape where hand-writing drifts — one request
+ * worth generating, and exactly the shape where hand-writing drifts - one request
  * that forgot `nullable`, one that forgot `attributes()`.
  *
- * ## Why it lives beside `make:provider` rather than near the validation code
+ * Why it lives beside `make:provider` rather than near the validation code
  *
  * Every generator is in this directory and extends {@see GeneratorCommand}, which
  * owns the naming rules, the stub lookup, the overwrite guard and the write. The
- * alternative — a generator inside `Framework\Http\Requests` — would either
+ * alternative - a generator inside `Framework\Http\Requests` - would either
  * duplicate that machinery or reach across the framework for it, and the class it
  * generates is a *project* class under `app/`, not a framework one.
  *
- * ## What it deliberately does not do
+ * What it deliberately does not do
  *
  * No `--rules=` flag. A rule set is the one thing about a form request that is
  * specific to the form, it is the line the author is going to edit first, and a
@@ -68,7 +68,7 @@ class MakeRequestCommand extends GeneratorCommand
     protected function getStubPath(): string
     {
         // A bare name, so StubLocator prefers the project's stubs/request.stub
-        // and falls back to the framework's — which is what keeps this working
+        // and falls back to the framework's, which is what keeps this working
         // when the framework is installed under vendor/.
         return 'request.stub';
     }

@@ -25,11 +25,11 @@ use Framework\Database\Storage\WpMigrationStorage;
  * makes them testable without WP-CLI: a test hands them a migrator built over a
  * temporary directory and a fake database.
  *
- * ## The migrator's two dependencies
+ * The migrator's two dependencies
  *
  * Both are resolved through their *interface* bindings, never by passing a
  * concrete class, so a project that overrides either one overrides what the
- * migrator uses — the same rule the dumper below follows, and for the same
+ * migrator uses - the same rule the dumper below follows, and for the same
  * reason: `new WpMigrationStorage()` here would look identical and silently
  * ignore the override.
  *
@@ -40,12 +40,12 @@ use Framework\Database\Storage\WpMigrationStorage;
  * the second would put `insert()` and `get_var()` on every adapter in the
  * project, including ones over targets with no SQL at all, to serve one caller.
  *
- * ## The schema adapter binding
+ * The schema adapter binding
  *
  * `DatabaseAdapterInterface` is bound to the WordPress implementation, which is
  * the seam {@see \Framework\Database\Schema\Schema} resolves through. A project
- * targeting something other than `$wpdb` — an external service, a second
- * database — binds its own adapter here and the migrations do not change, since
+ * targeting something other than `$wpdb` - an external service, a second
+ * database - binds its own adapter here and the migrations do not change, since
  * they speak only the blueprint vocabulary.
  */
 class MigrationServiceProvider extends ServiceProvider
@@ -54,7 +54,7 @@ class MigrationServiceProvider extends ServiceProvider
     {
         // No `$wpdb` argument on either of these: both resolve the global lazily,
         // on first use, so binding them here does not require WordPress to have
-        // finished loading — which it has not, during `register()`.
+        // finished loading - which it has not, during `register()`.
         $this->container->singleton(
             DatabaseAdapterInterface::class,
             static fn (): DatabaseAdapterInterface => new WpDatabaseAdapter()

@@ -10,9 +10,7 @@ use Framework\Http\Responses\RedirectResponse;
 use Framework\Validation\Validator;
 
 /**
- * A request that validates itself, and answers its own failure.
- *
- * ## The contract
+ * A request that validates itself and answers its own failure.
  *
  * Type-hint a subclass on a controller action:
  *
@@ -33,52 +31,45 @@ use Framework\Validation\Validator;
  *     }
  *
  * The parameter binder recognises the type, builds the object around the current
- * request, and validates it. **The action is never entered when validation
- * fails** — the binder returns this object's failure response instead. A
- * controller therefore cannot forget to validate, which is the entire point:
- * validation driven by the author's memory is validation that will eventually be
- * missing from one endpoint.
+ * request, and validates it. The action is never entered when validation fails:
+ * the binder returns this object's failure response instead. A controller cannot
+ * forget to validate, which is the point, since validation driven by the author's
+ * memory is validation eventually missing from one endpoint.
  *
- * ## Why this wraps a Request instead of extending it
+ * This wraps a Request rather than extending it. Laravel's `FormRequest` extends
+ * its `Request`, and copying that here is the wrong trade:
+ * `Framework\Http\Request` promotes its parts to `readonly` so a request cannot
+ * be mutated after capture, which is what makes it safe to bind into the container
+ * for the life of a dispatch. A subclass that had to become the current request
+ * would have to re-seat those properties after construction, and PHP refuses: a
+ * `readonly` property initialised once cannot be reassigned, and re-invoking the
+ * parent constructor on a built object is a fatal.
  *
- * Laravel's `FormRequest` extends its `Request`, and copying that here would be
- * the wrong trade. `Framework\Http\Request` promotes its parts to `readonly`
- * precisely so a request cannot be mutated after capture — which is what makes
- * it safe to bind one into the container for the life of a dispatch. A subclass
- * that needs to *become* the current request has to re-seat those properties
- * after construction, and PHP refuses: a `readonly` property initialised once
- * cannot be reassigned, and re-invoking the parent constructor on a built object
- * is a fatal.
+ * Composition sidesteps that. The container builds this class with no arguments
+ * and the binder hands it the request, so nothing `readonly` is mutated and
+ * `Request` keeps its invariant. The cost is that `$request->input()` is not
+ * available directly; the accessors below forward it, and {@see request()} gives
+ * the underlying object.
  *
- * Composition sidesteps the whole problem. The container builds this class with
- * no arguments and the binder hands it the request — no mutation of anything
- * `readonly`, and `Request` keeps its invariant. The cost is that `$request->input()`
- * is not available directly; the accessors below forward it, and code that wants
- * the underlying object calls {@see request()}.
+ * The failure mode is decided by the client, not the route:
  *
- * ## The two failure modes, and why the branch is here
- *
- * The mode is decided by the *client*, not by the route:
- *
- *  - **Ajax / headless** (`expectsJson()`) — a `422` with the errors as JSON. A
+ *  - Ajax / headless (`expectsJson()`) gets a `422` with the errors as JSON. A
  *    redirect to an HTML page would be useless to a client that cannot render
- *    one, and the client needs the messages programmatically to mark up fields.
- *  - **A browser form post** — flash the errors and the old input into a
- *    transient, and redirect back to the form. A 422 page in a browser is a dead
- *    end: the user's typing is gone and there is no field to attach the error to.
+ *    one, which needs the messages programmatically to mark up fields.
+ *  - A browser form post gets the errors and old input flashed into a transient
+ *    and a redirect back to the form. A 422 page in a browser is a dead end: the
+ *    user's typing is gone and there is no field to attach the error to.
  *
- * This is the *only* class that has to know both of those exist. {@see Validator}
- * reports errors and never redirects; {@see RedirectResponse} moves a browser and
- * never validates. Putting the branch in either of those would bind a general
- * tool to one caller.
+ * This is the only class that has to know both exist. {@see Validator} reports
+ * errors and never redirects; {@see RedirectResponse} moves a browser and never
+ * validates. Putting the branch in either would bind a general tool to one
+ * caller.
  *
- * ## Why `expectsJson()` and not the route's domain
- *
- * A route in `routes/api.php` is not the test — an admin screen whose form is
- * submitted by `fetch()` is an HTML route that wants a JSON error, and a REST
- * route hit by a browser's address bar wants a page. The request itself already
- * carries the answer in `Accept` (see {@see Request::expectsJson()}), and
- * trusting it means one rule covers both files.
+ * `expectsJson()` rather than the route's domain, because a route in
+ * `routes/api.php` is not the test: an admin screen whose form is submitted by
+ * `fetch()` is an HTML route that wants a JSON error, and a REST route hit from a
+ * browser's address bar wants a page. The request carries the answer in `Accept`
+ * (see {@see Request::expectsJson()}), so one rule covers both files.
  */
 abstract class FormRequest
 {
@@ -104,7 +95,6 @@ abstract class FormRequest
      */
     private array $errors = [];
 
-    // -------------------------------------------------------- author's contract
 
     /**
      * The validation rules, as {@see Validator} understands them.
@@ -132,7 +122,7 @@ abstract class FormRequest
     /**
      * Which field an `authorize()` message is attached to.
      *
-     * `_form` by convention — the bucket a view reads for errors belonging to the
+     * `_form` by convention  -  the bucket a view reads for errors belonging to the
      * form as a whole rather than to one input.
      */
     protected function failedField(): string
@@ -143,7 +133,7 @@ abstract class FormRequest
     /**
      * Replace the message a rule produces.
      *
-     * Keyed `attribute.rule` — `'email.required' => 'We need your email.'` — or
+     * Keyed `attribute.rule`  -  `'email.required' => 'We need your email.'`  -  or
      * by bare attribute to replace every message on that field. Applied *after*
      * validation, so an override is purely presentational and can never change
      * whether something passed.
@@ -168,21 +158,20 @@ abstract class FormRequest
     /**
      * Where to send a browser after a failed validation.
      *
-     * Null means "work it out" — see {@see redirectTarget()}.
+     * Null means "work it out"  -  see {@see redirectTarget()}.
      */
     protected function redirectTo(): ?string
     {
         return null;
     }
 
-    // ------------------------------------------------------------- the lifecycle
 
     /**
      * Wrap a request in a new instance of this form request.
      *
      * The binder's entry point. A static factory rather than a constructor
      * argument because the container resolves a class-typed parameter by
-     * constructing it with no arguments — it has no way to hand this class the
+     * constructing it with no arguments  -  it has no way to hand this class the
      * request being dispatched. A constructor that required one would make every
      * `FormRequest` parameter unresolvable.
      */
@@ -211,8 +200,8 @@ abstract class FormRequest
      * Run the rules and record any failures.
      *
      * Idempotent: the second call is a no-op. The binder may legitimately reach
-     * the same instance twice — a middleware that resolves the form request too,
-     * a dispatch retried — and re-running the rules would append a second copy of
+     * the same instance twice  -  a middleware that resolves the form request too,
+     * a dispatch retried  -  and re-running the rules would append a second copy of
      * every message.
      */
     public function validate(): static
@@ -228,7 +217,7 @@ abstract class FormRequest
         if ($this->request === null) {
             throw new \LogicException(sprintf(
                 '%s was validated without a request. Build it with %s::fromRequest($request) '
-                . '— the parameter binder does this automatically for a type-hinted action parameter.',
+                . ' -  the parameter binder does this automatically for a type-hinted action parameter.',
                 static::class,
                 static::class
             ));
@@ -280,7 +269,7 @@ abstract class FormRequest
     }
 
     /**
-     * The values that passed validation — and *only* those.
+     * The values that passed validation  -  and *only* those.
      *
      * This is the security-relevant method, and the reason merits stating
      * plainly: `$request->input('is_admin')` returns whatever the client sent,
@@ -292,7 +281,7 @@ abstract class FormRequest
      * **A field with no rule is not returned.** That is deliberate, and it is the
      * usual surprise: if a key seems to be missing, it has no rule.
      *
-     * Values are the *raw* input, not a transformed one — `"30"` stays the string
+     * Values are the *raw* input, not a transformed one  -  `"30"` stays the string
      * `"30"` under an `integer` rule, because a rule checks a value rather than
      * casting it. A `validated()` that silently retyped its output would make the
      * controller's own casts redundant and its types unpredictable. Cast where it
@@ -343,7 +332,7 @@ abstract class FormRequest
         }
 
         // A REST route gets a WP_Error, because that is the only thing WordPress's
-        // REST server renders — a JsonResponse returned from a REST callback is
+        // REST server renders  -  a JsonResponse returned from a REST callback is
         // serialized as an opaque object and the 422 never happens. The two
         // domains are distinguished by the *marker the adapter primes*, not by
         // sniffing the request, because a REST dispatch and a web dispatch can
@@ -357,7 +346,6 @@ abstract class FormRequest
             : $this->redirectFailureResponse();
     }
 
-    // ------------------------------------------------------------- request access
 
     /**
      * The request this form request wraps.
@@ -400,34 +388,32 @@ abstract class FormRequest
         return $this->request?->expectsJson() ?? false;
     }
 
-    // ----------------------------------------------------------------- responses
 
     /**
      * Whether the current dispatch is a REST route.
      *
-     * ## Why a marker rather than a request inspection
+     * A marker rather than a request inspection, because a REST request and a
+     * web request carrying the same body, method and headers are byte-identical
+     * by the time a form request sees them: the REST adapter builds a framework
+     * `Request` from the `WP_REST_Request` precisely so the two domains agree
+     * everywhere else. Nothing observable in the request distinguishes them, so
+     * the code that knows states it:
+     * {@see \Framework\Routing\Adapters\RestApiRouterAdapter} sets this flag
+     * around the dispatch and clears it afterwards.
      *
-     * A REST request and a web request carrying the same body, method and
-     * headers are byte-identical by the time a form request sees them — the REST
-     * adapter builds a framework `Request` from the `WP_REST_Request` precisely
-     * so the two domains agree everywhere else. Nothing observable in the request
-     * distinguishes them, so the distinction has to be stated by the code that
-     * knows it: {@see \Framework\Routing\Adapters\RestApiRouterAdapter} sets this
-     * flag around the dispatch, and clears it afterwards.
-     *
-     * The flag is static because {@see fromRequest()} builds the form request
-     * inside the binder, several frames below the adapter, with no seam to thread
-     * an instance value through. It is cleared in a `finally` on the adapter's
-     * side, so it cannot outlive the dispatch that set it.
+     * Static because {@see fromRequest()} builds the form request inside the
+     * binder, several frames below the adapter, with no seam to thread an
+     * instance value through. The adapter clears it in a `finally`, so it cannot
+     * outlive the dispatch that set it.
      */
     public static bool $restDispatch = false;
 
     /**
      * Whether the dispatch currently in progress is a REST route.
      *
-     * A method rather than reading the static directly, so a subclass — or a
+     * A method rather than reading the static directly, so a subclass  -  or a
      * consuming project with a different idea of what "REST" means, such as an
-     * admin-ajax handler that also wants `WP_Error` failures — has one place to
+     * admin-ajax handler that also wants `WP_Error` failures  -  has one place to
      * override.
      */
     protected function isRestDispatch(): bool
@@ -448,7 +434,7 @@ abstract class FormRequest
     private function restFailureResponse(): object
     {
         // Outside WordPress there is no WP_Error to build, and a REST dispatch
-        // cannot happen anyway — the adapter's own entry points require WordPress.
+        // cannot happen anyway  -  the adapter's own entry points require WordPress.
         // Falling back to the JSON response keeps this class loadable and testable
         // without the CMS, which is the same guard the rest of the framework uses.
         if (!class_exists(\WP_Error::class)) {
@@ -468,8 +454,8 @@ abstract class FormRequest
     /**
      * A 422 carrying the errors, for a client that asked for JSON.
      *
-     * The shape is deliberately close to Laravel's — a `message` plus an `errors`
-     * map keyed by field — because a front end already written against that
+     * The shape is deliberately close to Laravel's  -  a `message` plus an `errors`
+     * map keyed by field  -  because a front end already written against that
      * convention reads this one unchanged, and inventing a second shape for the
      * same idea is how a project ends up with two error handlers.
      */
@@ -483,9 +469,9 @@ abstract class FormRequest
             ],
             [
                 'status_code' => 422,
-                // Unescaped slashes and unicode: an email address or a URL in a
-                // message should read as itself in a client's network tab, and a
-                // `\/` in an error string looks like a bug in the message.
+                // Unescaped slashes and unicode, so an email address or URL in a
+                // message reads as itself in a client's network tab; a `\/` in an
+                // error string looks like a bug in the message.
                 'flags' => JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
             ]
         );
@@ -494,18 +480,14 @@ abstract class FormRequest
     /**
      * A redirect back to the form, with the errors and the old input flashed.
      *
-     * ## Why the input is carried as well as the errors
+     * The input is carried as well as the errors because a redirect discards the
+     * POST body: without it, every field the user filled in correctly comes back
+     * empty, the most infuriating behaviour a form can have.
      *
-     * A redirect discards the POST body. Without the old input, every field the
-     * user filled in *correctly* comes back empty — the most infuriating
-     * behaviour a form can have, and the reason "please re-enter everything"
-     * exists as a complaint.
-     *
-     * ## Why the third argument is the request
-     *
-     * {@see RedirectResponse} uses it to decide the flash cookie's `Secure` flag,
-     * which is only correct behind a TLS-terminating proxy when it can consult
-     * `X-Forwarded-Proto` — which only the Request sees.
+     * The third argument is the request because {@see RedirectResponse} uses it
+     * to decide the flash cookie's `Secure` flag, which is only correct behind a
+     * TLS-terminating proxy when it can consult `X-Forwarded-Proto`, and only the
+     * Request sees that.
      */
     private function redirectFailureResponse(): RedirectResponse
     {
@@ -521,17 +503,15 @@ abstract class FormRequest
      * Where the browser should land.
      *
      * The author's `redirectTo()` wins. Otherwise a `redirect_to` field, which is
-     * how a form states its own return address — the mechanism an `admin_post`
+     * how a form states its own return address: the mechanism an `admin_post`
      * handler needs, because the form lives on an admin screen whose URL is not
      * the form's `action`. Then the referer, but only when it is on this site.
      *
-     * ## Why "back" is not simply the referer
-     *
-     * WordPress has no `url()->previous()`. `HTTP_REFERER` is client-supplied and
-     * routinely absent — a page with a strict referrer policy sends none at all.
-     * So it is a *candidate*, not the answer, and it is checked against the site
-     * host before being used: redirecting to an unvalidated client-supplied URL
-     * is an open redirect.
+     * "Back" is not simply the referer. WordPress has no `url()->previous()`, and
+     * `HTTP_REFERER` is client-supplied and routinely absent (a page with a strict
+     * referrer policy sends none at all), so it is a candidate rather than the
+     * answer, and it is checked against the site host before use: redirecting to
+     * an unvalidated client-supplied URL is an open redirect.
      */
     private function redirectTarget(): string
     {
@@ -562,7 +542,7 @@ abstract class FormRequest
      * Anything that fails to parse, or whose host differs, is not ours. The
      * scheme is not compared: an HTTPS page referring to the site's HTTP home
      * URL is the same site. This is a "did the user come from here" check, not
-     * the security boundary — {@see RedirectResponse} validates the destination
+     * the security boundary  -  {@see RedirectResponse} validates the destination
      * again through `wp_safe_redirect()`.
      */
     private function isLocalUrl(string $url): bool
@@ -613,7 +593,7 @@ abstract class FormRequest
 
             // Matched case-insensitively and by fragment, because `Password`,
             // `new_password` and `user_password` arrive as often as the exact
-            // spelling — a rule that caught only one of them would look like it
+            // spelling  -  a rule that caught only one of them would look like it
             // worked and would not.
             $name = strtolower((string) $key);
 
@@ -631,7 +611,7 @@ abstract class FormRequest
             // than mangled: a file input has to be re-chosen, which is a browser
             // constraint this layer cannot fix.
             //
-            // Arrays are dropped only for re-rendering, not from `validated()` —
+            // Arrays are dropped only for re-rendering, not from `validated()`  - 
             // a multi-select still validates and still reaches the controller.
             if (is_array($value) || is_object($value)) {
                 continue;
@@ -643,7 +623,6 @@ abstract class FormRequest
         return $old;
     }
 
-    // ------------------------------------------------------------------ internals
 
     /**
      * Apply the author's `messages()` overrides onto the produced errors.
@@ -668,7 +647,7 @@ abstract class FormRequest
                 // Preferred: match by the rule that produced the message. A
                 // positional guess would be wrong as soon as two rules run on one
                 // field, and a wrongly-applied message is worse than a missed
-                // override — the missed one is visible, the wrong one is not.
+                // override  -  the missed one is visible, the wrong one is not.
                 foreach ($rules as $rule) {
                     if (isset($overrides[$attribute . '.' . $rule])) {
                         $this->errors[$attribute][$index] = $overrides[$attribute . '.' . $rule];
@@ -688,7 +667,7 @@ abstract class FormRequest
     /**
      * The rule names declared for one attribute, wildcards resolved.
      *
-     * `tags.0` — an expanded wildcard — is matched back to the `tags.*` rule.
+     * `tags.0`  -  an expanded wildcard  -  is matched back to the `tags.*` rule.
      *
      * @return list<string>
      */
@@ -734,7 +713,7 @@ abstract class FormRequest
      * Copy one validated path out of the merged input.
      *
      * Dotted paths are rebuilt as nested arrays, so a rule on `user.name` yields
-     * `['user' => ['name' => ...]]` rather than a literal `'user.name'` key —
+     * `['user' => ['name' => ...]]` rather than a literal `'user.name'` key  - 
      * which is the shape a controller building a record actually wants.
      *
      * @param array<string, mixed> $into

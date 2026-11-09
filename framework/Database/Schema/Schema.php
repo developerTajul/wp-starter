@@ -18,24 +18,24 @@ use Framework\Database\Schema\Exceptions\SchemaException;
  *
  *     Schema::dropIfExists('notes');
  *
- * ## Why this is static, when almost nothing else here is
+ * Why this is static, when almost nothing else here is
  *
  * It is the one deliberate exception to the framework's dependency-injection
  * rule, and the reason is that the alternative is worse at the call site. A
  * migration is loaded by *path* and instantiated from a filename
  * (see {@see \Framework\Database\MigrationFile}), so it cannot be given a
  * schema builder by its caller without every migration growing a constructor
- * that exists only to pass the same object along — the exact ceremony
+ * that exists only to pass the same object along - the exact ceremony
  * `CLAUDE.md` rules out for configuration, for the same underlying reason.
  *
  * Static *state*, though, would be a real problem: a process-wide builder
  * cannot be swapped for a test, and two plugins sharing a database would fight
  * over it. So the state here is a single adapter reference resolved through the
  * container on each call ({@see adapter()}), and
- * {@see Schema::useAdapter()} is how a test substitutes one — the same seam the
+ * {@see Schema::useAdapter()} is how a test substitutes one - the same seam the
  * migrator offers by taking its `$wpdb` as a constructor argument.
  *
- * ## One method per verb
+ * One method per verb
  *
  * `create()` builds and runs a `CREATE TABLE`. `table()` is handed a table that
  * already exists and each column defined in the callback becomes its own
@@ -61,8 +61,8 @@ final class Schema
      * The adapter {@see pretend()} displaced, held so {@see stopPretending()}
      * can put it back rather than clearing the slot.
      *
-     * `null` is a meaningful value here — it means "there was nothing installed
-     * and the container should resolve one again" — so this is only read while
+     * `null` is a meaningful value here - it means "there was nothing installed
+     * and the container should resolve one again", so this is only read while
      * {@see $pretending} is true.
      */
     private static ?DatabaseAdapterInterface $displaced = null;
@@ -88,14 +88,14 @@ final class Schema
     /**
      * The adapter this namespace is currently talking to.
      *
-     * Exposed because anything that *reads* the schema — the dumper, and the
-     * `migrate:dump` command over it — has to read through exactly the object the
+     * Exposed because anything that *reads* the schema - the dumper, and the
+     * `migrate:dump` command over it - has to read through exactly the object the
      * `Schema::` calls write through, or the two disagree about which database
      * they are describing. That is not a hypothetical: a caller resolving the
      * interface from the container itself would miss {@see useAdapter()}
      * entirely, describe the real database, and look right doing it.
      *
-     * Still not a place to *set* anything — {@see useAdapter()} is that, and an
+     * Still not a place to *set* anything - {@see useAdapter()} is that, and an
      * application configures this through a container binding.
      */
     public static function adapter(): DatabaseAdapterInterface
@@ -106,20 +106,20 @@ final class Schema
     /**
      * Record schema statements instead of running them.
      *
-     * ## Why this pins the adapter
+     * Why this pins the adapter
      *
      * {@see adapter()} re-resolves through the container on every call, which is
      * right for normal use and wrong for this: pretending is a *stateful* mode,
      * and a re-resolved instance would start with it off. So the first call
-     * captures the current adapter into the static slot — making the thing that
-     * records and the thing that is read back the same object — and
+     * captures the current adapter into the static slot - making the thing that
+     * records and the thing that is read back the same object - and
      * {@see stopPretending()} hands the slot back to the container.
      *
-     * ## The limit, stated plainly
+     * The limit, stated plainly
      *
      * Only statements issued through this interface are recorded. A migration
      * that runs raw `$wpdb` queries alongside its `Schema::` calls will have those
-     * queries neither recorded nor run — the framework does not route them, so
+     * queries neither recorded nor run - the framework does not route them, so
      * there is nothing here to intercept. Callers built on this are expected to
      * say so rather than present the output as complete.
      *
@@ -132,7 +132,7 @@ final class Schema
         $adapter = self::resolveAdapter();
 
         // Remembered, not assumed to be null. `stopPretending()` used to clear
-        // the slot and let `resolveAdapter()` build a fresh adapter — which is
+        // the slot and let `resolveAdapter()` build a fresh adapter - which is
         // wrong whenever someone had *installed* one, as `useAdapter()` does in
         // every test and as a service provider does in an application. Clearing
         // threw that adapter away and the next `Schema::` call silently described
@@ -149,9 +149,9 @@ final class Schema
     /**
      * Stop recording, and return the statements issued while pretending.
      *
-     * Restores whatever adapter {@see pretend()} displaced — the one that was
+     * Restores whatever adapter {@see pretend()} displaced - the one that was
      * installed before the dry run, or the container-resolved one if there was
-     * none — so a pretend pass leaves no trace on the process. The recorded list
+     * none - so a pretend pass leaves no trace on the process. The recorded list
      * is returned rather than read separately because the restore drops the only
      * reference to the adapter that holds it.
      *
@@ -180,7 +180,7 @@ final class Schema
      * Whether the adapter is currently recording rather than running.
      *
      * Read by {@see \Framework\Database\Migrator} to decide whether it may record
-     * a migration as applied — a pretend run must leave the tracking table
+     * a migration as applied - a pretend run must leave the tracking table
      * untouched, since it did not do the work the row would claim.
      */
     public static function isPretending(): bool
@@ -200,7 +200,7 @@ final class Schema
     /**
      * Create a table from the given blueprint.
      *
-     * The callback is handed a fresh {@see Blueprint} and may return nothing —
+     * The callback is handed a fresh {@see Blueprint} and may return nothing -
      * it configures the object it is given. A `CREATE TABLE` naming a table that
      * already exists is an error, not a no-op: `dbDelta()`'s whole purpose is to
      * turn one into a diff, and accepting that here would mean a migration could
@@ -232,8 +232,8 @@ final class Schema
      *     });
      *
      * Each definition becomes its own statement, run in the order the callback
-     * declared them. There is no transaction around them, and there cannot be —
-     * MySQL commits DDL implicitly — so a failure partway leaves the columns
+     * declared them. There is no transaction around them, and there cannot be -
+     * MySQL commits DDL implicitly - so a failure partway leaves the columns
      * already added in place. That is the same half-applied state the migrator
      * reports rather than hides, and a re-run resumes from the failure because
      * the statements are issued in a fixed order.
@@ -254,8 +254,8 @@ final class Schema
 
         $callback($blueprint);
 
-        // A callback that defined nothing — guarded behind a conditional that
-        // did not hold — must not emit `ALTER TABLE x` with an empty clause,
+        // A callback that defined nothing - guarded behind a conditional that
+        // did not hold - must not emit `ALTER TABLE x` with an empty clause,
         // which is a syntax error rather than the no-op the caller intended.
         if ($blueprint->isEmpty()) {
             return;
@@ -273,7 +273,7 @@ final class Schema
      *
      *     Schema::rename('notes', 'archive');
      *
-     * Both names are schema names, resolved through the adapter's prefix — a
+     * Both names are schema names, resolved through the adapter's prefix, a
      * rename that prefixed only the destination would move `wp_notes` to
      * `archive`, a table nothing else in the application would look for again,
      * and the data would appear to have vanished rather than the migration to
@@ -282,8 +282,8 @@ final class Schema
      * **Not reversible for free.** The `down()` of a migration that renames is
      * another rename in the other direction, and it has to be written; nothing
      * here remembers the previous name. A rename is also the operation most
-     * likely to leave a foreign key pointing at a table that no longer exists —
-     * MySQL does not rewrite `REFERENCES` clauses on rename — so a migration
+     * likely to leave a foreign key pointing at a table that no longer exists -
+     * MySQL does not rewrite `REFERENCES` clauses on rename - so a migration
      * that renames a table another table references needs to drop and re-add
      * that constraint.
      *
@@ -302,7 +302,7 @@ final class Schema
      *
      * The same operation as {@see dropIfExists()}; the separate name is here so
      * that code migrating from raw `$wpdb` calls reads the way it was written.
-     * Prefer `dropIfExists()` in a `down()` — see that method.
+     * Prefer `dropIfExists()` in a `down()` - see that method.
      *
      * @throws SchemaException When the drop fails.
      */
@@ -315,9 +315,9 @@ final class Schema
      * Drop a table, and say nothing if it was not there.
      *
      * This is what a migration's `down()` wants, essentially always. A `down()`
-     * is routinely run against a database where its `up()` never completed — a
+     * is routinely run against a database where its `up()` never completed - a
      * batch that failed on the next migration, a rollback after a hand-edited
-     * schema — and a drop that raised "unknown table" there would turn a
+     * schema - and a drop that raised "unknown table" there would turn a
      * recoverable state into one that is neither finishable nor reversible.
      *
      * It is deliberately *not* forgiving of failure: only the missing table is
@@ -350,7 +350,7 @@ final class Schema
      * question, and the adapter answers it from the catalogue rather than from a
      * failed statement.
      *
-     * `false` when the table does not exist — a column cannot exist on a table
+     * `false` when the table does not exist - a column cannot exist on a table
      * that does not, and on a fresh install the table is often not there yet.
      * Guarding a create-then-alter pair with this therefore does the right thing
      * in both orders.
@@ -366,7 +366,7 @@ final class Schema
      * By name, because a name is how MySQL identifies a key and therefore the
      * only thing a `DROP INDEX`/`ADD INDEX` pair can be written against.
      * {@see Blueprint} derives an index's name from its columns joined by
-     * underscores — `title`, `note_id_occurred_at` — so a guard can name the
+     * underscores - `title`, `note_id_occurred_at` - so a guard can name the
      * index it is about to replace without having recorded it anywhere.
      *
      * `false` when the table does not exist, as in {@see hasColumn()}. A primary
@@ -382,7 +382,7 @@ final class Schema
      *
      * Resolved through the container on *each* call rather than captured once,
      * so a provider that binds the interface during `register()` is honoured
-     * even for a `Schema::` call made while another provider is still booting —
+     * even for a `Schema::` call made while another provider is still booting -
      * and so {@see useAdapter()} can substitute one after the container is up.
      *
      * Falls back to constructing the WordPress adapter directly when there is no
@@ -404,7 +404,7 @@ final class Schema
             } catch (\Throwable) {
                 // Not bound, or not resolvable yet. A `Schema::` call during an
                 // early hook is legitimate, and the direct construction below is
-                // exactly what the binding would have produced — falling through
+                // exactly what the binding would have produced - falling through
                 // keeps a migration runnable in a context with no container.
             }
         }
@@ -415,7 +415,7 @@ final class Schema
     /**
      * The callable a blueprint uses to spell a referenced table name.
      *
-     * WordPress prefixes every table — its own core tables included — with
+     * WordPress prefixes every table - its own core tables included - with
      * `$wpdb->prefix`, whatever it is (`users` is `wp_users` by default and
      * `leadbridge_users` on a site with `$table_prefix = 'leadbridge_'`), so
      * the resolved spelling of every name is the adapter's job: plugin tables
