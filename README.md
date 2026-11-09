@@ -2248,6 +2248,347 @@ the autoloader is not. If you write migrations by hand, match the generator.
 
 ---
 
+## Database & Query Builder
+
+The migration builder above describes **schema**. This section covers **data**:
+`QueryBuilderInterface`, a fluent builder that reads and writes rows through
+`$wpdb` without any repository writing SQL by hand.
+
+It lives in `framework/Database/Query/`, is bound by
+`Framework\Database\QueryServiceProvider` (listed in
+[Configuration](#configuration)), and is resolved by the repositories that use
+it — `WPFluentCompanyReadRepository`, `WPFluentCompanyWriteRepository` and
+`LeadReadRepository`. A repository on the older `$wpdb` path is not required to
+move; the builder is adopted per adapter, and both paths are bound in `app/`.
+
+### Who may call it
+
+**Repositories, and nothing else.** A repository is the one class in a module
+allowed to know a table name and a column name, and the builder is the vocabulary
+it writes that knowledge in. It is **never** injected into a service, a domain
+object, or a controller: the point of a port such as `LeadRepositoryContract` is
+that the business layer talks about leads and ids, while `where('status', 'new')`
+belongs behind that port. A builder in a service constructor puts a storage
+decision one call away from business logic, and the first time someone writes it
+there the leak has already happened with no seam left to notice it.
+
+| Layer                        | May resolve `QueryBuilderInterface` | Why                                              |
+| ---------------------------- | ----------------------------------- | ------------------------------------------------ |
+| `core/*/Infrastructure`      | **yes** — this is its only caller   | It owns the table and column names               |
+| `core/*/Application`         | no                                  | Talks to ports, not tables                       |
+| `core/*/Domain`              | no                                  | Knows no persistence shape at all                |
+| `app/`                       | only in a provider wiring it into a repository | Controllers and services call the repository, not the builder |
+| `framework/Database/`        | not through this API                | The migrator uses its own `DatabaseAdapterInterface` seam, not the builder |
+
+Verified by grep: outside `framework/Database/Query/`, the only files naming this
+interface are the three repositories that use it and the two providers in `app/`
+that wire it into them. No Application service, domain object or controller
+references it.
+
+The builder is resolved through the container, so a repository receives it as a
+constructor argument rather than reaching for a global:
+
+```php
+public function __construct(private readonly QueryBuilderInterface $query) {}
+```
+
+### Immutability — every modifier returns a clone
+
+A builder is a value, not a cursor. `where()` does not change the builder it was
+called on; it returns a **second** builder carrying one more clause.
+
+```php
+$base = $query->table('leads')->where('source', 'form');
+$new  = $base->where('status', 'new');   // $base is untouched
+$won  = $base->where('status', 'won');   // and still untouched
+```
+
+With a mutable builder that snippet is a bug: `$new` and `$won` would be the same
+object holding both conditions, and whichever ran last would decide what the
+first query returned. The failure is order-dependent, which is what makes it
+expensive — it reproduces only on the machine that happens to interleave
+differently. Immutability is what makes a half-built query safe to hold, pass to
+a helper, and finish later.
+
+### The vocabulary
+
+Everything below is on the interface, so a repository can express its reads
+without falling back to a raw statement.
+
+| Group                | Methods                                                                                     |
+| -------------------- | ------------------------------------------------------------------------------------------- |
+| Start & project      | `table()`, `select()`                                                                       |
+| Conditions           | `where()`, `orWhere()`, `whereGroup()`, `whereIn()`, `whereNotIn()`, `whereNull()`, `whereNotNull()` |
+| Operators            | `=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`, `LIKE`, `NOT LIKE` (case-insensitive)                 |
+| Joins                | `join()` (INNER), `leftJoin()`                                                              |
+| Sort, page, lock     | `orderBy()`, `orderByDesc()`, `limit()`, `offset()`, `lockForUpdate()`                       |
+| Read                 | `get()`, `first()`, `count()`                                                               |
+| Write                | `insertGetId()`, `update()`, `delete()`                                                     |
+| Transactions         | `transaction()`, `beginTransaction()`, `commit()`, `rollback()`, `inTransaction()`           |
+
+`table()` takes a **bare** name — `leads`, never `wp_leads`. The prefix is applied
+by the implementation, so a repository never writes `$wpdb->prefix . 'leads'` and
+a site whose `$table_prefix` differs runs the same code.
+
+A few of these carry a decision worth knowing about:
+
+- **`first()` returns `null`, it does not throw.** Absence is an ordinary answer
+  for a lookup; making every caller wrap a `try` around it is how a missing row
+  becomes a 500. A statement that genuinely **fails** does throw, and the two are
+  told apart by that.
+- **`count()` ignores any `limit()` and `offset()`** and drops the projection and
+  ordering. A paginated read needs the total across every page, and counting the
+  current slice is how an API reports "1 of 1" on every page.
+- **`update()` and `delete()` refuse to run with no condition at all.** An
+  unqualified `UPDATE` overwrites every row and an unqualified `DELETE` empties
+  the table; both are far more likely to be a forgotten `where()` than an intent.
+- **`whereGroup()` is how you write `a AND (b OR c)`.** An `orWhere()` added after
+  two `where()` calls compiles to `a AND b OR c`, which MySQL reads as
+  `(a AND b) OR c`. The builder does not group for you, because it cannot know
+  which grouping you meant:
+
+  ```php
+  $query->table('leads')
+        ->where('status', 'new')
+        ->whereGroup(fn ($q) => $q->where('name', $term)->orWhere('industry', $term));
+  // WHERE `status` = %s AND (`name` = %s OR `industry` = %s)
+  ```
+
+- **`whereNotIn([])` drops the clause, `whereIn([])` is refused.** The asymmetry
+  is deliberate: `IN ()` is a syntax error and an empty include list is almost
+  always a filter that came out empty, while "is this column outside a set that
+  turned out to be empty" has a true answer for every row. An empty exclusion
+  list excludes nothing.
+- **`where('col', null)` is refused.** `= NULL` is unknown in SQL, not false, so
+  it matches nothing and reports no error. `whereNull()` / `whereNotNull()` say
+  what was meant.
+- **`lockForUpdate()` only matters inside a transaction, on InnoDB.** `FOR UPDATE`
+  outside a transaction is a lock released at the end of the statement, which
+  protects nothing, and MyISAM ignores it silently. Neither condition is checked —
+  whether a transaction is open is the transaction manager's state and the engine
+  is the table's. The schema builder emits InnoDB, so the engine half is
+  satisfied by default. Only read statements honour it; a builder carrying
+  `lockForUpdate()` that is then used for `update()`/`delete()` ignores it.
+
+### Why it is safe to hand a value to
+
+Three properties, and together they are what makes this builder usable from a
+repository that takes client input.
+
+**Bindings are deferred, never baked in.** A value passed to `where()` becomes a
+placeholder and a separate argument at build time. Nothing is quoted while the
+query is being assembled; `$wpdb->prepare()` fills the placeholders **once, at
+execution**. This is not stylistic. `prepare()` escapes for the connection that is
+open when it runs, so a builder that prepared eagerly would hand back a string
+that already had its quotes doubled — a later `prepare()` over the same statement
+escapes the escapes, and the value reaches the database with literal backslashes
+in it. Deferring also means a half-built query can be held and finished later, and
+that a builder is constructible in a context with no `$wpdb` at all.
+
+**Identifiers are validated, because they cannot be bound.** `prepare()` quotes
+*values*; a column name is structure, and a quoted column name is a syntax error.
+So a column is the one place a caller's string reaches the statement
+unparameterised, and it is checked against a closed pattern instead of trusted.
+Permitted: letters, digits, underscores, one dot for a `table.column` qualifier,
+and an `AS` alias — both halves matched by the same grammar, so neither can carry
+a stray clause. A name containing a backtick or a space would otherwise close the
+identifier and open a clause. Operators and sort directions are closed lists too,
+and the keyword that enters the statement comes from the constant rather than from
+the caller — mapped, not merely validated.
+
+**Table qualifiers are prefixed automatically.** `companies.name` compiles to
+`` `wp_companies`.`name` ``, not `` `companies`.`name` `` — the latter is MySQL
+error 1054, "Unknown column", because the statement said
+`FROM `wp_companies`` and never aliased it. Prefixing unconditionally is safe
+here precisely because a caller can only write a real table name: there is no
+alias the prefix could wrongly attach to. A column *alias* is a different thing
+and is left alone.
+
+### Usage
+
+A real read repository combining joins, a bracketed `OR`, sorting and a
+projection. Note that the builder carries no table until `table()` names one, that
+each step assigns back to `$query`, and that the method returns raw rows which the
+mapper turns into entities — keeping that conversion in the repository is what
+lets one builder serve every table in the project.
+
+```php
+namespace Core\Deal\Infrastructure\Repositories;
+
+use Core\Deal\Application\Contracts\DealQueryContract;
+use Core\Deal\Domain\ReadModels\DealProjectionDTO;
+use Core\Deal\Domain\ValueObjects\DealFilter;
+use Core\Deal\Infrastructure\Mappers\DealEntityMapper;
+use Core\Shared\Domain\DataObjects\PaginatedResult;
+use Framework\Database\Query\QueryBuilderInterface;
+
+final class DealReadRepository implements DealQueryContract
+{
+    private const TABLE = 'deals';
+
+    /**
+     * Columns the read model is built from, in mapper order. Explicit rather than
+     * `SELECT *`, so the projection is a promise: adding a column to the table
+     * does not silently widen every row.
+     *
+     * @var list<string>
+     */
+    private const COLUMNS = ['id', 'company_id', 'title', 'amount', 'currency', 'deal_stage_id', 'created_at'];
+
+    public function __construct(
+        private readonly QueryBuilderInterface $query,
+        private readonly DealEntityMapper $mapper,
+    ) {}
+
+    /**
+     * One page of deals, newest first, each carrying its company and stage name.
+     */
+    public function getFilteredDeals(DealFilter $filter, int $page, int $perPage): PaginatedResult
+    {
+        $total = $this->applyFilter($filter)->count();
+
+        $rows = $this->applyFilter($filter)
+            ->select(
+                'deals.id',
+                'deals.title',
+                'deals.amount',
+                'deals.currency',
+                'companies.name AS company_name',
+                'deal_stages.name AS stage_name'
+            )
+            // INNER JOIN: a deal with no company is not listed.
+            ->join('companies', 'deals.company_id', '=', 'companies.id')
+            // LEFT JOIN: a deal whose stage row is gone is still listed, without
+            // its stage, rather than disappearing from the list.
+            ->leftJoin('deal_stages', 'deals.deal_stage_id', '=', 'deal_stages.id')
+            ->whereIn('deals.deal_stage_id', $filter->stageIds)
+            // The brackets are the point: without whereGroup() this would compile
+            // to `... AND `title` LIKE %s OR `companies`.`name` LIKE %s`, which
+            // MySQL reads as `(stage IN ...) OR (company matches)` and returns
+            // rows the stage filter excluded.
+            ->whereGroup(fn (QueryBuilderInterface $q) => $q
+                ->where('deals.title', '%' . $filter->escapedSearch() . '%', 'LIKE')
+                ->orWhere('companies.name', '%' . $filter->escapedSearch() . '%', 'LIKE'))
+            ->orderByDesc('deals.created_at')
+            // `id` tie-breaks equal timestamps; without it a row can appear on two
+            // pages while another is skipped.
+            ->orderByDesc('deals.id')
+            ->limit($perPage)
+            ->offset(($page - 1) * $perPage)
+            ->get();
+
+        return PaginatedResult::fromSlice(
+            array_map(fn (array $row): DealProjectionDTO => $this->mapper->toProjection($row), $rows),
+            $total,
+            $perPage,
+            $page
+        );
+    }
+
+    /**
+     * The builder carrying a filter's conditions, and nothing else.
+     *
+     * Both the count and the page are built from this, so the total and the slice
+     * cannot describe different filters. A blank search adds no condition at all
+     * rather than a `1 = 1` sentinel.
+     */
+    private function applyFilter(DealFilter $filter): QueryBuilderInterface
+    {
+        $query = $this->query->table(self::TABLE);
+
+        if ($filter->currency !== null) {
+            $query = $query->where('currency', $filter->currency);
+        }
+
+        if ($filter->ownerId !== null) {
+            $query = $query->where('assigned_to', $filter->ownerId);
+        }
+
+        return $query;
+    }
+}
+```
+
+A write, showing the row lock that makes read-then-write safe. The lock, the read,
+the decision and the write all happen inside one
+`TransactionManagerContract::run()` boundary — see
+[Mandatory transaction management](#mandatory-transaction-management-protocol).
+This is `findByIdForUpdate()` from `WPFluentCompanyWriteRepository`, which is the
+only read a write port is allowed to carry:
+
+```php
+$row = $this->query
+    ->table(self::TABLE_SUFFIX)
+    ->select(...self::COLUMNS)
+    ->where('id', $companyId)
+    ->lockForUpdate()
+    ->first();
+```
+
+### Transactions
+
+The builder owns a nesting counter and exposes `transaction(callable)`,
+`beginTransaction()`, `commit()`, `rollback()` and `inTransaction()`.
+
+**An inner `transaction()` joins, it does not open a second one.** MySQL has no
+nested transactions: a second `START TRANSACTION` **implicitly commits** the one
+already open, so the nested write would be committed before the outer frame
+decided whether to. That is precisely the half-written state a boundary exists to
+prevent. The implementation counts depth and issues `BEGIN` / `COMMIT` /
+`ROLLBACK` only at the outermost frame.
+
+Prefer `transaction()` over a manual `beginTransaction()` / `commit()` pair: a
+manual pair can be left open by an early return or a throw, and a transaction left
+open holds locks until the connection ends.
+
+For repositories, the caller is normally not the builder at all — a Command
+Service opens the boundary through `TransactionManagerContract::run()`, which is
+the project-wide rule. `WpTransactionManager` and the builder state the same
+nesting guarantee, so a repository that opens one inside a service's boundary
+joins it rather than committing the service's work early.
+
+### Errors
+
+| Exception                                    | Raised when                                                                       |
+| -------------------------------------------- | --------------------------------------------------------------------------------- |
+| `Framework\Database\Query\Exceptions\QueryException` | The statement failed, no table was named, or a call was refused as unsafe |
+| `…\Exceptions\UniqueConstraintException`     | A unique index rejected the row — a subtype of `QueryException`                    |
+
+`UniqueConstraintException` is detected by **MySQL error number 1062**, not by
+matching the message: the number is part of the protocol, while the message is
+translated and reworded between versions. It is caught in the **repository**,
+which rethrows the module's own conflict exception —
+`CompanyDuplicateException`, `LeadDuplicateException` — and that is what the
+Application Service catches. No `Framework\*` exception is imported, caught, or
+type-hinted in a service.
+
+```php
+// Core\Company\Infrastructure\Repositories\WPFluentCompanyWriteRepository
+try {
+    return $this->query->table(self::TABLE_SUFFIX)->insertGetId($values);
+} catch (UniqueConstraintException $exception) {
+    throw new CompanyDuplicateException();
+}
+```
+
+The refusals above (`= NULL`, an empty `whereIn()`, an unsupported operator, a
+non-positive `limit()`, an unqualified `update()`/`delete()`) all raise
+`QueryException` **when the call is made**, not when the query runs. A repository
+that builds a column list from configuration finds out at build time, with the
+offending name in the message, rather than at 3am against a live database.
+
+### What it does not do
+
+- **No relationships, no eager loading.** A join is an explicit `join()` call; the
+  builder has no idea two tables are related.
+- **No `having()`, no subqueries, no `union()`.** A predicate needing them is a
+  sign the read belongs in its own projection rather than in a general-purpose
+  builder.
+- **No migrations.** Schema changes go through `Schema::` — see
+  [Database Migrations](#database-migrations).
+
+---
+
 ## Rebranding
 
 The rebrander lives at **`framework/bin/init-plugin.php`** and is exposed as a
