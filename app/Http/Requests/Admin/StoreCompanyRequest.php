@@ -44,7 +44,13 @@ final class StoreCompanyRequest extends FormRequest
 
             // `url` rather than `string`, because this value is printed back
             // as a link; a non-URL would become an `<a href>` going nowhere.
-            'website' => 'nullable|url',
+            //
+            // The scheme list is spelled out rather than left to the rule's
+            // default: `url` alone also accepts `ftp://` and `mailto:`, which
+            // the entity refuses, so a form that relied on the default would
+            // pass validation and then fail the whole store at the domain
+            // boundary.
+            'website' => 'nullable|url:http,https',
 
             'industry' => 'nullable|string|max:100',
             'phone'    => 'nullable|string|max:20',

@@ -548,23 +548,55 @@ The hook name comes from the routes file, and the routes file is only read once 
 WordPress action fires. So on the first submission of a process the sequence would
 have to be: read the file → learn the action names → register
 `admin_post_{action}` hooks → _then_ have WordPress fire the right one. It cannot
-be, because WordPress resolves and fires `admin_post_{action}` in a single pass,
-and by the time a listener on the generic `admin_post` action runs, that pass is
-already under way.
+be, because WordPress resolves and fires `admin_post_{action}` in a single pass.
 
-So the name is not used to find the route — **the request is.** The provider hooks
-generic `admin_post` and calls `dispatchCurrentAdminAction()`, which reads
-`$_REQUEST['action']` and matches it against the routes already published in this
-same request. A no-op when nothing matches, which matters: WordPress fires
-`admin_post` for its own internal handlers too, and an unmatched action is not this
-plugin's business — returning without sending lets WordPress continue to whoever
-owns it.
+What makes it work is *where that pass starts*. `wp-admin/admin-post.php` runs
+`admin_init` near the top, and only afterwards decides which hook to fire:
+
+```php
+$action = ! empty( $_REQUEST['action'] ) ? sanitize_text_field( $_REQUEST['action'] ) : '';
+
+if ( empty( $action ) ) {
+    do_action( 'admin_post' );                  // generic: only when NO action
+} else {
+    if ( ! has_action( "admin_post_{$action}" ) ) {
+        wp_die( '', 400 );                      // nothing registered for this action
+    }
+    do_action( "admin_post_{$action}" );
+}
+```
+
+Publishing on `admin_init` therefore finishes *before* WordPress asks
+`has_action()`. By the time it asks, the routes file has been read, `flush()` has
+published the derived action names, and the handler exists.
+
+The generic `admin_post` hook is a trap here, and it is worth knowing why, because
+it looks like the right hook and is silently unreachable. It fires **only when the
+request carries no `action` field at all** — the branch WordPress uses for its own
+internal handlers. A form always sends `action`, so a listener on generic
+`admin_post` never runs for one. Worse, the two hooks that would otherwise have
+read the routes file, `admin_menu` and `template_redirect`, do not fire on
+`admin-post.php` either — so the action was never published, `has_action()`
+returned false, and the browser got `wp_die( '', 400 )`: a blank page with nothing
+in the debug log. No exception, no route, no trace.
+
+So the name is not used to find the route — **the request is.** The provider loads
+the web routes on `admin_init`, then calls `dispatchCurrentAdminAction()`, which
+reads `$_REQUEST['action']` and matches it against the routes published in this
+same request. A no-op when nothing matches, which matters on an ordinary admin
+screen, where `admin_init` also fires and there is no action to dispatch.
+
+This lifecycle belongs to the framework, not to each project:
+`Framework\Routing\RouteServiceProvider::bootWebRoutes()` owns it, and a project
+enables it by setting `$webRoutesFile` and calling `bootWebRoutes()` from its own
+`boot()`.
 
 Three consequences:
 
 - **The routes file is read and flushed at priority 5**, ahead of the default 10,
-  on `admin_menu`, `template_redirect` and generic `admin_post`. Loading is
-  idempotent per file and `flush()` is guarded, so the repeats cost nothing.
+  on `admin_menu`, `admin_init` and `template_redirect`. Loading is idempotent per
+  file and `flush()` is guarded, so a request that fires several of these pays for
+  one load.
 - **A route written as `leads/{id}/delete` never has its placeholder filled from a
   URL.** A form submits to `admin-post.php?action=…` regardless of the original
   path, so the parameter is read from `$_REQUEST` — the form field of the same name
@@ -1187,7 +1219,7 @@ With no routes it says so and names the two files to look in.
 Three things about it are deliberate:
 
 - **It loads both routes files itself.** WP-CLI fires none of `rest_api_init`,
-  `admin_menu`, `admin_post` or `template_redirect`, so both routers would be empty
+  `admin_menu`, `admin_init` or `template_redirect`, so both routers would be empty
   and the true answer invisible. Listing nothing would be a _wrong_ answer presented
   confidently. It goes through `RouteLoader`, the same entry point the providers
   use, so it cannot disagree with them about what loading a routes file means — and

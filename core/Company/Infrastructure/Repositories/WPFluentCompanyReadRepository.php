@@ -67,6 +67,27 @@ final class WPFluentCompanyReadRepository implements CompanyQueryContract
     ];
 
     /**
+     * The columns the list may be sorted by.
+     *
+     * A whitelist rather than a pass-through, because an `ORDER BY` column is
+     * interpolated into the statement rather than bound, so it is the one place
+     * a request value reaches SQL as syntax. Keys are the names the screen puts
+     * in its links; a name that is not here is ignored.
+     *
+     * @var array<string, string>
+     */
+    private const ALLOWED_ORDER_COLUMNS = [
+        'name'       => 'name',
+        'website'    => 'website',
+        'industry'   => 'industry',
+        'phone'      => 'phone',
+        'created_at' => 'created_at',
+    ];
+
+    /** The column the list sorts by when the request names none. */
+    private const DEFAULT_ORDER_COLUMN = 'created_at';
+
+    /**
      * @param QueryBuilderInterface $query  The fluent builder, bound to the
      *                                      WordPress connection by its provider.
      * @param CompanyEntityMapper   $mapper
@@ -96,17 +117,33 @@ final class WPFluentCompanyReadRepository implements CompanyQueryContract
     public function getFilteredCompanies(CompanyFilter $filter): PaginatedResult
     {
         $perPage = $filter->perPage;
-        $page = $this->currentPage();
 
         // The id tie-breaks rows sharing a created_at. Without it the order of
         // equal keys is undefined, so a paginated offset can repeat a row on one
         // page and skip another.
         $total = $this->baseQuery($filter)->count();
 
-        $rows = $this->baseQuery($filter)
+        // The count settles the real bound, so the requested page is clamped to
+        // it BEFORE the offset is computed. A bookmarked `?paged=3` against a
+        // list that has since shrunk to one page would otherwise select an offset
+        // past the end: the table comes back empty while the pager still reads
+        // "3 of 1", leaving the user on a blank screen whose only way out is
+        // editing the URL by hand.
+        //
+        // The bounds come from PaginatedResult rather than from a local
+        // `ceil($total / $perPage)`: it owns that arithmetic and `isBeyondLastPage()`
+        // IS the "you are nowhere" signal, so re-deriving it here would be a
+        // second copy of both to keep in step.
+        $requested = PaginatedResult::fromSlice(
+            items: [],
+            total: $total,
+            perPage: $perPage,
+            currentPage: $this->currentPage()
+        );
+        $page = $requested->isBeyondLastPage() ? $requested->lastPage() : $requested->currentPage();
+
+        $rows = $this->sortedQuery($filter)
             ->select(...self::COLUMNS)
-            ->orderByDesc('created_at')
-            ->orderByDesc('id')
             ->limit($perPage)
             ->offset(($page - 1) * $perPage)
             ->get();
@@ -117,6 +154,71 @@ final class WPFluentCompanyReadRepository implements CompanyQueryContract
             perPage: $perPage,
             currentPage: $page
         );
+    }
+
+    /**
+     * A builder carrying the filter's conditions and the requested sort order.
+     *
+     * The direction is settled through {@see sortDirection()}, which returns
+     * `asc` or `desc` and nothing else: the builder refuses any other spelling,
+     * so a URL carrying `?order=drop%20table` must never reach it.
+     *
+     * The `id` tie-breaker is always `DESC` and always last, after the requested
+     * column: it exists to make the order of equal sort keys stable so a
+     * paginated offset cannot repeat a row on one page and skip another, and it
+     * must not outrank the column the user asked to sort by.
+     *
+     * @param CompanyFilter $filter
+     *
+     * @return QueryBuilderInterface
+     */
+    private function sortedQuery(CompanyFilter $filter): QueryBuilderInterface
+    {
+        return $this->baseQuery($filter)
+            ->orderBy($this->sortColumn(), $this->sortDirection())
+            ->orderByDesc('id');
+    }
+
+    /**
+     * The column the list is sorted by, from the query string.
+     *
+     * A whitelist, not a pass-through: the column name is interpolated into the
+     * `ORDER BY` by the builder, and column names cannot be bound as parameters
+     * the way values can. Anything not named here falls back to `created_at`,
+     * which is the order the screen has always used.
+     *
+     * @return string
+     */
+    private function sortColumn(): string
+    {
+        $requested = $_GET['orderby'] ?? null;
+
+        if (! is_string($requested)) {
+            return self::DEFAULT_ORDER_COLUMN;
+        }
+
+        return self::ALLOWED_ORDER_COLUMNS[$requested] ?? self::DEFAULT_ORDER_COLUMN;
+    }
+
+    /**
+     * The sort direction, from the query string.
+     *
+     * Normalised to `asc` or `desc` before it reaches the builder, which throws
+     * on any other spelling. Only a literal `asc` sorts ascending; everything
+     * else, including a missing or unparseable value, is `desc`, matching the
+     * listing's default of newest first.
+     *
+     * @return string
+     */
+    private function sortDirection(): string
+    {
+        $requested = $_GET['order'] ?? null;
+
+        if (! is_string($requested)) {
+            return 'desc';
+        }
+
+        return strtolower(trim($requested)) === 'asc' ? 'asc' : 'desc';
     }
 
     /**
@@ -493,6 +595,12 @@ final class WPFluentCompanyReadRepository implements CompanyQueryContract
     /**
      * The page being requested, from the query string.
      *
+     * Read from `paged`, WordPress's own key for a list table's page, and not
+     * from `page`: on a wp-admin screen `page` carries the menu slug WordPress
+     * uses to choose which screen renders, so `admin.php?page=companies` would
+     * be read as the string `"companies"` and cast to `0` on every request -
+     * pinning the list to page 1 and making the pager unable to move.
+     *
      * `CompanyFilter` carries no page, and reading it here keeps that value
      * object free of transport state. `$_GET` rather than the framework Request
      * because this class sits in `core/` and cannot name `Framework\Http\Request`.
@@ -500,11 +608,15 @@ final class WPFluentCompanyReadRepository implements CompanyQueryContract
      * A missing or unparseable value is page 1, not an error: a bad page in a
      * URL is someone typing, not a fault.
      *
+     * Only the floor is settled here. The ceiling cannot be: it depends on how
+     * many rows match, which takes the count {@see getFilteredCompanies()} makes.
+     * That method clamps the value this returns.
+     *
      * @return int
      */
     private function currentPage(): int
     {
-        $page = $_GET['page'] ?? null;
+        $page = $_GET['paged'] ?? null;
 
         if (! is_scalar($page)) {
             return 1;

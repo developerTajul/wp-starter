@@ -2,9 +2,10 @@
 /**
  * The edit-company form body.
  *
- * Handed to `layout` as `$content` by `CompanyController::edit()`. The controller
- * passes only the record's id today, so the fields below render empty rather than
- * populated — loading the record is the step that would fill them.
+ * Handed to `layout` as `$content` by `CompanyController::edit()`, which loads the
+ * record first and passes it as `$company`. The `?? ''` on every value is for the
+ * rejected-submission path, not for a missing record: the same view is rendered
+ * from a failed update, where only the submitted fields are known.
  *
  * WordPress-specific values arrive as variables, the same as the add form, but
  * `$routeAction` differs: an update posts to its own `admin_post_` action,
@@ -15,7 +16,7 @@
  * @var string $routeAction   The `admin_post_{action}` name, from the controller.
  * @var string $nonceField    A completed hidden nonce input, already markup.
  * @var string $redirectTo    Where a rejected submission returns to.
- * @var array<string, mixed>|null $company
+ * @var array{id: int, name: string, website: ?string, industry: ?string, phone: ?string, address: ?string}|null $company
  */
 ?>
 <form method="post" action="<?= e($formAction) ?>">

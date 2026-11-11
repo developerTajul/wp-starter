@@ -647,12 +647,50 @@ class Validator
     }
 
     /**
+     * A URL, optionally restricted to a list of schemes: `url:http,https`.
+     *
+     * With no arguments the allowed schemes default to `http,https`, not to
+     * "anything `filter_var` accepts". `FILTER_VALIDATE_URL` passes `ftp://`,
+     * `mailto:` and a dozen other schemes, and a form field bound for an
+     * `<a href>` or a redirect wants none of them  -  so the strict list is the
+     * default and a caller that genuinely needs `ftp` names it.
+     *
+     * The scheme is compared case-insensitively: schemes are case-insensitive
+     * per RFC 3986, and `parse_url` returns whatever case the input used, so
+     * `HTTPS://example.com` must satisfy `https`.
+     *
+     * An empty argument list is not the same as an absent one. `url:` parses to
+     * `['']`, which names no scheme at all and would reject every value; that is
+     * treated as a misconfiguration and raises rather than silently failing
+     * every submission, the same way `in` and `between` handle a missing
+     * argument.
+     *
      * @param list<string> $args
      */
     private function validateUrl(string $attribute, mixed $value, array $args): void
     {
         if (!is_string($value) || filter_var($value, FILTER_VALIDATE_URL) === false) {
             $this->addError($attribute, sprintf('The %s field must be a valid URL.', $this->label($attribute)));
+
+            return;
+        }
+
+        $allowed = $args === [] ? ['http', 'https'] : $args;
+
+        if (in_array('', $allowed, true)) {
+            throw new \InvalidArgumentException(
+                sprintf('The [url] rule on attribute [%s] has an empty scheme.', $attribute)
+            );
+        }
+
+        $scheme = parse_url($value, PHP_URL_SCHEME);
+
+        if (!is_string($scheme) || !in_array(strtolower($scheme), array_map('strtolower', $allowed), true)) {
+            $this->addError($attribute, sprintf(
+                'The %s field must be a URL using one of these schemes: %s.',
+                $this->label($attribute),
+                implode(', ', $allowed),
+            ));
         }
     }
 

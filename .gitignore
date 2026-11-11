@@ -5,8 +5,10 @@
 # vendor/devlinkstudios/wp-mini-laravel-framework is a symlink into
 # ./framework (path repository), so the framework source is committed
 # separately and never lives inside vendor.
-/vendor/
+/vendor
 node_modules/
+/docs
+/tests
 
 # composer.lock IS committed on purpose: reproducible dependency
 # resolution across machines and deploys.
@@ -19,6 +21,7 @@ node_modules/
 # stripped from production archives via .gitattributes export-ignore.
 .phpunit.cache/
 .phpunit.result.cache
+.probe-tmp
 
 # Local audit reports. Regenerated per audit run, addressed to whoever ran
 # it, and stale the moment the next one lands — a committed copy is a

@@ -23,10 +23,10 @@ use DevLinkStudios\WPServiceContainer\ServiceProvider;
  * Container bindings for the company module.
  *
  * Every binding the module owns lives here rather than in
- * {@see AppServiceProvider}, which holds shared-kernel bindings only. The
- * repositories are bound by their `WPFluent*` classes; the Laravel-shaped
- * `CompanyWriteRepository` and `CompanyReadRepository` beside them are the
- * Eloquent ports of the same contracts and are not bound in this build.
+ * {@see AppServiceProvider}, which holds shared-kernel bindings only. Each
+ * contract has exactly one implementation: the `WPFluent*` classes under
+ * `core/Company/Infrastructure/Repositories/`, which use the Fluent Database
+ * builder.
  */
 final class CompanyServiceProvider extends ServiceProvider
 {

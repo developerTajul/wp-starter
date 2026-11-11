@@ -913,13 +913,18 @@ final class WordPressRouterAdapter extends AbstractRouterAdapter
      * first form submission of a process the sequence would have to be: read the
      * file, learn the action names, register the hooks, then have WordPress fire
      * the right one. It cannot be, because WordPress resolves and fires
-     * `admin_post_{action}` in a single pass, and by the time a listener on
-     * generic `admin_post` runs that pass is already under way.
+     * `admin_post_{action}` in a single pass.
      *
      * So the request finds the route, not the name. WordPress sets the dispatched
      * action on the request it is handling, and the routes already published in
      * this same request carry their own action names, so matching the two is
      * simpler and immune to the ordering problem.
+     *
+     * What makes the ordering work is the caller's hook: `admin_init`, which
+     * `wp-admin/admin-post.php` runs before it resolves `action`. See
+     * {@see \Framework\Routing\RouteServiceProvider::bootWebRoutes()} for the
+     * full sequence, including why the generic `admin_post` hook never fires for
+     * a form.
      *
      * The action is read from the framework's own {@see Request}, built through
      * the injected {@see WebRequestFactory}, not from `$_REQUEST`: that keeps
@@ -927,10 +932,8 @@ final class WordPressRouterAdapter extends AbstractRouterAdapter
      * and makes this method testable by binding a factory and supplying the
      * submission to dispatch.
      *
-     * A no-op when nothing matches. WordPress fires `admin_post` for its own
-     * internal handlers too, and an unmatched action is not this plugin's
-     * business; returning without sending lets WordPress continue to whichever
-     * handler owns it.
+     * A no-op when nothing matches, which covers an ordinary admin screen where
+     * `admin_init` also fires and there is no action to dispatch.
      */
     public function dispatchCurrentAdminAction(): void
     {

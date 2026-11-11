@@ -109,90 +109,14 @@ class RouteServiceProvider extends BaseRouteServiceProvider
         // The parent's REST hooks, unchanged.
         parent::boot();
 
-        if (!function_exists('add_action')) {
-            return;
-        }
-
-        $this->bootWebRouter();
-    }
-
-    /**
-     * Hook the web router's publishing points.
-     *
-     * Each surface is reached at a different moment: `admin_menu` for admin
-     * screens, `admin_post` for form submissions, `template_redirect` for
-     * front-end page routes. Any one may fire first on a request, so each
-     * loads the routes file and flushes before dispatching.
-     */
-    private function bootWebRouter(): void
-    {
-        foreach (['admin_menu', 'template_redirect'] as $hook) {
-            // Priority 5, so routes exist before most other plugins look for
-            // them.
-            add_action($hook, function (): void {
-                $router = $this->webRouter();
-
-                if ($router === null) {
-                    return;
-                }
-
-                $this->loadRoutesInto($router, $this->webRoutesFile);
-                $router->flush();
-            }, 5);
-        }
-
-        add_action('admin_post', function (): void {
-            $router = $this->webRouter();
-
-            if ($router === null) {
-                return;
-            }
-
-            $this->loadRoutesInto($router, $this->webRoutesFile);
-            $router->flush();
-
-            // Dispatched here rather than from `admin_post_{action}`: the
-            // action name only becomes known by reading the routes file at
-            // this point, and WordPress resolves and fires that hook in an
-            // already-running pass. The request finds the route, not the name.
-            $router->dispatchCurrentAdminAction();
-        }, 5);
-    }
-
-    /**
-     * Resolve the web router, or null when it cannot be built.
-     *
-     * A container failure here runs inside a WordPress action, so throwing
-     * would take down every admin screen, not just this plugin's routes.
-     * Returning null degrades to "no web routes this request".
-     */
-    private function webRouter(): ?WordPressRouterAdapter
-    {
-        try {
-            $router = $this->container->resolve(WordPressRouterAdapter::class);
-        } catch (Throwable $e) {
-            $this->logRouteFailure($e, $this->webRoutesFile);
-
-            return null;
-        }
-
-        return $router instanceof WordPressRouterAdapter ? $router : null;
-    }
-
-    /**
-     * Load a routes file into a router.
-     *
-     * Loading and failure handling live in {@see RouteLoader}, so this
-     * provider and `route:list` agree on what loading means. This only adds
-     * where the failure is reported.
-     */
-    private function loadRoutesInto(RouterInterface $router, ?string $file): void
-    {
-        $result = $this->container->resolve(RouteLoader::class)->load($router, $file);
-
-        if ($result->failed()) {
-            $this->logRouteFailure($result->error, $result->path);
-        }
+        // The web lifecycle is the framework's, not this project's: the parent
+        // publishes `routes/web.php` on `admin_menu`, `admin_init` and
+        // `template_redirect` at priority 5, and dispatches an `admin-post.php`
+        // submission from `admin_init`. It is a framework method because the
+        // hook choice is the whole difficulty - see
+        // {@see BaseRouteServiceProvider::bootWebRoutes()} for why the generic
+        // `admin_post` never fires for a form and `admin_init` is what does.
+        $this->bootWebRoutes();
     }
 
     /**

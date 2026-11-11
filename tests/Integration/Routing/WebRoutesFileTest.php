@@ -172,6 +172,11 @@ final class WebRoutesFileTest extends TestCase
      * parent is already registered. Reversed, the top-level menu is labelled with
      * its first submenu item's title and the list screen becomes unreachable.
      *
+     * Exactly one company screen is top level; every other screen is a submenu of
+     * it. That is asserted as an exact list rather than a count, so a screen that
+     * quietly becomes a menu of its own fails here - a second top-level entry is
+     * the shape that fragments the module across the sidebar.
+     *
      * `flush()` only hooks `admin_menu`; the menu functions run when WordPress
      * fires it, so the action is fired here before anything is read back.
      */
@@ -191,14 +196,20 @@ final class WebRoutesFileTest extends TestCase
 
         $submenuParents = array_column(WpStub::$submenuPages, 'parent_slug');
 
+        // Two screens sit under the list screen: Add a company and Edit company.
+        // Edit carries a `parent_slug` for the same reason Add does - WordPress
+        // reaches an admin screen only through a menu registration, and a screen
+        // registered without a parent becomes a menu of its own. Both are stated
+        // here so a new screen has to be added consciously, not pass silently.
         $this->assertSame(
-            [CompanyController::SCREEN_SLUG],
+            [CompanyController::SCREEN_SLUG, CompanyController::SCREEN_SLUG],
             $submenuParents,
-            'The create screen is a submenu of the list screen.'
+            'Both other company screens are submenus of the list screen.'
         );
         $this->assertSame(
-            [CompanyController::CREATE_SLUG],
-            array_column(WpStub::$submenuPages, 'menu_slug')
+            [CompanyController::CREATE_SLUG, CompanyController::EDIT_SLUG],
+            array_column(WpStub::$submenuPages, 'menu_slug'),
+            'Submenus, in registration order.'
         );
     }
 
