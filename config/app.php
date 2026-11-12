@@ -21,6 +21,13 @@ return [
     // other machine. Resolution is dotted, 'leads.index' -> views/leads/index.php.
     'views' => env('APP_VIEWS_PATH', 'views'),
 
+    // The layout that wraps every screen view. Set to a view name such as
+    // 'layout' (resolves to <root>/views/layout.php by default) or 'false' to
+    // disable auto-wrapping. The child is rendered into the layout's `$content`
+    // and a `$title` is supplied from the view's data or derived from the view
+    // name. See {@see Framework\Support\ViewRenderer::make()}.
+    'layout_view' => env('APP_LAYOUT_VIEW', 'layout'),
+
     // Namespace for WP-CLI commands, so two projects bundling this framework do
     // not register commands under the same name.
     'cli_prefix' => env('CLI_PREFIX', 'wp_mini'),

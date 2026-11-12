@@ -151,6 +151,27 @@ class ViewResponse implements ResponseInterface
     }
 
     /**
+     * @return array<string, string>
+     */
+    public function headers(): array
+    {
+        return $this->headers;
+    }
+
+    /**
+     * Override the page title.
+     *
+     * Returns a copy so the original response is unchanged and a title can be
+     * chained after {@see ViewRenderer::make()}. The value is added to the view
+     * data, where it is picked up by the layout wrapper or read directly by the
+     * view.
+     */
+    public function withTitle(string $title): static
+    {
+        return new self($this->path, [...$this->data, 'title' => $title], $this->status, $this->headers);
+    }
+
+    /**
      * Emit the status line and headers.
      *
      * Guarded on `headers_sent()` because a view rendered after the response has

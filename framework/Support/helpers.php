@@ -224,7 +224,7 @@ if (! function_exists('view')) {
     /**
      * Render a view, or build a response for one.
      *
-     *     view('leads.index', ['leads' => $leads])          // -> ViewResponse
+     *     view('leads.index', ['leads' => $leads])          // -> response
      *     view('emails.receipt', $data)->render()           // -> string
      *
      * Returning the response rather than the string is what makes the two-argument
@@ -232,9 +232,14 @@ if (! function_exists('view')) {
      * A caller that wants the markup asks for it explicitly, which reads as the
      * deliberate act it is.
      *
+     * The response is wrapped in the configured layout automatically, so an action
+     * returns the screen's own view and the page shell is the framework's job. A
+     * page title is taken from a `title` key in `$data` or set with
+     * `view(...)->withTitle('...')`.
+     *
      * @param array<string, mixed> $data
      */
-    function view(string $name = '', array $data = []): \Framework\Http\Responses\ViewResponse
+    function view(string $name = '', array $data = []): \Framework\Http\Responses\ViewResponse|\Framework\Http\Responses\LayoutResponse
     {
         /** @var \Framework\Support\ViewRenderer $renderer */
         $renderer = app(\Framework\Support\ViewRenderer::class);

@@ -2,10 +2,11 @@
 /**
  * The page shell every screen extends.
  *
- * A layout is an ordinary view: a controller renders a child into a string and
- * hands it here as `$content`. There is no template inheritance because PHP
- * already has a mechanism for it — buffer a render, pass the string — and a
- * second one would be a second thing to learn.
+ * Auto-wrapped by {@see ViewRenderer::make()}: the controller returns the child
+ * view and the renderer renders it into `$content`, then renders this layout
+ * with `$content` and a `$title` (taken from the view's data, or derived from
+ * the view name if absent). A layout is still an ordinary view — buffer a
+ * render, pass the string — there is no second template language to learn.
  *
  * `$title` is escaped because it comes from the action, and an unescaped title
  * is the shortest path from a user-supplied name to injected markup.

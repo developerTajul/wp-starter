@@ -5,6 +5,7 @@ namespace Tests\Unit\Support;
 
 use Framework\Http\Exceptions\HttpException;
 use Framework\Http\Responses\HtmlResponse;
+use Framework\Http\Responses\LayoutResponse;
 use Framework\Http\Responses\ViewResponse;
 use Framework\Support\ViewRenderer;
 use PHPUnit\Framework\TestCase;
@@ -477,6 +478,116 @@ final class ViewRendererTest extends TestCase
 
         $this->assertInstanceOf(ViewResponse::class, $response);
         $this->assertSame($path, $response->path());
+    }
+
+    // ------------------------------------------------------------------ layout
+
+    /**
+     * With a `layout.php` beside the views, a screen view is wrapped
+     * automatically: the child lands in `$content` and the title is derived from
+     * the view's path when the data carries none.
+     */
+    public function test_a_screen_view_is_wrapped_in_the_layout(): void
+    {
+        $this->write('layout.php', '<html><h1><?= e($title) ?></h1><?= $content ?></html>');
+        $this->write('company/create.php', '<form>add</form>');
+
+        $html = $this->renderer()->make('company.create')->render();
+
+        $this->assertSame('<html><h1>Company Create</h1><form>add</form></html>', $html);
+    }
+
+    /**
+     * The title an action sets wins over the derived one, which is what lets a
+     * screen say "Add a company" instead of "Company Create".
+     */
+    public function test_an_explicit_title_wins_over_the_derived_one(): void
+    {
+        $this->write('layout.php', '<?= e($title) ?>');
+        $this->write('company/create.php', 'body');
+
+        $response = $this->renderer()->make('company.create', ['name' => 'x'])->withTitle('Add a company');
+
+        $this->assertSame('Add a company', $response->render());
+    }
+
+    /**
+     * The child's own data reaches the child, and the layout still sees the flash
+     * variables the renderer injects into every render.
+     */
+    public function test_the_child_data_and_the_flash_both_reach_their_views(): void
+    {
+        $this->write('layout.php', '[<?= e($notice ?? "none") ?>]<?= $content ?>');
+        $this->write('company/create.php', '<?= $name ?>');
+
+        FlashStore::write(['notice' => 'Saved']);
+
+        $this->assertSame('[Saved]Ada', $this->renderer()->make('company.create', ['name' => 'Ada'])->render());
+    }
+
+    /**
+     * Naming the layout itself returns it unwrapped, which is what keeps a
+     * hand-built `make('layout', [...])` call working after this change.
+     */
+    public function test_a_view_that_is_the_layout_is_not_wrapped_again(): void
+    {
+        $this->write('layout.php', '<?= $content ?>');
+
+        $response = $this->renderer()->make('layout', ['content' => 'page']);
+
+        $this->assertInstanceOf(ViewResponse::class, $response);
+        $this->assertSame('page', $response->render());
+    }
+
+    /**
+     * A view rendered directly through {@see ViewRenderer::render()} is not
+     * wrapped: the call already asks for that one view.
+     */
+    public function test_render_does_not_wrap(): void
+    {
+        $this->write('layout.php', 'WRAPPED:<?= $content ?>');
+        $this->write('plain.php', 'plain');
+
+        $this->assertSame('plain', $this->renderer()->render('plain'));
+    }
+
+    /**
+     * Without a layout file the renderer renders the view alone rather than
+     * failing every screen — a project that ships no layout still works.
+     */
+    public function test_no_layout_file_means_no_wrapping(): void
+    {
+        $this->write('plain.php', 'plain');
+
+        $this->assertSame('plain', $this->renderer()->render('plain'));
+    }
+
+    /**
+     * A layout the project named in config must exist; a typo fails loudly rather
+     * than silently rendering an unwrapped page.
+     */
+    public function test_a_configured_layout_that_is_missing_fails(): void
+    {
+        $this->write('plain.php', 'plain');
+
+        $this->expectException(HttpException::class);
+        $this->expectExceptionMessage('could not be found');
+
+        $this->renderer()->layout('missing.layout')->make('plain');
+    }
+
+    /**
+     * The override installed by {@see ViewRenderer::layout()}, which is how a
+     * project switches layout for a request or turns wrapping off.
+     */
+    public function test_the_layout_can_be_switched_off(): void
+    {
+        $this->write('layout.php', 'WRAPPED:<?= $content ?>');
+        $this->write('plain.php', 'plain');
+
+        $renderer = $this->renderer()->layout(false);
+
+        $this->assertSame('plain', $renderer->make('plain')->render());
     }
 
     public function test_make_carries_the_status_and_headers(): void
