@@ -64,6 +64,7 @@ it, rebrand it in one command, and build your plugin inside it — see
   - [Turning wrapping off](#turning-wrapping-off)
   - [Rendering a view to a string](#rendering-a-view-to-a-string)
   - [Escaping, errors and old input](#escaping-errors-and-old-input)
+  - [Building a form field](#building-a-form-field)
   - [View name resolution](#view-name-resolution)
 
 **Database**
@@ -296,6 +297,7 @@ framework/                    THE LIBRARY  (Framework\) — never rebranded
   Http/Responses/LayoutResponse.php  Applies the layout around a screen view.
   Routing/                      Router, adapters, Route attribute, ParameterBinder, middleware.
   Support/helpers.php           env(), app(), config(), base_path(), view(), e(), old(),
+                                field_class(), field_error(), field_errors(),
                                 route(), redirect(), to_route().
   Support/ViewRenderer.php      Dotted view-name resolution and the automatic layout.
   Support/JsonResource.php      The resource base class.
@@ -1731,13 +1733,16 @@ absolute path is known and re-resolving it as a name would mangle it.
 
 ### Escaping, errors and old input
 
-A view is handed its variables as locals, and three helpers cover nearly every
+A view is handed its variables as locals, and these helpers cover nearly every
 line:
 
 | Helper | Use |
 | ------ | --- |
 | `e($value)` | Escape for HTML — text **and** attributes. `null` renders empty; a bool as a form value; an array as JSON rather than the word "Array" |
 | `old('field', $default)` | A submitted value from the previous request, already escaped — the pair an input needs in one call |
+| `field_class('field')` | A `class` attribute, with `is-invalid` appended only when that field failed |
+| `field_error('field')` | A field's first message, or `null` — the assignment is the guard |
+| `field_errors('field')` | Every message for that field, as a list |
 | `$errors` / `$old` / `$error` / `$notice` | Injected automatically when the previous request flashed them |
 
 Use `e()` rather than `esc_html()`. It delegates to `esc_html()` when WordPress
@@ -1756,6 +1761,63 @@ view has to guess what an empty payload means. The flash is read **once per
 renderer** and cached, because the read consumes the transient: without the cache,
 a page rendering a header and a form that both want the errors would show them in
 one of them, and work fine in a test that rendered only one.
+
+---
+
+### Building a form field
+
+`old()`, `field_class()` and `field_error()` are what a field actually needs, and
+between them they replace the inline ceremony a form would otherwise repeat on
+every row:
+
+```php
+<tr>
+    <th scope="row"><label for="company-name">Name</label></th>
+    <td>
+        <input name="name" id="company-name" type="text" class="<?= field_class('name') ?>"
+               value="<?= old('name', $company['name'] ?? '') ?>" required>
+        <?php if ($error = field_error('name')): ?>
+            <p class="error-message" style="color: red; font-size: 0.875rem;"><?= e($error) ?></p>
+        <?php endif; ?>
+    </td>
+</tr>
+```
+
+Compare the `class` attribute with what it replaces —
+`class="regular-text<?= !empty($errors['name']) ? ' is-invalid' : '' ?>"` — and the
+error block with `<?php if (!empty($errors['name'])): ?>` followed by
+`<?= e($errors['name'][0]) ?>`. The gain is not only brevity:
+
+- **No field-name repetition in the guard.** `field_class('name')` reads its own
+  field, so the input's `name` and the class check cannot drift apart.
+- **Nothing to remember about the error bag.** `$errors` is *absent*, not empty,
+  when nothing was flashed — and a partial rendered by an action that passed no
+  error bag has no `$errors` at all. All three helpers treat a missing field, an
+  empty message list, a view rendered outside WordPress and a container with no
+  renderer as the same answer: no error.
+- **Whitespace is normalized**, which `$baseClass` being free text (`'button'`,
+  `''`, `'regular-text widefat'`) makes worth doing once rather than per call site.
+
+`field_class()` takes the base and error classes as its second and third
+arguments — `field_class('name', 'button', 'button-error')` — and returns the
+attribute **value** rather than a whole `class="..."`, so it composes with names
+written inline:
+
+```php
+<input class="button button-primary <?= field_class('name', '') ?>" ...>
+```
+
+The one asymmetry between the helpers is escaping, and it is deliberate:
+
+| Helper | Escaped for you? | Why |
+| ------ | ---------------- | --- |
+| `old()` | **yes** | It has exactly one consumer — an attribute — so the pair belongs in one call |
+| `field_class()` | **yes** | It is an attribute value too |
+| `field_error()` | **no** | It has two consumers that disagree: rendered as text (escape it) or tested for a substring (`str_contains(field_error('x'), 'required')`, which escaping would break on any `&`) |
+
+So a view keeps `e()` on the message, as the example above shows. That closes no
+gap: an unescaped message can only reach the page through a call the view already
+wrote.
 
 ---
 

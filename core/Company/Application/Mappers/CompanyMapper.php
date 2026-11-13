@@ -101,7 +101,7 @@ final class CompanyMapper implements CompanyMapperContract
     }
 
     /**
-     * Builds a CompanyFilterDTO from query input, rejecting unrecognised values.
+     * Builds a CompanyFilterDTO from query input.
      *
      * @param array $queryParams
      *
@@ -112,39 +112,8 @@ final class CompanyMapper implements CompanyMapperContract
     public function mapToFilterDTO(array $queryParams): CompanyFilterDTO
     {
         return new CompanyFilterDTO(
-            search: $this->toText(value: $queryParams['search'] ?? null, field: 'search'),
             perPage: $this->toPerPage($queryParams['per_page'] ?? self::DEFAULT_PER_PAGE),
         );
-    }
-
-    /**
-     * Converts a free-text filter value. A blank value means "no filter"
-     * rather than an empty match.
-     *
-     * @param mixed  $value
-     * @param string $field
-     *
-     * @return string|null
-     *
-     * @throws InvalidArgumentException When the value is not text.
-     */
-    private function toText(mixed $value, string $field): ?string
-    {
-        if ($value === null || $value === '') {
-            return null;
-        }
-
-        if (! is_string($value)) {
-            throw new InvalidArgumentException(sprintf(
-                'Unsupported value [%s] for filter [%s].',
-                is_scalar($value) ? (string) $value : get_debug_type($value),
-                $field,
-            ));
-        }
-
-        $trimmed = trim($value);
-
-        return $trimmed === '' ? null : $trimmed;
     }
 
     /**

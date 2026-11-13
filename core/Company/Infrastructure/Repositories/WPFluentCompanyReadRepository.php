@@ -23,7 +23,7 @@ use wpdb;
  * Reads for the company list, detail and single lookup. Returns read models
  * only.
  *
- * Every read runs on the fluent builder, including the searched list and the
+ * Every read runs on the fluent builder, including the paged list and the
  * joined detail reads. Nothing here issues raw SQL or touches `$wpdb`.
  *
  * @implements CompanyQueryContract
@@ -67,25 +67,17 @@ final class WPFluentCompanyReadRepository implements CompanyQueryContract
     ];
 
     /**
-     * The columns the list may be sorted by.
+     * The order the list is always read in.
      *
-     * A whitelist rather than a pass-through, because an `ORDER BY` column is
-     * interpolated into the statement rather than bound, so it is the one place
-     * a request value reaches SQL as syntax. Keys are the names the screen puts
-     * in its links; a name that is not here is ignored.
-     *
-     * @var array<string, string>
+     * A constant rather than a request value: the list offers no sorting
+     * control, so there is no untrusted text to whitelist and no direction to
+     * normalise. Both are settled here in code, which is also what keeps the
+     * `ORDER BY` clause free of anything a URL could reach.
      */
-    private const ALLOWED_ORDER_COLUMNS = [
-        'name'       => 'name',
-        'website'    => 'website',
-        'industry'   => 'industry',
-        'phone'      => 'phone',
-        'created_at' => 'created_at',
-    ];
+    private const ORDER_COLUMN = 'created_at';
 
-    /** The column the list sorts by when the request names none. */
-    private const DEFAULT_ORDER_COLUMN = 'created_at';
+    /** The direction {@see self::ORDER_COLUMN} is read in. */
+    private const ORDER_DIRECTION = 'desc';
 
     /**
      * @param QueryBuilderInterface $query  The fluent builder, bound to the
@@ -99,16 +91,11 @@ final class WPFluentCompanyReadRepository implements CompanyQueryContract
     }
 
     /**
-     * Returns the companies matching the given filter criteria.
+     * Returns one page of companies in the list's own order.
      *
-     * Filtering happens in SQL because LIMIT runs before PHP sees the rows: a
-     * page filtered in memory would hold only its own matches, so page 1 could
-     * show one row under a count of two hundred.
-     *
-     * Both the count and the page are built from the same predicate through
-     * {@see baseQuery()}, so the total and the slice cannot describe different
-     * filters - the failure that shows up as a page of rows under a count that
-     * does not admit them.
+     * The count and the slice read the same table, so the total and the rows
+     * cannot describe different sets - the failure that shows up as a page of
+     * rows under a count that does not admit them.
      *
      * @param CompanyFilter $filter
      *
@@ -118,10 +105,7 @@ final class WPFluentCompanyReadRepository implements CompanyQueryContract
     {
         $perPage = $filter->perPage;
 
-        // The id tie-breaks rows sharing a created_at. Without it the order of
-        // equal keys is undefined, so a paginated offset can repeat a row on one
-        // page and skip another.
-        $total = $this->baseQuery($filter)->count();
+        $total = $this->query->table(self::TABLE_SUFFIX)->count();
 
         // The count settles the real bound, so the requested page is clamped to
         // it BEFORE the offset is computed. A bookmarked `?paged=3` against a
@@ -142,7 +126,7 @@ final class WPFluentCompanyReadRepository implements CompanyQueryContract
         );
         $page = $requested->isBeyondLastPage() ? $requested->lastPage() : $requested->currentPage();
 
-        $rows = $this->sortedQuery($filter)
+        $rows = $this->sortedQuery()
             ->select(...self::COLUMNS)
             ->limit($perPage)
             ->offset(($page - 1) * $perPage)
@@ -157,117 +141,25 @@ final class WPFluentCompanyReadRepository implements CompanyQueryContract
     }
 
     /**
-     * A builder carrying the filter's conditions and the requested sort order.
+     * A builder reading the company table in the list's own order.
      *
-     * The direction is settled through {@see sortDirection()}, which returns
-     * `asc` or `desc` and nothing else: the builder refuses any other spelling,
-     * so a URL carrying `?order=drop%20table` must never reach it.
+     * The order is fixed ({@see self::ORDER_COLUMN} descending). It is applied
+     * here rather than passed in because the screen has no sorting control, so
+     * no request value takes part in it - there is nothing to whitelist and no
+     * direction to normalise, and the `ORDER BY` clause cannot be reached from a
+     * URL at all.
      *
-     * The `id` tie-breaker is always `DESC` and always last, after the requested
-     * column: it exists to make the order of equal sort keys stable so a
-     * paginated offset cannot repeat a row on one page and skip another, and it
-     * must not outrank the column the user asked to sort by.
-     *
-     * @param CompanyFilter $filter
+     * The `id` tie-breaker is always `DESC` and always last: it exists to make
+     * the order of equal sort keys stable so a paginated offset cannot repeat a
+     * row on one page and skip another.
      *
      * @return QueryBuilderInterface
      */
-    private function sortedQuery(CompanyFilter $filter): QueryBuilderInterface
+    private function sortedQuery(): QueryBuilderInterface
     {
-        return $this->baseQuery($filter)
-            ->orderBy($this->sortColumn(), $this->sortDirection())
+        return $this->query->table(self::TABLE_SUFFIX)
+            ->orderBy(self::ORDER_COLUMN, self::ORDER_DIRECTION)
             ->orderByDesc('id');
-    }
-
-    /**
-     * The column the list is sorted by, from the query string.
-     *
-     * A whitelist, not a pass-through: the column name is interpolated into the
-     * `ORDER BY` by the builder, and column names cannot be bound as parameters
-     * the way values can. Anything not named here falls back to `created_at`,
-     * which is the order the screen has always used.
-     *
-     * @return string
-     */
-    private function sortColumn(): string
-    {
-        $requested = $_GET['orderby'] ?? null;
-
-        if (! is_string($requested)) {
-            return self::DEFAULT_ORDER_COLUMN;
-        }
-
-        return self::ALLOWED_ORDER_COLUMNS[$requested] ?? self::DEFAULT_ORDER_COLUMN;
-    }
-
-    /**
-     * The sort direction, from the query string.
-     *
-     * Normalised to `asc` or `desc` before it reaches the builder, which throws
-     * on any other spelling. Only a literal `asc` sorts ascending; everything
-     * else, including a missing or unparseable value, is `desc`, matching the
-     * listing's default of newest first.
-     *
-     * @return string
-     */
-    private function sortDirection(): string
-    {
-        $requested = $_GET['order'] ?? null;
-
-        if (! is_string($requested)) {
-            return 'desc';
-        }
-
-        return strtolower(trim($requested)) === 'asc' ? 'asc' : 'desc';
-    }
-
-    /**
-     * A builder carrying the filter's conditions and nothing else.
-     *
-     * The search is one parenthesised group so its `OR` cannot leak into a
-     * conjunction added later: without the brackets a second condition would
-     * conjoin with only the `industry` half of the search and quietly drop the
-     * `name` half.
-     *
-     * The wildcards are added after `esc_like()`, so a term containing `%` or `_`
-     * is matched literally rather than as a pattern.
-     *
-     * @param CompanyFilter $filter
-     *
-     * @return QueryBuilderInterface
-     */
-    private function baseQuery(CompanyFilter $filter): QueryBuilderInterface
-    {
-        $query = $this->query->table(self::TABLE_SUFFIX);
-
-        $term = $filter->search === null ? '' : trim($filter->search);
-
-        if ($term === '') {
-            return $query;
-        }
-
-        $pattern = '%' . $this->escapeLike($term) . '%';
-
-        return $query->whereGroup(
-            static fn (QueryBuilderInterface $group): QueryBuilderInterface => $group
-                ->where('name', $pattern, 'LIKE')
-                ->orWhere('industry', $pattern, 'LIKE')
-        );
-    }
-
-    /**
-     * Neutralise the `LIKE` metacharacters in a search term.
-     *
-     * Runs before the wildcards are added around the term: escaping afterwards
-     * would escape the wildcards too and search for literal per cent signs.
-     *
-     * @param string $term
-     *
-     * @return string
-     */
-    private function escapeLike(string $term): string
-    {
-        return addcslashes($term, '%_\\');
     }
 
     /**

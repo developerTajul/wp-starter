@@ -42,30 +42,6 @@ final class CompanyController
     /** The bulk operation the form offers, as WordPress's own list tables send it. */
     private const BULK_DELETE = 'delete';
 
-    /** The query key the list's sort column travels on. */
-    private const ORDERBY_PARAM = 'orderby';
-
-    /** The query key the list's sort direction travels on. */
-    private const ORDER_PARAM = 'order';
-
-    /** The query key the list's search term is written to. */
-    private const SEARCH_PARAM = 's';
-
-    /**
-     * The query keys the search term is read from, in order.
-     *
-     * `s` is the convention; `search` is the legacy key this screen shipped
-     * with, still honoured so an old address keeps filtering.
-     *
-     * @var list<string>
-     */
-    private const SEARCH_KEYS = [self::SEARCH_PARAM, 'search'];
-
-    /** The column the list sorts by when the request names none. */
-    private const DEFAULT_ORDERBY = 'created_at';
-
-    /** The sort direction the list uses when the request names none. */
-    private const DEFAULT_ORDER = 'desc';
 
     /** The parameter a row action names its record with. */
     private const ROW_ID_PARAM = 'id';
@@ -78,12 +54,10 @@ final class CompanyController
     }
 
     /** Renders the companies list. */
-    public function index(Request $request): ResponseInterface
+    public function index(): ResponseInterface
     {
-        $search = $this->searchTerm($request);
-
         $result = $this->companyQueryService->getPaginatedCompanies(
-            $this->mapper->mapToFilterDTO($this->listQuery($search, $request))
+            $this->mapper->mapToFilterDTO(['per_page' => null])
         );
 
         $companies = [];
@@ -94,100 +68,13 @@ final class CompanyController
             $page = $result->getData();
         }
 
-        $totalCompanies = ($search === '' && $page !== null) ? $page->total() : $this->totalCompanies();
-
         return view('company.index', [
             'companies' => $companies,
             'page' => $page,
             'createUrl' => route('companies.create'),
-            'search' => $search,
-            'totalCompanies' => $totalCompanies,
-            ...$this->listState($request, $search),
             ...$this->bulkWiring(),
             ...$this->rowActionWiring(),
         ])->withTitle('Companies');
-    }
-
-    /**
-     * Reads the search term from `s`, then from the legacy `search` key.
-     *
-     * A non-string value (an array smuggled in under the key) is treated as no
-     * search rather than cast.
-     */
-    private function searchTerm(Request $request): string
-    {
-        foreach (self::SEARCH_KEYS as $key) {
-            $value = $request->query($key);
-
-            if (is_string($value) && $value !== '') {
-                return $value;
-            }
-        }
-
-        return '';
-    }
-
-    /**
-     * Counts every company, ignoring the list's filters.
-     *
-     * Read through the same query service the list uses, with the search left
-     * out. A failed read returns 0: the count is a label beside a link.
-     */
-    private function totalCompanies(): int
-    {
-        $result = $this->companyQueryService->getPaginatedCompanies(
-            $this->mapper->mapToFilterDTO([
-                'search' => null,
-                // The smallest page the filter accepts. Only the count is used;
-                // fetching a page of rows would read data this method discards.
-                'per_page' => 1,
-            ])
-        );
-
-        return $result->isSuccess() ? $result->getData()->total() : 0;
-    }
-
-    /**
-     * Builds the query values the list read is built from.
-     *
-     * `per_page` comes from the request; the mapper validates it against the
-     * domain's bounds and falls back to its default when the key is absent.
-     *
-     * @param string $search The term already resolved by {@see searchTerm()}.
-     *
-     * @return array<string, mixed>
-     */
-    private function listQuery(string $search, Request $request): array
-    {
-        return [
-            'search' => $search === '' ? null : $search,
-            'per_page' => $request->query('per_page'),
-        ];
-    }
-
-    /**
-     * Builds the list state the view's links preserve.
-     *
-     * `orderby` and `order` pass through as text: the read adapter holds the
-     * whitelist and falls back to its default. `search` carries the resolved
-     * term, so a link never re-emits the legacy key.
-     *
-     * @param string $search The term already resolved by {@see searchTerm()}.
-     *
-     * @return array<string, mixed>
-     */
-    private function listState(Request $request, string $search): array
-    {
-        $orderby = $request->query(self::ORDERBY_PARAM);
-        $order = $request->query(self::ORDER_PARAM);
-
-        return [
-            'searchUrl' => route('companies.index'),
-            'searchKey' => self::SEARCH_PARAM,
-            'search' => $search,
-            'orderby' => is_string($orderby) && $orderby !== '' ? $orderby : self::DEFAULT_ORDERBY,
-            'order' => strtolower(is_string($order) && $order === 'asc' ? 'asc' : self::DEFAULT_ORDER),
-        ];
     }
 
     /**
@@ -239,16 +126,16 @@ final class CompanyController
     {
         return view('company.create', [
             'company' => null,
-            ...$this->formWiring(self::STORE_ACTION, 'companies.index'),
+            ...$this->formWiring(self::STORE_ACTION, route('companies.create')),
         ])->withTitle('Add a company');
     }
 
     /** Handles the add-company submission. */
     public function store(StoreCompanyRequest $request): ResponseInterface
     {
-        $companyCreateDTO = $this->mapper->mapToStoreDTO($request->validated());
-
-        $result = $this->companyCommandService->createCompany($companyCreateDTO);
+        $result = $this->companyCommandService->createCompany(
+            $this->mapper->mapToStoreDTO($request->validated())
+        );
 
         if ($result->isFailure()) {
             return redirect()->route('companies.index')->with('error', $result->message());
@@ -293,7 +180,7 @@ final class CompanyController
                 'phone' => $company->phone,
                 'address' => $company->address,
             ],
-            ...$this->formWiring(self::UPDATE_ACTION, 'companies.index'),
+            ...$this->formWiring(self::UPDATE_ACTION, $this->editScreenUrl($company->id)),
         ])->withTitle('Edit company');
     }
 
@@ -454,8 +341,16 @@ final class CompanyController
      * The nonce is minted for `$action`, the same string the route's `nonce:`
      * middleware verifies.
      *
+     * `$redirectTo` is taken as an already-resolved URL rather than a route name,
+     * because the edit form's return address names a record: a rejected update
+     * has to come back to *that* company's form, and `route()` cannot build a URL
+     * carrying a value the route's own path does not declare. The add form passes
+     * `route('companies.create')` and the edit form passes
+     * {@see self::editScreenUrl()}, so both spell the decision at the call site
+     * that knows which screen the user was on.
+     *
      * @param string $action     One of {@see self::STORE_ACTION} / {@see self::UPDATE_ACTION}.
-     * @param string $redirectTo Route name a rejected submission returns to.
+     * @param string $redirectTo Resolved URL a rejected submission returns to.
      *
      * @return array<string, string>
      */
@@ -465,7 +360,32 @@ final class CompanyController
             'formAction' => admin_url('admin-post.php'),
             'routeAction' => $action,
             'nonceField' => wp_nonce_field($action, '_wpnonce', true, false),
-            'redirectTo' => route($redirectTo),
+            'redirectTo' => $redirectTo,
         ];
+    }
+
+    /**
+     * The edit screen's address for one record.
+     *
+     * `admin.php?page=company-edit&id=N`. The slug is the screen and the id is a
+     * query parameter beside it, because WordPress picks an admin screen by
+     * matching `?page=` against the slugs it was handed at `admin_menu`, and a
+     * slug is one string with no segments.
+     *
+     * Built from the route's own URL rather than assembled by hand so the screen
+     * slug has one source: appending a second `?` here would produce
+     * `?page=company-edit?page=company-edit&id=7`, which PHP's parser reads as
+     * `page=company-edit?page=company-edit` with no `id` at all, and the edit
+     * screen would open the list instead of the record.
+     *
+     * @param int $companyId The record the address names.
+     */
+    private function editScreenUrl(int $companyId): string
+    {
+        $base = route('companies.edit');
+
+        $separator = str_contains($base, '?') ? '&' : '?';
+
+        return $base . $separator . http_build_query([self::ROW_ID_PARAM => $companyId]);
     }
 }

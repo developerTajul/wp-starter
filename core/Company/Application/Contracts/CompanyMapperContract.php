@@ -33,7 +33,7 @@ interface CompanyMapperContract
     public function mapToUpdateDTO(int $companyId, array $validatedData): UpdateCompanyDTO;
 
     /**
-     * Builds a CompanyFilterDTO from query input, rejecting unrecognised values.
+     * Builds a CompanyFilterDTO from query input.
      *
      * @param array $queryParams The raw query string values.
      *

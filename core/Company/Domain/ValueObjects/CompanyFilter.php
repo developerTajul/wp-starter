@@ -14,13 +14,11 @@ use Core\Company\Domain\Exceptions\InvalidCompanyException;
 final readonly class CompanyFilter
 {
     /**
-     * @param string|null $search  Free-text term matched against name and industry.
-     * @param int         $perPage
+     * @param int $perPage
      *
      * @throws InvalidCompanyException When the page size falls outside its bounds.
      */
     public function __construct(
-        public ?string $search = null,
         public int $perPage = 15,
     ) {
         if ($perPage < CompanyRules::MIN_PER_PAGE || $perPage > CompanyRules::MAX_PER_PAGE) {

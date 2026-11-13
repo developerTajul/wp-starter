@@ -326,6 +326,114 @@ if (! function_exists('old')) {
     }
 }
 
+if (! function_exists('field_class')) {
+    /**
+     * An input's class attribute, with the error class appended when it failed.
+     *
+     * The markup a form field would otherwise spell out inline, every field, in
+     * every form:
+     *
+     *     class="regular-text<?= !empty($errors['name']) ? ' is-invalid' : '' ?>"
+     *
+     * Three things are done here that the inline version gets wrong sooner or
+     * later. The read goes through the renderer rather than `$errors`, so a view
+     * rendered as a partial - a form included by an action that passed no error
+     * bag - behaves the same as one that got the variable. Whitespace is
+     * normalized, because `$baseClass` is free text and `"regular-text "` would
+     * otherwise yield a doubled space that no test ever notices and no reader ever
+     * sees. And a missing field and an empty message list are the same answer,
+     * which a view testing `!empty()` has to know and this does not.
+     *
+     * Emitted as an attribute value rather than a whole `class="..."`, so it
+     * composes with the class names a project already writes inline:
+     *
+     *     class="button <?= field_class('name', '') ?>"
+     *
+     * @param string $baseClass  Class(es) every input gets.
+     * @param string $errorClass Appended only when the field has a message.
+     */
+    function field_class(string $field, string $baseClass = 'regular-text', string $errorClass = 'is-invalid'): string
+    {
+        try {
+            /** @var \Framework\Support\ViewRenderer $renderer */
+            $renderer = app(\Framework\Support\ViewRenderer::class);
+
+            $failed = $renderer->hasError($field);
+        } catch (\Throwable) {
+            // Outside WordPress, or before boot: no renderer means no flash. A
+            // form that renders and simply shows no error state beats one that
+            // fatal-errors, which is the same trade `old()` makes.
+            $failed = false;
+        }
+
+        $classes = $baseClass;
+
+        if ($failed) {
+            $classes = trim($baseClass . ' ' . $errorClass);
+        }
+
+        return e($classes);
+    }
+}
+
+if (! function_exists('field_error')) {
+    /**
+     * A field's first validation message, or null when it passed.
+     *
+     * One message, not all of them: an input showing three things wrong with it
+     * is noise, and the first is the one the user acts on.
+     *
+     * The null return is what makes the call site a one-line guard rather than a
+     * nested one - the assignment *is* the test, and the message is in scope
+     * inside the `if`:
+     *
+     *     <?php if ($error = field_error('name')): ?>
+     *         <p class="error-message"><?= e($error) ?></p>
+     *     <?php endif; ?>
+     *
+     * Deliberately **not** escaped here, because the two things a caller does with
+     * it disagree: rendered as text (escape it) or tested for a substring before
+     * deciding (escaping first would make the match fail on `&`). `old()` escapes
+     * because it has exactly one consumer, an attribute; this has two, so the
+     * caller keeps `e()`. The success path is what matters for XSS: an unescaped
+     * message can only reach the page through a call the view already wrote.
+     */
+    function field_error(string $field): ?string
+    {
+        try {
+            /** @var \Framework\Support\ViewRenderer $renderer */
+            $renderer = app(\Framework\Support\ViewRenderer::class);
+
+            return $renderer->firstError($field);
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+}
+
+if (! function_exists('field_errors')) {
+    /**
+     * Every message for a field, as a list.
+     *
+     * The plural companion to {@see field_error()}, for the one place that wants
+     * them all: a password field explaining the whole policy rather than the first
+     * clause of it.
+     *
+     * @return list<string>
+     */
+    function field_errors(string $field): array
+    {
+        try {
+            /** @var \Framework\Support\ViewRenderer $renderer */
+            $renderer = app(\Framework\Support\ViewRenderer::class);
+
+            return $renderer->errorsFor($field);
+        } catch (\Throwable) {
+            return [];
+        }
+    }
+}
+
 if (! function_exists('route')) {
     /**
      * The URL for a named route.

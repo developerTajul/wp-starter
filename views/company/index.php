@@ -22,20 +22,12 @@ declare(strict_types=1);
  * outside a full admin request. The two exceptions are the closures at the top,
  * which compose a query string onto an address they were handed.
  *
- * Sorting, the page number and the search term all travel on the query string,
- * and every link here preserves the other two. A sort link that dropped the
- * search would silently widen the list; a pager link that dropped the sort would
- * silently reorder it.
+ * The page number travels on the query string, and every link here preserves it.
+ * A pager link that dropped it would silently jump to page 1.
  *
  * @var list<\Core\Company\Application\DTOs\Responses\CompanyResponseDTO> $companies
  * @var \Core\Shared\Domain\DataObjects\PaginatedResult|null             $page
  * @var string                                                           $createUrl
- * @var string                                                           $searchUrl
- * @var string                                                           $search
- * @var string                                                           $searchKey
- * @var int                                                              $totalCompanies
- * @var string                                                           $orderby
- * @var string                                                           $order
  * @var string                                                           $formAction
  * @var string                                                           $routeAction
  * @var string                                                           $nonceField
@@ -75,35 +67,20 @@ $columns = [
  * and a view that cannot render without the CMS is a view the rest of this
  * framework deliberately avoids - `e()` exists for the same reason.
  *
- * The base is the screen's own route, which already carries `page`, so the slug
- * is never re-added here: appending it would produce `?page=companies&page=companies`,
- * and while PHP's parser keeps the last one and the screen would still work, the
- * duplication is a bug waiting for the day two values differ.
+ * The base is the screen's own address, `admin.php?page=companies`, which names
+ * `page` exactly once - the parameter WordPress picks the screen from.
  *
- * The search is read under the controller's canonical key and re-emitted under
- * it, so a link this screen generates never perpetuates the legacy spelling even
- * when the address it was reached by used it.
- *
- * A null override drops its key, and a key whose value is the default for its
- * own scope is dropped too, so a pager link does not carry `orderby=created_at`
- * behind it. `paged` in particular is dropped at `1`, which keeps page one at
- * the bare screen address.
+ * `paged` is dropped at `1`, which keeps page one at the bare screen address.
  *
  * @param array<string, string|int|null> $overrides
  */
-$listUrl = static function (array $overrides) use ($searchUrl, $searchKey): string {
+$listUrl = static function (array $overrides) use ($screen): string {
+    $base = 'admin.php?page=' . $screen;
+
     // What the user is looking at now, so a link inherits it and changes only the
-    // one key it is about: a sort click keeps the search, a pager click keeps the
-    // sort. Read from the request because the controller hands the view the sort
-    // it defaulted to, and echoing that default back into every link would turn
-    // "no sort chosen" into a sort the user never asked for.
+    // key it is about: a pager click keeps the page number.
     $query = array_filter(
-        [
-            $searchKey => $_GET[$searchKey] ?? null,
-            'orderby' => $_GET['orderby'] ?? null,
-            'order' => $_GET['order'] ?? null,
-            'paged' => $_GET['paged'] ?? null,
-        ],
+        ['paged' => $_GET['paged'] ?? null],
         static fn ($value): bool => is_string($value) && $value !== ''
     );
 
@@ -117,9 +94,7 @@ $listUrl = static function (array $overrides) use ($searchUrl, $searchKey): stri
         $query[$key] = $value;
     }
 
-    $separator = str_contains($searchUrl, '?') ? '&' : '?';
-
-    return $query === [] ? $searchUrl : $searchUrl . $separator . http_build_query($query);
+    return $query === [] ? $base : $base . '&' . http_build_query($query);
 };
 
 /**
@@ -149,94 +124,16 @@ $editUrlFor = static function (int $companyId) use ($editUrl, $editPageParam, $e
 
     return $editUrl . $separator . http_build_query($query);
 };
-
-/**
- * A sortable column header.
- *
- * WordPress's own list tables render these as a link inside the `<th>`, with the
- * current sort class on both. Clicking the column that is already sorted flips
- * the direction; clicking any other column sorts it ascending, which is what a
- * reader expects from a column they have not sorted before.
- *
- * @param string $column The `orderby` value, which the read adapter whitelists.
- * @param string $label  The column's visible text.
- * @param bool   $primary Whether this is the row's primary column, which
- *                        WordPress marks and mobile views collapse to.
- */
-$sortableTh = static function (string $column, string $label, bool $primary = false) use ($orderby, $order, $listUrl): string {
-    $isSorted = $orderby === $column;
-    $nextOrder = $isSorted && $order === 'asc' ? 'desc' : 'asc';
-
-    // WordPress puts `sorted` plus the current direction on a column that is
-    // sorted, and `desc` on one that is not - which is what draws its arrow. The
-    // class is read from the query string for the same reason the links are: it
-    // must describe the request, not the screen's default.
-    $requested = $_GET['orderby'] ?? null;
-    $direction = ($_GET['order'] ?? null) === 'asc' ? 'asc' : 'desc';
-
-    $classes = 'manage-column column-' . $column . ' sortable';
-    $classes .= $primary ? ' column-primary' : '';
-    $classes .= is_string($requested) && $requested === $column ? ' sorted ' . $direction : ' desc';
-
-    return sprintf(
-        '<th scope="col" class="%s"><a href="%s"><span>%s</span><span class="sorting-indicator"></span></a></th>',
-        e($classes),
-        e($listUrl(['orderby' => $column, 'order' => $nextOrder, 'paged' => null])),
-        e($label)
-    );
-};
 ?>
 
 <h1 class="wp-heading-inline">Companies</h1>
 <a href="<?= e($createUrl) ?>" class="page-title-action">Add New Company</a>
 <hr class="wp-header-end">
 
-<?php
-// WordPress's status filter views. This module has no status column - a company
-// is simply stored or deleted - so the list is one view rather than several. The
-// block is still rendered because it is what carries the table's total on every
-// WordPress list screen, and a reader looks for it there.
-//
-// The count is the table's size, not the current result set's: it is read with
-// the search left out, so typing in the search box does not appear to change how
-// many companies exist. That is what `All` means on WordPress's own screens.
-?>
-<ul class="subsubsub">
-    <li class="all">
-        <a href="<?= e($searchUrl) ?>" class="current" aria-current="page">
-            All <span class="count">(<?= e((string) $totalCompanies) ?>)</span>
-        </a>
-    </li>
-</ul>
-<br class="clear">
-
-<?php // A GET form: a filter is part of the address the user asked for - linkable,
-      // bookmarkable and repeatable, which a POST filter is not. ?>
-<form method="get" action="<?= e($searchUrl) ?>">
-    <?php
-    // WordPress reads `page` as the screen slug. Without this field the form
-    // submits to admin.php without it and the user lands on the dashboard.
-    ?>
+<?php // The form keeps the user on this screen: `admin.php?page=companies`. Without
+      // it every GET below lands on the dashboard. ?>
+<form method="get" action="<?= e('admin.php?page=' . \App\Http\Controllers\Admin\CompanyController::SCREEN_SLUG) ?>">
     <input type="hidden" name="page" value="<?= e($screen) ?>">
-    <?php
-    // The current sort survives a new search: the user is refining a list they
-    // have already arranged, not asking for it back in its default order.
-    ?>
-    <input type="hidden" name="orderby" value="<?= e($orderby) ?>">
-    <input type="hidden" name="order" value="<?= e($order) ?>">
-
-    <div class="tablenav top">
-        <div class="alignleft actions">
-            <label class="screen-reader-text" for="company-search">Search companies</label>
-            <input type="search"
-                   id="company-search"
-                   name="<?= e($searchKey) ?>"
-                   value="<?= e($search) ?>"
-                   placeholder="Search companies">
-            <button type="submit" class="button">Search</button>
-        </div>
-        <br class="clear">
-    </div>
 </form>
 
 <?php
@@ -275,8 +172,16 @@ $sortableTh = static function (string $column, string $label, bool $primary = fa
                     <label class="screen-reader-text" for="cb-select-all-1">Select all</label>
                     <input id="cb-select-all-1" type="checkbox">
                 </td>
+                <?php
+                // Plain headings, not links: the list has a fixed order and
+                // offers no control to change it. WordPress renders `sorted` and
+                // an arrow on a clickable column, so carrying those classes here
+                // would advertise a control that does not exist.
+                ?>
                 <?php foreach ($columns as $column => $label): ?>
-                    <?= $sortableTh($column, $label, $column === 'name') ?>
+                    <th scope="col" class="manage-column column-<?= e($column) ?><?= $column === 'name' ? ' column-primary' : '' ?>">
+                        <?= e($label) ?>
+                    </th>
                 <?php endforeach; ?>
             </tr>
         </thead>
@@ -287,11 +192,7 @@ $sortableTh = static function (string $column, string $label, bool $primary = fa
                           // header's own count plus one - never a literal that the
                           // column list could outgrow. ?>
                     <td class="colspanchange" colspan="<?= e((string) (count($columns) + 1)) ?>">
-                        <?php if ($search !== ''): ?>
-                            No companies match &ldquo;<?= e($search) ?>&rdquo;.
-                        <?php else: ?>
-                            No companies found.
-                        <?php endif; ?>
+                        No companies found.
                     </td>
                 </tr>
             <?php endif; ?>
