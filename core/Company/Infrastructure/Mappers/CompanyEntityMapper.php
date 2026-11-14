@@ -14,14 +14,6 @@ final class CompanyEntityMapper
     /**
      * Builds a pure domain entity from a database row.
      *
-     * Every nullable column is cast through {@see toNullableString()} rather
-     * than passed through. A driver does not return a VARCHAR as a string: a
-     * digits-only value such as a phone number comes back as a PHP int, and
-     * `CompanyEntity::reconstitute()` declares `?string`, so under
-     * `strict_types=1` the int is a TypeError rather than a coercion. Casting at
-     * the boundary keeps the entity's signature honest and means the adapter,
-     * not the domain, absorbs the driver's typing.
-     *
      * @param array $data
      *
      * @return CompanyEntity
@@ -42,10 +34,6 @@ final class CompanyEntityMapper
 
     /**
      * A column value as a nullable string.
-     *
-     * An empty string reads as absent, matching the entity's own reading: the
-     * create and edit forms submit `''` for a field left blank, and `null` is
-     * what the entity stores for one.
      *
      * @param mixed $value
      *

@@ -9,5 +9,12 @@ namespace Core\Company\Application\DTOs\Requests;
  */
 final readonly class CompanyFilterDTO
 {
-    public function __construct(public int $perPage = 15) {}
+    /**
+     * @param int $perPage
+     * @param int $page      1-based page number.
+     */
+    public function __construct(
+        public int $perPage = 15,
+        public int $page = 1,
+    ) {}
 }

@@ -17,18 +17,14 @@ use Core\Company\Infrastructure\Mappers\CompanyEntityMapper;
 use Core\Shared\Domain\DataObjects\PaginatedResult;
 use Framework\Database\Query\QueryBuilderInterface;
 use RuntimeException;
-use wpdb;
 
 /**
  * Reads for the company list, detail and single lookup. Returns read models
  * only.
  *
- * Every read runs on the fluent builder, including the paged list and the
- * joined detail reads. Nothing here issues raw SQL or touches `$wpdb`.
- *
  * @implements CompanyQueryContract
  */
-final class WPFluentCompanyReadRepository implements CompanyQueryContract
+final class WpCompanyReadRepository implements CompanyQueryContract
 {
     /** The table's name without the WordPress prefix. */
     public const TABLE_SUFFIX = 'companies';
@@ -104,26 +100,22 @@ final class WPFluentCompanyReadRepository implements CompanyQueryContract
     public function getFilteredCompanies(CompanyFilter $filter): PaginatedResult
     {
         $perPage = $filter->perPage;
+        $page = $filter->page;
 
         $total = $this->query->table(self::TABLE_SUFFIX)->count();
 
-        // The count settles the real bound, so the requested page is clamped to
-        // it BEFORE the offset is computed. A bookmarked `?paged=3` against a
-        // list that has since shrunk to one page would otherwise select an offset
-        // past the end: the table comes back empty while the pager still reads
-        // "3 of 1", leaving the user on a blank screen whose only way out is
-        // editing the URL by hand.
-        //
-        // The bounds come from PaginatedResult rather than from a local
-        // `ceil($total / $perPage)`: it owns that arithmetic and `isBeyondLastPage()`
-        // IS the "you are nowhere" signal, so re-deriving it here would be a
-        // second copy of both to keep in step.
+        // The count settles the real bound, so a page past the end is clamped
+        // to the last one before the offset is computed - otherwise the read
+        // selects past the end and the pager shows a blank screen under a
+        // count that does not admit the page. PaginatedResult owns that
+        // arithmetic, so the clamp asks it rather than re-deriving the bounds.
         $requested = PaginatedResult::fromSlice(
             items: [],
             total: $total,
             perPage: $perPage,
-            currentPage: $this->currentPage()
+            currentPage: $page
         );
+
         $page = $requested->isBeyondLastPage() ? $requested->lastPage() : $requested->currentPage();
 
         $rows = $this->sortedQuery()
@@ -142,16 +134,6 @@ final class WPFluentCompanyReadRepository implements CompanyQueryContract
 
     /**
      * A builder reading the company table in the list's own order.
-     *
-     * The order is fixed ({@see self::ORDER_COLUMN} descending). It is applied
-     * here rather than passed in because the screen has no sorting control, so
-     * no request value takes part in it - there is nothing to whitelist and no
-     * direction to normalise, and the `ORDER BY` clause cannot be reached from a
-     * URL at all.
-     *
-     * The `id` tie-breaker is always `DESC` and always last: it exists to make
-     * the order of equal sort keys stable so a paginated offset cannot repeat a
-     * row on one page and skip another.
      *
      * @return QueryBuilderInterface
      */
@@ -185,11 +167,6 @@ final class WPFluentCompanyReadRepository implements CompanyQueryContract
      * Returns one company with its contacts, deals, deal stages and deal
      * activities.
      *
-     * Read as separate statements rather than one joined statement: the three
-     * collections are independent of each other, and joining them together
-     * would multiply the deal rows by the contact rows and hand back a
-     * cartesian product to de-duplicate in PHP.
-     *
      * @param int $companyId
      *
      * @return CompanyDetailData|null Null when no company carries the id.
@@ -222,10 +199,6 @@ final class WPFluentCompanyReadRepository implements CompanyQueryContract
     /**
      * The contacts linked to a company, carrying the pivot's own fields.
      *
-     * The pivot is the FROM table and `contacts` is joined to it, because the
-     * predicate narrows on the pivot's `company_id`; joining the other way round
-     * would read every contact and discard almost all of them.
-     *
      * @param int $companyId
      *
      * @return list<CompanyContactProjectionDTO>
@@ -234,7 +207,7 @@ final class WPFluentCompanyReadRepository implements CompanyQueryContract
     {
         $rows = $this->query
             ->table(self::COMPANY_CONTACT_TABLE)
-            ->select('id', 'name', 'email', 'phone', 'job_title', 'is_primary')
+            ->select('company_contact.id', 'name', 'email', 'phone', 'job_title', 'is_primary')
             ->join(self::CONTACTS_TABLE, 'contacts.id', '=', 'company_contact.contact_id')
             ->where('company_contact.company_id', $companyId)
             ->orderByDesc('company_contact.is_primary')
@@ -260,12 +233,6 @@ final class WPFluentCompanyReadRepository implements CompanyQueryContract
     /**
      * The deals opened against a company, each with its stage and activities.
      *
-     * The stage is a `LEFT JOIN` rather than an inner one: an inner join would
-     * drop a deal whose stage row had gone, and a missing deal is a worse
-     * failure than a deal shown without its stage. The stage columns come back
-     * null in that case, which {@see toStageProjection()} turns into a null
-     * stage rather than a half-built one.
-     *
      * @param int $companyId
      *
      * @return list<CompanyDealProjectionDTO>
@@ -275,7 +242,7 @@ final class WPFluentCompanyReadRepository implements CompanyQueryContract
         $rows = $this->query
             ->table(self::DEALS_TABLE)
             ->select(
-                'id',
+                'deals.id',
                 'title',
                 'amount',
                 'currency',
@@ -336,11 +303,7 @@ final class WPFluentCompanyReadRepository implements CompanyQueryContract
     }
 
     /**
-     * The company's deal activities, grouped by the deal each one tracks.
-     *
-     * The deal ids are read first and passed to `whereIn()`, rather than using a
-     * correlated sub-select: the builder has no sub-query support, and a list of
-     * ids is a predicate it can express - and bind - directly.
+     * The company's deal activities, grouped by deal.
      *
      * @param int $companyId
      *
@@ -357,9 +320,6 @@ final class WPFluentCompanyReadRepository implements CompanyQueryContract
                 ->get()
         );
 
-        // No deals means no deal activities, and `whereIn()` refuses an empty
-        // list - so the read is skipped rather than asked a question with no
-        // meaningful answer.
         if ($dealIds === []) {
             return [];
         }
@@ -384,15 +344,6 @@ final class WPFluentCompanyReadRepository implements CompanyQueryContract
     /**
      * A builder for activity rows joined to their author.
      *
-     * The user join is a `LEFT JOIN` because `activities.user_id` is nullable and
-     * is set to NULL when the user is deleted, so an inner join would silently
-     * drop activities whose author is gone. WordPress owns that table and its
-     * display name is `display_name`, not the `name` an Eloquent model exposed.
-     *
-     * The projection is qualified with the `a` alias the join introduces: `id`
-     * alone is ambiguous to MySQL once two tables are in play, and is rejected
-     * rather than resolved to one of them.
-     *
      * @return QueryBuilderInterface
      */
     private function activityRows(): QueryBuilderInterface
@@ -400,7 +351,7 @@ final class WPFluentCompanyReadRepository implements CompanyQueryContract
         return $this->query
             ->table(self::ACTIVITIES_TABLE)
             ->select(
-                'id',
+                'activities.id',
                 'type',
                 'subject',
                 'description',
@@ -485,44 +436,7 @@ final class WPFluentCompanyReadRepository implements CompanyQueryContract
     // ------------------------------------------------------------------ internals
 
     /**
-     * The page being requested, from the query string.
-     *
-     * Read from `paged`, WordPress's own key for a list table's page, and not
-     * from `page`: on a wp-admin screen `page` carries the menu slug WordPress
-     * uses to choose which screen renders, so `admin.php?page=companies` would
-     * be read as the string `"companies"` and cast to `0` on every request -
-     * pinning the list to page 1 and making the pager unable to move.
-     *
-     * `CompanyFilter` carries no page, and reading it here keeps that value
-     * object free of transport state. `$_GET` rather than the framework Request
-     * because this class sits in `core/` and cannot name `Framework\Http\Request`.
-     *
-     * A missing or unparseable value is page 1, not an error: a bad page in a
-     * URL is someone typing, not a fault.
-     *
-     * Only the floor is settled here. The ceiling cannot be: it depends on how
-     * many rows match, which takes the count {@see getFilteredCompanies()} makes.
-     * That method clamps the value this returns.
-     *
-     * @return int
-     */
-    private function currentPage(): int
-    {
-        $page = $_GET['paged'] ?? null;
-
-        if (! is_scalar($page)) {
-            return 1;
-        }
-
-        return max(1, (int) $page);
-    }
-
-    /**
-     * A value that is absent when the column is null or an empty string.
-     *
-     * An empty string is absent, not a value: some drivers deliver a nullable
-     * column that way, and a stored `''` reads as "nothing here" for every field
-     * on this screen.
+     * A column value that is absent when null or empty.
      *
      * @param mixed $value
      *

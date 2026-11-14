@@ -12,52 +12,39 @@ use Core\Company\Application\Contracts\CompanyQueryServiceContract;
 use Framework\Http\Contracts\ResponseInterface;
 use Framework\Http\Request;
 
-
 final class CompanyController
 {
-    /** List screen slug: `admin.php?page=companies`. */
     public const SCREEN_SLUG = 'companies';
-
-    /** Slug of the add-company screen under {@see self::SCREEN_SLUG}. */
     public const CREATE_SLUG = 'company-create';
-
-    /** Slug of the edit-company screen under {@see self::SCREEN_SLUG}. */
     public const EDIT_SLUG = 'company-edit';
-
-    /** Capability the screens and the form handlers require. */
     public const CAPABILITY = 'manage_options';
-
-    /** `admin_post_{action}` name the add-company form posts to. */
     public const STORE_ACTION = 'company_store';
-
-    /** `admin_post_{action}` name the edit-company form posts to. */
     public const UPDATE_ACTION = 'company_update';
-
-    /** `admin_post_{action}` name the bulk-actions form posts to. */
     public const BULK_ACTION = 'company_bulk';
-
-    /** `admin_post_{action}` name the list's row-action delete posts to. */
     public const DESTROY_ACTION = 'company_destroy';
 
-    /** The bulk operation the form offers, as WordPress's own list tables send it. */
     private const BULK_DELETE = 'delete';
-
-
-    /** The parameter a row action names its record with. */
     private const ROW_ID_PARAM = 'id';
+    private const DELETE_FORM_ID = 'company-delete';
 
     public function __construct(
         private readonly CompanyCommandServiceContract $companyCommandService,
         private readonly CompanyQueryServiceContract $companyQueryService,
         private readonly CompanyMapperContract $mapper,
-    ) {
-    }
+    ) {}
 
-    /** Renders the companies list. */
-    public function index(): ResponseInterface
+    /**
+     * Renders the companies list.
+     *
+     * @param Request $request
+     * @return ResponseInterface
+     */
+    public function index(Request $request): ResponseInterface
     {
         $result = $this->companyQueryService->getPaginatedCompanies(
-            $this->mapper->mapToFilterDTO(['per_page' => null])
+            $this->mapper->mapToFilterDTO(
+                ['per_page' => null, 'paged' => $this->currentPage($request)]
+            )
         );
 
         $companies = [];
@@ -78,10 +65,23 @@ final class CompanyController
     }
 
     /**
-     * Builds the WordPress values the list's row actions need.
+     * The page the list is being read at, or 1 if the URL carries nothing.
      *
-     * `deleteFormIdFor` is a closure because each row gets a form of its own,
-     * and the id has to name exactly one of them.
+     * Read from `paged`, WordPress's own key for a list table's page - not from
+     * `page`, which on a wp-admin screen names the menu slug the screen is
+     * chosen by. The list's own pager links carry the same key, so the value
+     * this reads is the one the view writes.
+     *
+     * @param Request $request
+     * @return int
+     */
+    private function currentPage(Request $request): int
+    {
+        return $this->toPositiveInt($request->query('paged')) ?? 1;
+    }
+
+    /**
+     * Builds row action wiring data.
      *
      * @return array<string, mixed>
      */
@@ -104,11 +104,8 @@ final class CompanyController
         ];
     }
 
-    /** Prefix of each row's own delete form id. */
-    private const DELETE_FORM_ID = 'company-delete';
-
     /**
-     * Builds the WordPress values the bulk-actions form needs to submit.
+     * Builds bulk action wiring data.
      *
      * @return array<string, string>
      */
@@ -122,6 +119,11 @@ final class CompanyController
         ];
     }
 
+    /**
+     * Shows the add company form.
+     *
+     * @return ResponseInterface
+     */
     public function create(): ResponseInterface
     {
         return view('company.create', [
@@ -130,12 +132,17 @@ final class CompanyController
         ])->withTitle('Add a company');
     }
 
-    /** Handles the add-company submission. */
+    /**
+     * Handles company creation.
+     *
+     * @param StoreCompanyRequest $request
+     * @return ResponseInterface
+     */
     public function store(StoreCompanyRequest $request): ResponseInterface
     {
-        $result = $this->companyCommandService->createCompany(
-            $this->mapper->mapToStoreDTO($request->validated())
-        );
+        $StoreCompanyDTO = $this->mapper->mapToStoreDTO($request->validated());
+
+        $result = $this->companyCommandService->createCompany($StoreCompanyDTO);
 
         if ($result->isFailure()) {
             return redirect()->route('companies.index')->with('error', $result->message());
@@ -144,16 +151,22 @@ final class CompanyController
         return redirect()->route('companies.index')->with('notice', $result->message());
     }
 
+    /**
+     * Shows a single company.
+     *
+     * @param string $id
+     * @return ResponseInterface
+     */
     public function show(string $id): ResponseInterface
     {
         return view('company.show', ['company' => ['id' => $id]])->withTitle('Company');
     }
 
     /**
-     * Renders the edit-company form for one record.
+     * Shows the edit company form.
      *
-     * A missing or unusable id redirects to the list rather than rendering an
-     * empty form.
+     * @param Request $request
+     * @return ResponseInterface
      */
     public function edit(Request $request): ResponseInterface
     {
@@ -184,7 +197,12 @@ final class CompanyController
         ])->withTitle('Edit company');
     }
 
-    /** Handles the edit-company submission. */
+    /**
+     * Handles company update.
+     *
+     * @param UpdateCompanyRequest $request
+     * @return ResponseInterface
+     */
     public function update(UpdateCompanyRequest $request): ResponseInterface
     {
         $data = $request->validated();
@@ -203,7 +221,12 @@ final class CompanyController
         return redirect()->route('companies.index')->with('notice', $result->message());
     }
 
-    /** Deletes one company, from the list's row action. */
+    /**
+     * Deletes a company.
+     *
+     * @param Request $request
+     * @return ResponseInterface
+     */
     public function destroy(Request $request): ResponseInterface
     {
         $id = $this->submittedId($request);
@@ -222,10 +245,10 @@ final class CompanyController
     }
 
     /**
-     * Reads the company id a row-action submission names, or null.
+     * Reads the submitted company ID.
      *
-     * Read through `input()` so the id is found from either a query parameter or
-     * a form field.
+     * @param Request $request
+     * @return int|null
      */
     private function submittedId(Request $request): ?int
     {
@@ -233,11 +256,10 @@ final class CompanyController
     }
 
     /**
-     * Handles the list's bulk-actions form.
+     * Handles bulk company deletion.
      *
-     * An empty action (the dropdown left on "Bulk actions") is an ordinary
-     * submission, not an error. Deletes run one id at a time through the
-     * command service; the first failure stops the run.
+     * @param Request $request
+     * @return ResponseInterface
      */
     public function bulkDestroy(Request $request): ResponseInterface
     {
@@ -260,11 +282,7 @@ final class CompanyController
             $result = $this->companyCommandService->deleteCompany($id);
 
             if ($result->isFailure()) {
-                // The first failure stops the run. Later ids are left alone
-                // rather than attempted, so the notice names a count that
-                // matches what the user will find.
                 $failure = $result->message();
-
                 break;
             }
 
@@ -282,11 +300,9 @@ final class CompanyController
     }
 
     /**
-     * Reads the company ids a bulk submission selected.
+     * Reads submitted company IDs for bulk actions.
      *
-     * Every shape is accepted (array, scalar, strings) and narrowed to positive
-     * integers; anything else is dropped.
-     *
+     * @param Request $request
      * @return list<int>
      */
     private function submittedIds(Request $request): array
@@ -308,16 +324,13 @@ final class CompanyController
             }
         }
 
-        // Duplicates would delete the same row twice, and the second attempt
-        // would report a not-found failure for a row the first attempt removed.
         return array_values(array_unique($ids));
     }
 
     /**
-     * Casts a submitted value to a positive integer, or null.
+     * Casts a value to a positive integer.
      *
      * @param mixed $value
-     *
      * @return int|null
      */
     private function toPositiveInt(mixed $value): ?int
@@ -336,22 +349,10 @@ final class CompanyController
     }
 
     /**
-     * Builds the WordPress values a company form needs to submit.
+     * Builds form wiring data.
      *
-     * The nonce is minted for `$action`, the same string the route's `nonce:`
-     * middleware verifies.
-     *
-     * `$redirectTo` is taken as an already-resolved URL rather than a route name,
-     * because the edit form's return address names a record: a rejected update
-     * has to come back to *that* company's form, and `route()` cannot build a URL
-     * carrying a value the route's own path does not declare. The add form passes
-     * `route('companies.create')` and the edit form passes
-     * {@see self::editScreenUrl()}, so both spell the decision at the call site
-     * that knows which screen the user was on.
-     *
-     * @param string $action     One of {@see self::STORE_ACTION} / {@see self::UPDATE_ACTION}.
-     * @param string $redirectTo Resolved URL a rejected submission returns to.
-     *
+     * @param string $action
+     * @param string $redirectTo
      * @return array<string, string>
      */
     private function formWiring(string $action, string $redirectTo): array
@@ -365,25 +366,14 @@ final class CompanyController
     }
 
     /**
-     * The edit screen's address for one record.
+     * Generates the edit screen URL for a record.
      *
-     * `admin.php?page=company-edit&id=N`. The slug is the screen and the id is a
-     * query parameter beside it, because WordPress picks an admin screen by
-     * matching `?page=` against the slugs it was handed at `admin_menu`, and a
-     * slug is one string with no segments.
-     *
-     * Built from the route's own URL rather than assembled by hand so the screen
-     * slug has one source: appending a second `?` here would produce
-     * `?page=company-edit?page=company-edit&id=7`, which PHP's parser reads as
-     * `page=company-edit?page=company-edit` with no `id` at all, and the edit
-     * screen would open the list instead of the record.
-     *
-     * @param int $companyId The record the address names.
+     * @param int $companyId
+     * @return string
      */
     private function editScreenUrl(int $companyId): string
     {
         $base = route('companies.edit');
-
         $separator = str_contains($base, '?') ? '&' : '?';
 
         return $base . $separator . http_build_query([self::ROW_ID_PARAM => $companyId]);

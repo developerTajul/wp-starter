@@ -99,6 +99,37 @@ class Validator
     private const MODIFIERS = ['nullable', 'sometimes'];
 
     /**
+     * Rules that make a numeric-looking string mean a number, not a run of text.
+     *
+     * `min`, `max`, `size` and `between` have to measure whatever they are given:
+     * characters for text, magnitude for a number, elements for an array. The
+     * value's own PHP type cannot decide that on its own  -  every form and query
+     * string value arrives as a string, so `'+88019619264800'` is a phone number a
+     * user typed, not the integer 88019619264800. Reading it as a number measures
+     * it as 88,019,619,264,800 and reports "must not be greater than 20".
+     *
+     * The author says which reading they mean by attaching one of these rules, and
+     * that is the only thing that switches a numeric string to numeric measure.
+     * Laravel decides it the same way, with the same list.
+     *
+     * @var list<string>
+     */
+    private const NUMERIC_RULES = ['numeric', 'integer'];
+
+    /**
+     * The rule names of the attribute currently being validated.
+     *
+     * `min`/`max`/`size`/`between` are reached through the dispatch loop in
+     * {@see validateAttribute()}, which is the only place that knows the whole
+     * rule set for one attribute. Storing the names here is what lets them ask
+     * whether a numeric rule was attached, the way Laravel's `hasRule()` does,
+     * without widening every validator method's signature for one shared question.
+     *
+     * @var list<string>
+     */
+    private array $currentRules = [];
+
+    /**
      * Human-readable names for the fields in messages.
      *
      * The key is the attribute path *without* a wildcard segment, so `tags` can
@@ -242,33 +273,50 @@ class Validator
             return;
         }
 
-        foreach ($rules as $rule) {
-            if (is_callable($rule)) {
-                $this->runClosure($attribute, $value, $rule);
+        $this->currentRules = $names;
 
-                continue;
+        try {
+            foreach ($rules as $rule) {
+                if (is_callable($rule)) {
+                    $this->runClosure($attribute, $value, $rule);
+
+                    continue;
+                }
+
+                if (in_array($rule['name'], self::MODIFIERS, true)) {
+                    continue;
+                }
+
+                $method = self::RULES[$rule['name']] ?? null;
+
+                if ($method === null) {
+                    // An unknown rule is a mistake in the rules definition, not data
+                    // the user got wrong. Reported against the field so the author
+                    // sees which one, and raised rather than passed  -  a typo'd
+                    // `requird` that silently accepted everything would ship.
+                    throw new \InvalidArgumentException(sprintf(
+                        'Unknown validation rule [%s] on attribute [%s].',
+                        $rule['name'],
+                        $attribute
+                    ));
+                }
+
+                $this->{$method}($attribute, $value, $rule['args']);
             }
-
-            if (in_array($rule['name'], self::MODIFIERS, true)) {
-                continue;
-            }
-
-            $method = self::RULES[$rule['name']] ?? null;
-
-            if ($method === null) {
-                // An unknown rule is a mistake in the rules definition, not data
-                // the user got wrong. Reported against the field so the author
-                // sees which one, and raised rather than passed  -  a typo'd
-                // `requird` that silently accepted everything would ship.
-                throw new \InvalidArgumentException(sprintf(
-                    'Unknown validation rule [%s] on attribute [%s].',
-                    $rule['name'],
-                    $attribute
-                ));
-            }
-
-            $this->{$method}($attribute, $value, $rule['args']);
+        } finally {
+            // Cleared in a `finally` because a rule that throws  -  an unknown name,
+            // a missing bound  -  would otherwise leave this attribute's rules in
+            // place, and the next field's `max` would measure itself by them.
+            $this->currentRules = [];
         }
+    }
+
+    /**
+     * Whether a numeric rule was attached to the attribute being validated.
+     */
+    private function hasNumericRule(): bool
+    {
+        return array_intersect($this->currentRules, self::NUMERIC_RULES) !== [];
     }
 
     /**
@@ -815,10 +863,12 @@ class Validator
      * the comparison direction  -  and duplicating the measure-selection logic
      * would be duplicating the part that is easy to get wrong.
      *
-     * The measure is chosen by the value's own type, which is what makes
-     * `max:255` mean "255 characters" for a string and "255" for a number. Both
-     * readings are correct; which one applies is decided by what the user sent,
-     * not by a separate rule name.
+     * The measure is characters for a string, magnitude for a number, and the
+     * count for an array. What decides between the first two is the *rule set*,
+     * not the value's PHP type: a numeric string counts as a number only when the
+     * author attached `numeric` or `integer`. Without one, `'+88019619264800'` is
+     * 15 characters and a `max:20` phone rule accepts it  -  see
+     * {@see self::NUMERIC_RULES} for why that has to be the author's call.
      *
      * @param list<string> $args
      */
@@ -834,21 +884,7 @@ class Validator
 
         $bound = (float) $args[0];
 
-        if (is_array($value)) {
-            $measure = (float) count($value);
-        } elseif (is_numeric($value)) {
-            // A digit-string is ambiguous  -  "10" is both ten and two characters.
-            // Read as a *number*, because a rule author writing `min:18` on an age
-            // field means eighteen years, and the form sent "18". A length check
-            // on a numeric string is what `size` is for.
-            //
-            // One branch, not two: `is_numeric()` already covers both the real
-            // number and the digit-string, and splitting it read as a type
-            // distinction the code did not actually make.
-            $measure = (float) $value;
-        } else {
-            $measure = (float) mb_strlen((string) $value);
-        }
+        $measure = $this->size($value);
 
         $fails = $direction === 'min' ? $measure < $bound : $measure > $bound;
 
@@ -863,6 +899,31 @@ class Validator
             $this->label($attribute),
             $this->trimBound($bound)
         ));
+    }
+
+    /**
+     * What a value measures, for `min`, `max`, `size` and `between`.
+     *
+     * One implementation for all four, because a rule that measured a value
+     * differently from its siblings would disagree with them silently  -  `max:3`
+     * rejecting a phone that `between:0,20` accepted has no reading an author
+     * could predict.
+     *
+     * A numeric string falls to the character count unless a numeric rule was
+     * attached, which is Laravel's rule and the reason a form's `'30'` is two
+     * characters to a bare `between:18,120`.
+     */
+    private function size(mixed $value): float
+    {
+        if (is_array($value)) {
+            return (float) count($value);
+        }
+
+        if ($this->hasNumericRule() && is_numeric($value)) {
+            return (float) $value;
+        }
+
+        return (float) mb_strlen((string) ($value ?? ''));
     }
 
     /**
@@ -891,9 +952,7 @@ class Validator
         $low = (float) $args[0];
         $high = (float) $args[1];
 
-        $measure = is_array($value)
-            ? (float) count($value)
-            : (is_numeric($value) ? (float) $value : (float) mb_strlen((string) $value));
+        $measure = $this->size($value);
 
         if ($measure < $low || $measure > $high) {
             $this->addError($attribute, sprintf(
@@ -922,16 +981,7 @@ class Validator
 
         $expected = (float) $args[0];
 
-        // The numeric branch comes *first* here, and only when the rule author
-        // asked for a size on a non-string. The distinction from `min`/`max` is
-        // deliberate: `size:5` on a string means five characters, `size:5` on a
-        // number means five.
-        $measure = match (true) {
-            is_array($value) => (float) count($value),
-            is_string($value) && !is_numeric($value) => (float) mb_strlen($value),
-            is_numeric($value) => (float) $value,
-            default => (float) mb_strlen((string) $value),
-        };
+        $measure = $this->size($value);
 
         if ($measure !== $expected) {
             $this->addError($attribute, sprintf(

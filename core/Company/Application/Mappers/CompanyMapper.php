@@ -64,11 +64,6 @@ final class CompanyMapper implements CompanyMapperContract
         return new UpdateCompanyDTO(
             id: $companyId,
             name: $validatedData['name'] ?? null,
-            // A cleared field and its flag travel together: the entity reads the
-            // flag, and the null keeps the payload self-consistent against the
-            // "replaced and cleared at once" contradiction. An empty string
-            // needs the explicit null, since it is blank enough to clear but
-            // still a value the DTO would otherwise carry.
             website: $clearsWebsite ? null : $this->toNullableString($validatedData['website'] ?? null),
             industry: $clearsIndustry ? null : $this->toNullableString($validatedData['industry'] ?? null),
             phone: $clearsPhone ? null : $this->toNullableString($validatedData['phone'] ?? null),
@@ -113,7 +108,29 @@ final class CompanyMapper implements CompanyMapperContract
     {
         return new CompanyFilterDTO(
             perPage: $this->toPerPage($queryParams['per_page'] ?? self::DEFAULT_PER_PAGE),
+            page: $this->toPage($queryParams['paged'] ?? 1),
         );
+    }
+
+    /**
+     * Narrows a page number to a usable value.
+     *
+     * Page numbers are 1-based. Anything below 1 is someone editing the URL
+     * rather than a fault, so it is clamped to the first page instead of
+     * rejected - unlike {@see toPerPage()}, which fails hard so the service
+     * can report bad input as a failure.
+     *
+     * @param mixed $page
+     *
+     * @return int
+     */
+    private function toPage(mixed $page): int
+    {
+        if (! is_numeric($page)) {
+            return 1;
+        }
+
+        return max(1, (int) $page);
     }
 
     /**

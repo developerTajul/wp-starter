@@ -229,12 +229,111 @@ final class ValidatorTest extends TestCase
 
     public function test_between_accepts_a_value_inside_the_range(): void
     {
-        $this->assertSame([], $this->errors(['age' => '30'], ['age' => 'between:18,120']));
+        $this->assertSame([], $this->errors(['age' => '30'], ['age' => 'integer|between:18,120']));
     }
 
     public function test_between_rejects_a_value_in_the_middle_of_a_bad_range(): void
     {
-        $this->assertSame([], $this->errors(['age' => '50'], ['age' => 'between:18,120']));
+        $this->assertSame([], $this->errors(['age' => '50'], ['age' => 'integer|between:18,120']));
+    }
+
+    /**
+     * A numeric string with no numeric rule is measured by character count, which
+     * is Laravel's behaviour and the reason the `integer` rule above is not
+     * decoration: `'30'` is two characters, and two is below 18.
+     */
+    public function test_between_measures_a_numeric_string_by_length_without_a_numeric_rule(): void
+    {
+        $this->assertArrayHasKey('age', $this->errors(['age' => '30'], ['age' => 'between:18,120']));
+    }
+
+    // ------------------------------------------------------------ numeric measure
+
+    /**
+     * The reported failure: a 15-character phone number read as the integer
+     * 88019619264800, because it happens to be all digits. A phone number a user
+     * typed is text, so `max:20` counts characters.
+     */
+    public function test_max_counts_characters_for_a_digit_string_without_a_numeric_rule(): void
+    {
+        $this->assertSame([], $this->errors(
+            ['phone' => '+88019619264800'],
+            ['phone' => 'nullable|string|max:20']
+        ));
+    }
+
+    /**
+     * The same value with `numeric` attached means the number, which is far above
+     * 20 — so the rule that switches the reading also has to change the answer.
+     */
+    public function test_max_compares_numerically_for_a_digit_string_with_a_numeric_rule(): void
+    {
+        $this->assertArrayHasKey('age', $this->errors(['age' => '25'], ['age' => 'integer|max:20']));
+    }
+
+    public function test_max_accepts_a_digit_string_within_the_numeric_bound(): void
+    {
+        $this->assertSame([], $this->errors(['age' => '18'], ['age' => 'integer|max:20']));
+    }
+
+    /**
+     * A leading zero is the case where the two readings give different answers for
+     * a value that is numeric either way: seven characters, or the number 12345.
+     */
+    public function test_max_measures_a_leading_zero_string_by_length_without_a_numeric_rule(): void
+    {
+        $this->assertArrayHasKey('code', $this->errors(['code' => '0012345'], ['code' => 'string|max:3']));
+    }
+
+    /**
+     * With `integer`, the same value is the number 12345 — which is well above 20,
+     * so the reading the rule set asks for is the one that rejects it.
+     */
+    public function test_max_compares_a_leading_zero_string_by_value_with_a_numeric_rule(): void
+    {
+        $this->assertArrayHasKey('code', $this->errors(['code' => '0012345'], ['code' => 'integer|max:20']));
+    }
+
+    public function test_min_measures_a_numeric_string_by_length_without_a_numeric_rule(): void
+    {
+        $this->assertArrayHasKey('ref', $this->errors(['ref' => '7'], ['ref' => 'string|min:5']));
+    }
+
+    /**
+     * `size` follows the same switch: five characters, or the number 12345.
+     */
+    public function test_size_compares_a_digit_string_by_value_with_a_numeric_rule(): void
+    {
+        $this->assertSame([], $this->errors(['pin' => '5'], ['pin' => 'integer|size:5']));
+        $this->assertArrayHasKey('pin', $this->errors(['pin' => '12345'], ['pin' => 'integer|size:5']));
+    }
+
+    /**
+     * The measure must not survive into the next field: a leaked `integer` from
+     * `age` would change how `name`'s `max` reads its own value.
+     */
+    public function test_the_numeric_reading_does_not_leak_between_attributes(): void
+    {
+        $errors = $this->errors(
+            ['age' => '25', 'name' => 'abcdef'],
+            ['age' => 'integer|max:20', 'name' => 'string|max:3']
+        );
+
+        $this->assertArrayHasKey('age', $errors);
+        $this->assertArrayHasKey('name', $errors);
+    }
+
+    public function test_a_throwing_rule_does_not_leak_its_reading_into_the_next_run(): void
+    {
+        $validator = new Validator(['age' => '25', 'name' => 'abcdef']);
+
+        try {
+            $validator->validate(['age' => 'integer|min', 'name' => 'string|max:3']);
+        } catch (InvalidArgumentException) {
+            // The missing bound is the point: the run aborts mid-attribute.
+        }
+
+        $this->assertArrayHasKey('name', $validator->validate(['name' => 'string|max:3']));
     }
 
     public function test_size_accepts_an_exact_string_length(): void

@@ -15,8 +15,8 @@ use Core\Company\Application\Services\CompanyCommandService;
 use Core\Company\Application\Services\CompanyQueryService;
 use Core\Company\Domain\Contracts\CompanyRepositoryContract;
 use Core\Company\Infrastructure\Mappers\CompanyEntityMapper;
-use Core\Company\Infrastructure\Repositories\WPFluentCompanyReadRepository;
-use Core\Company\Infrastructure\Repositories\WPFluentCompanyWriteRepository;
+use Core\Company\Infrastructure\Repositories\WpCompanyReadRepository;
+use Core\Company\Infrastructure\Repositories\WpCompanyWriteRepository;
 use DevLinkStudios\WPServiceContainer\ServiceProvider;
 
 /**
@@ -24,7 +24,7 @@ use DevLinkStudios\WPServiceContainer\ServiceProvider;
  *
  * Every binding the module owns lives here rather than in
  * {@see AppServiceProvider}, which holds shared-kernel bindings only. Each
- * contract has exactly one implementation: the `WPFluent*` classes under
+ * contract has exactly one implementation: the `Wp*` classes under
  * `core/Company/Infrastructure/Repositories/`, which use the Fluent Database
  * builder.
  */
@@ -53,8 +53,8 @@ final class CompanyServiceProvider extends ServiceProvider
         // Framework\Database\QueryServiceProvider; resolving it here rather
         // than constructing it keeps the connection out of this file.
         $this->container->bind(
-            WPFluentCompanyWriteRepository::class,
-            fn ($container): WPFluentCompanyWriteRepository => new WPFluentCompanyWriteRepository(
+            WpCompanyWriteRepository::class,
+            fn ($container): WpCompanyWriteRepository => new WpCompanyWriteRepository(
                 $container->resolve(\Framework\Database\Query\QueryBuilderInterface::class),
                 $container->resolve(CompanyEntityMapper::class)
             )
@@ -66,8 +66,8 @@ final class CompanyServiceProvider extends ServiceProvider
         // lazily inside the builder, which is what lets this binding be
         // registered before WordPress has loaded the database.
         $this->container->bind(
-            WPFluentCompanyReadRepository::class,
-            fn ($container): WPFluentCompanyReadRepository => new WPFluentCompanyReadRepository(
+            WpCompanyReadRepository::class,
+            fn ($container): WpCompanyReadRepository => new WpCompanyReadRepository(
                 $container->resolve(\Framework\Database\Query\QueryBuilderInterface::class),
                 $container->resolve(CompanyEntityMapper::class)
             )
@@ -78,14 +78,14 @@ final class CompanyServiceProvider extends ServiceProvider
         $this->container->bind(
             CompanyRepositoryContract::class,
             fn ($container): CompanyRepositoryContract => $container->resolve(
-                WPFluentCompanyWriteRepository::class
+                WpCompanyWriteRepository::class
             )
         );
 
         $this->container->bind(
             CompanyQueryContract::class,
             fn ($container): CompanyQueryContract => $container->resolve(
-                WPFluentCompanyReadRepository::class
+                WpCompanyReadRepository::class
             )
         );
     }
