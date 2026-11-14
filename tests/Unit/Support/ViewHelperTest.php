@@ -106,16 +106,21 @@ final class ViewHelperTest extends TestCase
      * `view()` returns a response rather than a string, because a controller
      * returns it — and because a caller that wants the markup can say so with
      * `->render()`, which reads as the deliberate act it is.
+     *
+     * The configured layout wraps the child behind the scenes, so the returned
+     * value is a {@see \Framework\Http\Responses\LayoutResponse}: `->render()`
+     * gives the full page, and `->child()` still exposes the named view.
      */
     #[RunInSeparateProcess]
     public function test_view_returns_a_response(): void
     {
         $this->bindRenderer('<p><?= $name ?></p>', 'page', ['name' => 'Ada']);
 
-        $response = view('page');
+        $response = view('page')->withTitle('A page');
 
-        $this->assertInstanceOf(ViewResponse::class, $response);
-        $this->assertSame('<p>Ada</p>', $response->render());
+        $this->assertInstanceOf(\Framework\Http\Responses\LayoutResponse::class, $response);
+        $this->assertInstanceOf(\Framework\Http\Responses\ViewResponse::class, $response->child());
+        $this->assertSame('<i>A page</i><p>Ada</p>', $response->render());
     }
 
     /**
@@ -192,8 +197,13 @@ final class ViewHelperTest extends TestCase
     // -------------------------------------------------------------------- helpers
 
     /**
-     * Point a bound renderer at a temp root holding one view, and set up a flash
-     * payload through the transient the redirect would have written.
+     * Point a bound renderer at a temp root holding one view and a layout, and
+     * set up a flash payload through the transient the redirect would have
+     * written.
+     *
+     * The layout is written because the renderer wraps every screen view in it by
+     * default; without one, `view()` would render the child alone and the wrap
+     * assertions below would measure nothing.
      *
      * @param array<string, mixed> $data
      * @param array<string, mixed> $flash
@@ -207,6 +217,7 @@ final class ViewHelperTest extends TestCase
         $root = sys_get_temp_dir() . '/wp-mini-laravel-helper-' . bin2hex(random_bytes(4));
         mkdir($root, 0755, true);
         file_put_contents($root . '/' . $name . '.php', $contents);
+        file_put_contents($root . '/layout.php', '<i><?= e($title) ?></i><?= $content ?>');
 
         // Cleaned at shutdown rather than in tearDown: a separate-process test's
         // tearDown runs before the child exits, and the renderer still holds the

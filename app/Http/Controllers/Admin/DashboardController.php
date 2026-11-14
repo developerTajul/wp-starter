@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Admin;
 
 use Framework\Http\Contracts\ResponseInterface;
-use Framework\Support\ViewRenderer;
 
 /**
  * The plugin's admin screen.
@@ -21,26 +20,19 @@ use Framework\Support\ViewRenderer;
  */
 final class DashboardController
 {
-    public function __construct(private readonly ViewRenderer $views)
-    {
-    }
-
     /**
      * Render the dashboard screen.
      *
      * The child view is rendered to a string and passed to the layout as
-     * `$content`; returning the `ViewResponse` leaves status and headers to
-     * the view layer.
+     * `$content` automatically; returning the response leaves status and headers
+     * to the view layer.
      */
     public function index(): ResponseInterface
     {
-        return $this->views->make('layout', [
-            'title' => 'WP Mini Laravel',
-            'content' => $this->views->render('dashboard', [
-                'routesCommand' => 'wp wp_mini route:list',
-                'providers' => $this->providers(),
-            ]),
-        ]);
+        return view('dashboard', [
+            'routesCommand' => 'wp wp_mini route:list',
+            'providers' => $this->providers(),
+        ])->withTitle('WP Mini Laravel');
     }
 
     /**

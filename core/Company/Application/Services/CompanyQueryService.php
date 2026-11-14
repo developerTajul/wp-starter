@@ -53,8 +53,8 @@ final class CompanyQueryService implements CompanyQueryServiceContract
     {
         try {
             $companyFilter = new CompanyFilter(
-                search: $companyFilterDTO->search,
                 perPage: $companyFilterDTO->perPage,
+                page: $companyFilterDTO->page,
             );
 
             $paginatedCompanies = $this->companyQuery->getFilteredCompanies($companyFilter);

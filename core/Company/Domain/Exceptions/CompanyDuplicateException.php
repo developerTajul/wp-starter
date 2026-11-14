@@ -21,13 +21,15 @@ final class CompanyDuplicateException extends RuntimeException
     public const TRANSLATION_PREFIX = 'companies.errors.';
 
     /**
-     * @param string $message Untranslated default wording.
-     * @param string $translationKey
+     * @param string          $message        Untranslated default wording.
+     * @param string          $translationKey
+     * @param \Throwable|null $previous       The rejected database write.
      */
     public function __construct(
         string $message = 'A company with the same name already exists.',
         public readonly string $translationKey = self::TRANSLATION_PREFIX . 'duplicate',
+        ?\Throwable $previous = null,
     ) {
-        parent::__construct($message);
+        parent::__construct($message, 0, $previous);
     }
 }

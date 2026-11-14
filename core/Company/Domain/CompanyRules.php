@@ -19,6 +19,15 @@ final class CompanyRules
      */
     public const MIN_PER_PAGE = 1;
 
+    /**
+     * The smallest page number a company list may be asked for.
+     *
+     * Page numbers are 1-based. A request for anything lower is clamped here
+     * rather than rejected: a mistyped page in a URL is someone editing the
+     * address bar, not a fault to report.
+     */
+    public const MIN_PAGE = 1;
+
     public const MAX_NAME_LENGTH = 255;
 
     public const MAX_WEBSITE_LENGTH = 255;

@@ -15,7 +15,7 @@ use Core\Shared\Domain\DataObjects\PaginatedResult;
 interface CompanyQueryContract
 {
     /**
-     * Returns the companies matching the given filter criteria.
+     * Returns one page of companies in the list's own order.
      *
      * @param CompanyFilter $filter
      *

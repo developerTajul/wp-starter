@@ -12,6 +12,74 @@ it, rebrand it in one command, and build your plugin inside it — see
 
 ---
 
+## Contents
+
+**Getting started**
+
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [The Three-Zone Architecture](#the-three-zone-architecture)
+- [The `dbDelta()` Boundary](#the-dbdelta-boundary)
+- [Directory Structure](#directory-structure)
+- [Dotenv Support](#dotenv-support)
+- [Configuration](#configuration)
+
+**Routing**
+
+- [🚀 Routing System](#-routing-system)
+  - [Overview & Philosophy](#overview-philosophy)
+  - [Admin Menus & Submenus (`web.php`)](#admin-menus-submenus-webphp)
+  - [Form Submissions & Actions (`web.php`)](#form-submissions-actions-webphp)
+    - [What a web action may return](#what-a-web-action-may-return)
+  - [Route Grammar and Specificity](#route-grammar-and-specificity)
+  - [Verb Coverage](#verb-coverage)
+  - [Route Groups](#route-groups)
+  - [Parameterized Middleware](#parameterized-middleware)
+  - [The `route()` Helper (Intelligent URL Generation)](#the-route-helper-intelligent-url-generation)
+  - [Redirecting](#redirecting)
+  - [How the `Route` facade knows which router it is talking to](#how-the-route-facade-knows-which-router-it-is-talking-to)
+  - [Headless REST API](#headless-rest-api)
+  - [Parameter Binding](#parameter-binding)
+  - [`route:list`](#routelist)
+  - [What the Routing Layer Binds](#what-the-routing-layer-binds)
+  - [Controller shapes](#controller-shapes)
+  - [Resources and sparse fieldsets](#resources-and-sparse-fieldsets)
+
+**Requests and lifecycle**
+
+- [Request Lifecycle](#request-lifecycle)
+- [Exception Handling](#exception-handling)
+
+**WP-CLI**
+
+- [WP-CLI Integration](#wp-cli-integration)
+- [Zero-config CLI: `php mini`](#zero-config-cli-php-mini)
+- [Troubleshooting: `bash: wp: command not found`](#troubleshooting-bash-wp-command-not-found-windows-git-bash)
+
+**Views**
+
+- [Views](#views)
+  - [The automatic layout](#the-automatic-layout)
+  - [Page titles](#page-titles)
+  - [Turning wrapping off](#turning-wrapping-off)
+  - [Rendering a view to a string](#rendering-a-view-to-a-string)
+  - [Escaping, errors and old input](#escaping-errors-and-old-input)
+  - [Building a form field](#building-a-form-field)
+  - [View name resolution](#view-name-resolution)
+
+**Database**
+
+- [Database Migrations](#database-migrations)
+- [Database & Query Builder](#database-query-builder)
+
+**Project tooling**
+
+- [Rebranding](#rebranding)
+- [UNIT TESTING POLICY (TEMPORARILY PAUSED)](#unit-testing-policy-temporarily-paused)
+- [License](#license)
+
+---
+
 ## Requirements
 
 - PHP 8.2+
@@ -55,6 +123,7 @@ APP_NAMESPACE=App
 CLI_PREFIX=wp_mini
 REST_NAMESPACE=wp-mini-laravel/v1
 APP_VIEWS_PATH=views
+APP_LAYOUT_VIEW=layout
 API_SECRET_KEY=your_secret
 ```
 
@@ -216,7 +285,7 @@ core/                         YOUR DOMAIN  (Core\) — imports nothing outside C
 config/app.php                Identity, paths and the provider list.
 routes/api.php                REST routes.
 routes/web.php                Web routes (admin screens, form handlers, front-end pages).
-views/layout.php              The page shell — takes $title and $content.
+views/layout.php              The page shell — applied automatically; takes $title and $content.
 views/dashboard.php           The screen body.
 database/migrations/          Versioned schema changes.
 
@@ -225,10 +294,12 @@ framework/                    THE LIBRARY  (Framework\) — never rebranded
   Console/                      Console kernel, Command base, make:* generators.
   Database/                     Migration base class, Migrator, MigrationFile, migrate:* commands.
   Http/                         Request, responses, middleware Pipeline, FormRequest.
+  Http/Responses/LayoutResponse.php  Applies the layout around a screen view.
   Routing/                      Router, adapters, Route attribute, ParameterBinder, middleware.
   Support/helpers.php           env(), app(), config(), base_path(), view(), e(), old(),
+                                field_class(), field_error(), field_errors(),
                                 route(), redirect(), to_route().
-  Support/ViewRenderer.php      Dotted view-name resolution.
+  Support/ViewRenderer.php      Dotted view-name resolution and the automatic layout.
   Support/JsonResource.php      The resource base class.
   Validation/Validator.php      The rule engine behind FormRequest.
   bin/init-plugin.php           The rebrander (+ lib/Rebrander.php, lib/RebrandPlan.php).
@@ -1355,6 +1426,11 @@ final class CompanyController
 The three form handlers each flash a different message — `Created.`, `Updated.`,
 `Deleted.` — and all three redirect to the same `<name>.index` target.
 
+The rendered screen is wrapped in the application layout automatically, so the stub
+returns the body view alone and never mentions `layout`. See
+[Views](#views) — in particular
+[Page titles](#page-titles) for how the generated screens get their heading.
+
 **Nothing is injected and nothing is stubbed.** An injected dependency is one
 more thing to delete before the feature's own logic can be written, so the stub
 has no constructor at all. `view()` and `redirect()` resolve through the
@@ -1509,6 +1585,276 @@ the call, so `when($flag, $this->notes)` reads `$this->notes` unconditionally �
 including on a partial row with no `notes` key, where the read throws. The
 condition was supposed to make that row safe; written that way it makes it throw
 instead.
+
+---
+
+## Views
+
+A view is a plain PHP file that echoes. There is no template syntax, no
+compilation step and no cache — the renderer includes the file. What makes views
+pleasant to write (escaping, composition, knowing which variables exist) is
+available in plain PHP once escaping is convenient, so a second language to learn
+and a compile step to debug buy nothing here.
+
+A controller returns the screen's own view, and **the page shell is the
+framework's job**:
+
+```php
+public function index(): ResponseInterface
+{
+    return view('company.index', [
+        'companies' => $companies,
+    ])->withTitle('Companies');
+}
+```
+
+That is the whole action. The layout, the `<h1>`, the notice blocks and the
+`<div class="wrap">` are supplied by the renderer — see
+[The automatic layout](#the-automatic-layout).
+
+---
+
+### The automatic layout
+
+`ViewRenderer::make()` — which is what the `view()` helper calls — resolves the
+configured layout and wraps the view in it, behind the scenes:
+
+```php
+'layout_view' => env('APP_LAYOUT_VIEW', 'layout'),   // config/app.php
+```
+
+The child is rendered into a string, then the layout is rendered with that string
+as `$content`. It reads much like Laravel's `@extends`, except the wrapping is
+done by buffering rather than by a template directive, so `views/layout.php` is
+an ordinary view you can read and change:
+
+```php
+<div class="wrap">
+    <h1><?= e($title) ?></h1>
+    <?= $content ?>
+</div>
+```
+
+**Nothing is rendered at `make()` time.** The wrapper is built as a value and the
+work happens in `send()` — or in `render()`, if you ask for the markup. That keeps
+a controller's return value a value rather than a side effect, and means a view
+that throws fails inside the action, where the caller still owns the response.
+
+#### The layout you name is never wrapped twice
+
+A response whose view _is_ the layout is returned unwrapped. Comparing resolved
+paths rather than names is what makes it work, so both of these are unchanged in
+behaviour by the feature:
+
+```php
+return view('layout', ['title' => 'Legacy', 'content' => $body]);   // not double-wrapped
+```
+
+The rule is "wrap unless the child and the layout are the same file", which needs
+no flag and no opt-out marker in your data.
+
+#### Data reaches both views
+
+The child gets the data you passed; the layout gets `$title` and `$content` plus
+the same shared, flashed and old-input variables every render receives. So a
+notice flashed by a redirect shows up in the layout without the controller
+forwarding it:
+
+```php
+return redirect()->route('companies.index')->with('notice', 'Saved.');   // shown by the layout
+```
+
+---
+
+### Page titles
+
+The title is resolved in this order:
+
+1. **`withTitle('Add a company')`** — the explicit form, and what a real screen
+   should use, because it can say something the view name cannot.
+2. **A `title` key in the data** — `view('company.index', ['title' => 'Companies'])`
+   works identically; `withTitle()` is sugar over it.
+3. **Derived from the view name** — `company.create` becomes `Company Create`,
+   `dashboard` becomes `Dashboard`. This is the fallback that means a new screen
+   has a heading the moment it renders, before anyone has thought about titles.
+
+Derivation title-cases each dot or slash segment and turns `-` and `_` into
+spaces. It is a fallback, not a naming policy: a screen whose heading reads badly
+should set one.
+
+---
+
+### Turning wrapping off
+
+Three ways, in decreasing scope:
+
+| Scope | How | Effect |
+| ----- | --- | ------ |
+| Whole project | `'layout_view' => false` in `config/app.php` | No view is ever wrapped |
+| One renderer | `app(ViewRenderer::class)->layout('emails.page')` | Every view this process renders uses that layout; `layout(false)` disables wrapping |
+| One call | `$views->render('emails.receipt', $data)` | Renders that view alone, unwrapped — see below |
+
+`ViewRenderer::render()` and `ViewRenderer::respond()` never wrap. They render the
+one view they were handed, which is exactly what an email body, a PDF fragment or
+a partial wants. Wrapping belongs to `make()`, because `make()` is the call that
+builds a **page response**.
+
+> **A missing layout is not a fatal.** When the default name `layout` resolves to
+> no file — a project that ships no page shell — wrapping is switched off and
+> views render alone. A layout you *named* (in config, or through `layout()`)
+> must exist, and a typo there throws and names the layout you asked for. The
+> split is deliberate: the lenient case is "this project has no layout", the
+> strict case is "you spelled the layout wrong".
+
+---
+
+### Rendering a view to a string
+
+`view()` returns a response, not a string, because a controller returns it and
+the dispatcher sends it. When you genuinely want the markup — embedding a view in
+a larger document, building an email body, asserting on output — ask for it:
+
+```php
+$html = view('emails.receipt', $data)->render();     // the full page, wrapped
+$fragment = $views->render('partials.row', $row);    // that view alone
+```
+
+The two lines differ because they are different objects doing different jobs.
+`view()` returns a response, and a **response** renders the page it represents —
+so its `render()` applies the layout. `ViewRenderer::render()` renders **one
+view**, which is what a partial, an email body or a PDF fragment wants.
+
+`ViewRenderer::renderPath()` is the same seam for a **path you already resolved**:
+it applies the full shared/flash/error layering without resolving the path as a
+view name. That is what the layout wrapper itself uses, since by then the layout's
+absolute path is known and re-resolving it as a name would mangle it.
+
+---
+
+### Escaping, errors and old input
+
+A view is handed its variables as locals, and these helpers cover nearly every
+line:
+
+| Helper | Use |
+| ------ | --- |
+| `e($value)` | Escape for HTML — text **and** attributes. `null` renders empty; a bool as a form value; an array as JSON rather than the word "Array" |
+| `old('field', $default)` | A submitted value from the previous request, already escaped — the pair an input needs in one call |
+| `field_class('field')` | A `class` attribute, with `is-invalid` appended only when that field failed |
+| `field_error('field')` | A field's first message, or `null` — the assignment is the guard |
+| `field_errors('field')` | Every message for that field, as a list |
+| `$errors` / `$old` / `$error` / `$notice` | Injected automatically when the previous request flashed them |
+
+Use `e()` rather than `esc_html()`. It delegates to `esc_html()` when WordPress
+is loaded, so views keep WordPress's filters and translations, and falls back to
+`htmlspecialchars(ENT_QUOTES)` when it is not — which is what lets a view render
+in a queue worker, a WP-CLI export or a test.
+
+`ENT_QUOTES` is not a default worth trusting. A value interpolated into an
+attribute is escaped for a **different** context than one in text, and quoting
+both styles is the only mode correct in both — without it,
+`value="<?= e($x) ?>"` lets an apostrophe close the attribute.
+
+The flash variables are **absent** when nothing was flashed rather than present as
+empty arrays, so `!empty($notice)` covers both states with one spelling and no
+view has to guess what an empty payload means. The flash is read **once per
+renderer** and cached, because the read consumes the transient: without the cache,
+a page rendering a header and a form that both want the errors would show them in
+one of them, and work fine in a test that rendered only one.
+
+---
+
+### Building a form field
+
+`old()`, `field_class()` and `field_error()` are what a field actually needs, and
+between them they replace the inline ceremony a form would otherwise repeat on
+every row:
+
+```php
+<tr>
+    <th scope="row"><label for="company-name">Name</label></th>
+    <td>
+        <input name="name" id="company-name" type="text" class="<?= field_class('name') ?>"
+               value="<?= old('name', $company['name'] ?? '') ?>" required>
+        <?php if ($error = field_error('name')): ?>
+            <p class="error-message" style="color: red; font-size: 0.875rem;"><?= e($error) ?></p>
+        <?php endif; ?>
+    </td>
+</tr>
+```
+
+Compare the `class` attribute with what it replaces —
+`class="regular-text<?= !empty($errors['name']) ? ' is-invalid' : '' ?>"` — and the
+error block with `<?php if (!empty($errors['name'])): ?>` followed by
+`<?= e($errors['name'][0]) ?>`. The gain is not only brevity:
+
+- **No field-name repetition in the guard.** `field_class('name')` reads its own
+  field, so the input's `name` and the class check cannot drift apart.
+- **Nothing to remember about the error bag.** `$errors` is *absent*, not empty,
+  when nothing was flashed — and a partial rendered by an action that passed no
+  error bag has no `$errors` at all. All three helpers treat a missing field, an
+  empty message list, a view rendered outside WordPress and a container with no
+  renderer as the same answer: no error.
+- **Whitespace is normalized**, which `$baseClass` being free text (`'button'`,
+  `''`, `'regular-text widefat'`) makes worth doing once rather than per call site.
+
+`field_class()` takes the base and error classes as its second and third
+arguments — `field_class('name', 'button', 'button-error')` — and returns the
+attribute **value** rather than a whole `class="..."`, so it composes with names
+written inline:
+
+```php
+<input class="button button-primary <?= field_class('name', '') ?>" ...>
+```
+
+The one asymmetry between the helpers is escaping, and it is deliberate:
+
+| Helper | Escaped for you? | Why |
+| ------ | ---------------- | --- |
+| `old()` | **yes** | It has exactly one consumer — an attribute — so the pair belongs in one call |
+| `field_class()` | **yes** | It is an attribute value too |
+| `field_error()` | **no** | It has two consumers that disagree: rendered as text (escape it) or tested for a substring (`str_contains(field_error('x'), 'required')`, which escaping would break on any `&`) |
+
+So a view keeps `e()` on the message, as the example above shows. That closes no
+gap: an unescaped message can only reach the page through a call the view already
+wrote.
+
+---
+
+### View name resolution
+
+A dotted name maps to a nested file — `company.index` is `views/company/index.php`:
+
+| You write | Resolves to |
+| --------- | ----------- |
+| `company.index` | `views/company/index.php` |
+| `company/index` | `views/company/index.php` |
+| `company.index.php` | `views/company/index.php` |
+| `receipt.v2.php` | `views/receipt.v2.php` — the literal filename |
+
+Dots mean both "directory separator" and "character in a filename", and the two
+are genuinely indistinguishable from the string alone. The dotted reading is tried
+first so the convention stays self-consistent; when it misses, the name is tried
+verbatim, which is what makes `receipt.v2.php` reachable under the name it
+actually has. Because the extension is appended before the lookup, a literal
+filename must be spelled **with** its `.php`.
+
+Two documented limits, both pinned by tests rather than left to be rediscovered
+from a 404:
+
+- A **directory** whose name contains a dot is unreachable by name. `v1.2/index.php`
+  cannot be addressed as `v1.2.index` (that reads as `v1/2/index.php`); only
+  `v1.2/index.php`, spelled with its extension, finds it.
+- A view name containing `..` is **refused**, not normalized. View names routinely
+  come from data — a settings screen storing "which template", a template-override
+  table — and `../` in one is how a name becomes an arbitrary file read. The check
+  is on the raw string, before substitution: dots are the delimiter this renderer
+  substitutes, so `....` is already a run of separators by the time a
+  split-then-look-for-`..` guard could run.
+
+`ViewRenderer::exists()` answers "can I render this" without rendering, and returns
+`false` — rather than throwing — for a name that escapes the root, which is what a
+template-override chain checking each candidate in turn needs.
 
 ---
 
@@ -1716,11 +2062,19 @@ Dependencies arrive by **constructor injection** through the container, which is
 what makes a controller testable without WordPress:
 
 ```php
-final class DashboardController
+final class CompanyController
 {
-    public function __construct(private readonly ViewRenderer $views) {}
+    public function __construct(
+        private readonly CompanyQueryServiceContract $companyQueryService,
+    ) {}
 }
 ```
+
+A generated controller has no constructor at all: `view()` and `redirect()` resolve
+through the container at call time, so the response an action returns is the same
+one an injected renderer would have produced. Inject what the feature's own logic
+needs, and reach for a helper for the delivery-shaped work — see
+[Views](#views).
 
 ### Exception Handling
 
@@ -2765,10 +3119,15 @@ All keys live in `config/app.php` and are read through `config()`:
 | `app.prefix`         | `APP_PREFIX`     | `wp_mini_laravel_`        |
 | `app.namespace`      | `APP_NAMESPACE`  | `App`                     |
 | `app.views`          | `APP_VIEWS_PATH` | `views`                   |
+| `app.views.layout_view` | `APP_LAYOUT_VIEW` | `layout`               |
 | `app.cli_prefix`     | `CLI_PREFIX`     | `wp_mini`                 |
 | `app.rest_namespace` | `REST_NAMESPACE` | `wp-mini-laravel/v1`      |
 | `app.providers`      | —                | the service provider list |
 | `app.debug`          | `APP_DEBUG`      | `false`                   |
+
+`app.views.layout_view` names the layout that wraps every screen view, and may be
+set to `false` to switch wrapping off project-wide — see
+[Turning wrapping off](#turning-wrapping-off).
 
 `app.debug` governs one thing: whether a **server fault** the handler had to wrap
 shows its real message to the client. It does not affect a deliberately raised

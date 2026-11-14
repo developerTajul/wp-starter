@@ -5,6 +5,7 @@ namespace Framework\Support;
 
 use Framework\Http\Exceptions\HttpException;
 use Framework\Http\Responses\HtmlResponse;
+use Framework\Http\Responses\LayoutResponse;
 use Framework\Http\Responses\RedirectResponse;
 use Framework\Http\Responses\ViewResponse;
 
@@ -27,14 +28,30 @@ use Framework\Http\Responses\ViewResponse;
  * shared bag of data every view receives. A function would reach for config on
  * every call and leave the shared bag in a global.
  *
- * No layout engine, no template syntax, no compilation, no cache. A view is a
- * plain PHP file and the renderer includes it. Those features add a second
- * language to learn and a compile step to debug, while what makes views pleasant
- * to write (escaping, composition, knowing which variables exist) is available in
- * plain PHP once escaping is convenient. See {@see e()} and {@see render()}.
+ * The configured layout wraps every screen view behind the scenes, so a controller
+ * never builds the nesting by hand anymore:
+ *
+ *     return $this->view('leads.index', ['leads' => $leads])
+ *         ->withTitle('Leads');
+ *
+ * The child is rendered into `$content` and handed to the layout as its `$content`
+ * variable, with `$title` taken from the view's data or derived from the view name.
+ * There is no template language - just an extra plain PHP render. The wrapper only
+ * appears in {@see send()} and {@see render()}, so the response is still lazy.
+ * See {@see layout()} to change or disable it, and {@see make()} for the rule that
+ * a view named after the layout itself is returned unwrapped.
+ *
+ * No template syntax, no compilation, no cache. A view is a plain PHP file and the
+ * renderer includes it. Those features add a second language to learn and a compile
+ * step to debug, while what makes views pleasant to write (escaping, composition,
+ * knowing which variables exist) is available in plain PHP once escaping is
+ * convenient. See {@see e()} and {@see render()}.
  */
 class ViewRenderer
 {
+    /** The layout name used when config names none. */
+    private const DEFAULT_LAYOUT = 'layout';
+
     /**
      * Data merged into every view this renderer renders.
      *
@@ -56,11 +73,34 @@ class ViewRenderer
 
 
     /**
+     * The configured layout that wraps every screen view.
+     *
+     * Null until resolved (via {@see resolveLayout()}); then an absolute path to
+     * the layout file. Set to an empty string to disable auto-wrapping.
+     *
+     * @var string|null
+     */
+    private ?string $layoutView = null;
+
+    /**
+     * A manual override installed by {@see layout()}.
+     *
+     * Consumed by {@see resolveLayout()} and discarded, so a one-off override
+     * does not change the config-derived default. `false` disables wrapping.
+     */
+    private false|string|null $manualLayout = null;
+
+
+    /**
      * Render a view to a string.
      *
      * `$data` wins over the shared bag, which wins over the request's flashed
      * payload  -  most specific last, so an action that names a variable gets the
      * value it named.
+     *
+     * Auto-layout is not applied here: calling {@see render()} explicitly asks
+     * for that single view. It is {@see make()} that builds the response and
+     * applies the layout.
      *
      * @param array<string, mixed> $data
      *
@@ -69,7 +109,25 @@ class ViewRenderer
      */
     public function render(string $view, array $data = []): string
     {
-        return $this->make($view, $data)->render();
+        return $this->renderPath($this->path($view), $data);
+    }
+
+    /**
+     * Render an already-resolved view file with the layered variable set.
+     *
+     * The seam {@see make()} uses, and what a layout wrapper needs: by the time
+     * the layout is rendered its path has been resolved, and resolving it again
+     * as a *name* would mangle an absolute path. The layering (shared data,
+     * flash, errors, old input) is applied here, so a caller passing only
+     * `$content` and `$title` still gets every variable a view expects.
+     *
+     * @param array<string, mixed> $data
+     *
+     * @throws HttpException When the file is missing or raises while rendering.
+     */
+    public function renderPath(string $path, array $data = []): string
+    {
+        return (new ViewResponse($path, $this->gather($data)))->render();
     }
 
     /**
@@ -79,17 +137,155 @@ class ViewRenderer
      * test calls `render()`  -  which is what keeps a controller's return value a
      * value rather than a side effect.
      *
+     * The response is always lazy: the child view is not rendered here. If the
+     * requested view is not the layout itself, {@see LayoutResponse} wraps it and
+     * performs the render at {@see \Framework\Http\Responses\LayoutResponse::send()}
+     * time - a separate render of the layout with the child as `$content` and a
+     * `$title` taken from the view's data or derived from its path. Callers that
+     * need the markup without sending can call {@see render()}.
+     *
      * @param array<string, mixed>  $data
      * @param array<string, string> $headers
+     *
+     * @see render() When the caller wants the markup as a string instead of a
+     *               response object.
      */
-    public function make(string $view, array $data = [], int $status = 200, array $headers = []): ViewResponse
+    public function make(string $view, array $data = [], int $status = 200, array $headers = []): ViewResponse|LayoutResponse
     {
-        return new ViewResponse(
-            $this->path($view),
-            $this->gather($data),
-            $status,
-            $headers
-        );
+        $path = $this->path($view);
+        $layout = $this->resolveLayout();
+
+        if ($layout !== '' && $path !== $layout) {
+            return new LayoutResponse(
+                new ViewResponse($path, $this->gather($data), $status, $headers),
+                $this,
+                $layout,
+                $view
+            );
+        }
+
+        return new ViewResponse($path, $this->gather($data), $status, $headers);
+    }
+
+    /**
+     * Change the layout for a request.
+     *
+     * The renderer is a singleton bound in {@see \Framework\Http\HttpServiceProvider},
+     * so a project can install an alternate layout from a provider's {@see
+     * ServiceProvider::boot()}:
+     *
+     *     app(ViewRenderer::class)->layout('emails.page');
+     *
+     * Setting it back to `false` disables auto-wrapping. The override applies to
+     * the renderer's lifetime, not to a single response.
+     *
+     * @param false|string $layout A view name, or false to disable wrapping.
+     */
+    public function layout(false|string $layout): static
+    {
+        $this->manualLayout = $layout;
+        $this->layoutView = null;
+
+        return $this;
+    }
+
+    /**
+     * Resolve the layout's absolute path from config (or the manual override),
+     * cached after the first read. An empty string means "do not wrap".
+     *
+     * @throws HttpException When a named layout cannot be found.
+     */
+    private function resolveLayout(): string
+    {
+        if ($this->manualLayout === false) {
+            return '';
+        }
+
+        if ($this->manualLayout !== null) {
+            $name = $this->manualLayout;
+            $this->manualLayout = null;
+
+            $this->layoutView = $this->resolveViewPathOrNull($name) ?? throw new HttpException(sprintf(
+                'The layout [%s] could not be found.',
+                $name
+            ));
+
+            return $this->layoutView;
+        }
+
+        if ($this->layoutView === null) {
+            $this->layoutView = $this->resolveLayoutView();
+        }
+
+        return $this->layoutView;
+    }
+
+    /**
+     * Resolve the layout name into an absolute path.
+     *
+     * The name `'layout'` is the framework's own default: when no such file sits
+     * beside the views, wrapping is switched off, so a project that ships no
+     * layout renders its screens plain instead of failing every one of them.
+     *
+     * Any other name was typed by the project, so it must exist — a typo there
+     * fails loudly rather than silently rendering an unwrapped page.
+     *
+     * @throws HttpException When a project-named layout cannot be found.
+     */
+    private function resolveLayoutView(): string
+    {
+        $configured = config('app.views.layout_view');
+
+        if ($configured === false) {
+            return '';
+        }
+
+        if (! is_string($configured) || trim($configured) === '') {
+            $configured = self::DEFAULT_LAYOUT;
+        }
+
+        $path = $this->resolveViewPathOrNull($configured);
+
+        if ($path !== null) {
+            return $path;
+        }
+
+        if ($configured === self::DEFAULT_LAYOUT) {
+            return '';
+        }
+
+        throw new HttpException(sprintf(
+            'The configured layout [%s] could not be found.',
+            $configured
+        ));
+    }
+
+    /**
+     * Resolve a view name to an absolute path, or null when it is not there.
+     */
+    private function resolveViewPathOrNull(string $view): ?string
+    {
+        $relative = str_replace('\\', '/', $view);
+
+        if ($this->escapesRoot($relative)) {
+            throw new HttpException(sprintf(
+                'The layout [%s] resolves outside the view root. A layout name may not contain a parent '
+                . 'directory segment.',
+                $view
+            ));
+        }
+
+        $dotted = $this->normalize(preg_replace('/\.php$/i', '', $relative) ?? $relative) . '.php';
+
+        $path = base_path_join($this->root(), $dotted);
+
+        if (is_file($path)) {
+            return $path;
+        }
+
+        $literal = base_path_join($this->root(), ltrim($relative, '/'));
+
+        return is_file($literal) ? $literal : null;
     }
 
     /**

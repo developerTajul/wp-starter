@@ -556,7 +556,7 @@ final class QueryBuilderExecutionTest extends TestCase
     /**
      * A joined read supports the search group the company list needs.
      *
-     * This is the whole shape `WPFluentCompanyReadRepository` compiles: a join, a
+     * This is the whole shape `WpCompanyReadRepository` compiles: a join, a
      * bracketed `OR` group over two columns, ordering and a page window. Asserted
      * together because it is the composition that has to hold, and each part
      * passing alone would not show a group leaking into the join's condition.

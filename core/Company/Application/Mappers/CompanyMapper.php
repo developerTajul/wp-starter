@@ -64,11 +64,6 @@ final class CompanyMapper implements CompanyMapperContract
         return new UpdateCompanyDTO(
             id: $companyId,
             name: $validatedData['name'] ?? null,
-            // A cleared field and its flag travel together: the entity reads the
-            // flag, and the null keeps the payload self-consistent against the
-            // "replaced and cleared at once" contradiction. An empty string
-            // needs the explicit null, since it is blank enough to clear but
-            // still a value the DTO would otherwise carry.
             website: $clearsWebsite ? null : $this->toNullableString($validatedData['website'] ?? null),
             industry: $clearsIndustry ? null : $this->toNullableString($validatedData['industry'] ?? null),
             phone: $clearsPhone ? null : $this->toNullableString($validatedData['phone'] ?? null),
@@ -101,7 +96,7 @@ final class CompanyMapper implements CompanyMapperContract
     }
 
     /**
-     * Builds a CompanyFilterDTO from query input, rejecting unrecognised values.
+     * Builds a CompanyFilterDTO from query input.
      *
      * @param array $queryParams
      *
@@ -112,39 +107,30 @@ final class CompanyMapper implements CompanyMapperContract
     public function mapToFilterDTO(array $queryParams): CompanyFilterDTO
     {
         return new CompanyFilterDTO(
-            search: $this->toText(value: $queryParams['search'] ?? null, field: 'search'),
             perPage: $this->toPerPage($queryParams['per_page'] ?? self::DEFAULT_PER_PAGE),
+            page: $this->toPage($queryParams['paged'] ?? 1),
         );
     }
 
     /**
-     * Converts a free-text filter value. A blank value means "no filter"
-     * rather than an empty match.
+     * Narrows a page number to a usable value.
      *
-     * @param mixed  $value
-     * @param string $field
+     * Page numbers are 1-based. Anything below 1 is someone editing the URL
+     * rather than a fault, so it is clamped to the first page instead of
+     * rejected - unlike {@see toPerPage()}, which fails hard so the service
+     * can report bad input as a failure.
      *
-     * @return string|null
+     * @param mixed $page
      *
-     * @throws InvalidArgumentException When the value is not text.
+     * @return int
      */
-    private function toText(mixed $value, string $field): ?string
+    private function toPage(mixed $page): int
     {
-        if ($value === null || $value === '') {
-            return null;
+        if (! is_numeric($page)) {
+            return 1;
         }
 
-        if (! is_string($value)) {
-            throw new InvalidArgumentException(sprintf(
-                'Unsupported value [%s] for filter [%s].',
-                is_scalar($value) ? (string) $value : get_debug_type($value),
-                $field,
-            ));
-        }
-
-        $trimmed = trim($value);
-
-        return $trimmed === '' ? null : $trimmed;
+        return max(1, (int) $page);
     }
 
     /**

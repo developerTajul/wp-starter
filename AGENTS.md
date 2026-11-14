@@ -1,37 +1,43 @@
 # AGENTS.md (WordPress edition)
+
 Binding rules for the AI. MUST/NEVER are absolute. Detail lives in `.claude/rules/` (index at end).
 
 ## PROJECT IDENTITY: TWO JOBS, THREE ZONES
+
 This repository does two different jobs. They follow different rules and are NEVER mixed in one step.
+
 - JOB F (FRAMEWORK): make the plugin behave like Laravel for WordPress developers (container, providers, config, routing, validation, migrations, console, exception handling). Lives in `framework/` (namespace `Framework\`) plus the Laravel-shaped conventions of `app/`. WordPress-aware by design. Future Packagist package. Rules: 02, 10.
 - JOB C (CORE): build business modules in `core/` that are framework-free and portable to Laravel or any PHP framework. Rules: 01, 05, 06, 08 (+ 03, 04).
 
-| Zone | Namespace | Knows WordPress? | May import | Who edits |
-| --- | --- | --- | --- | --- |
-| `core/*/Domain`, `core/*/Application`, `core/Shared/Domain`, `core/Shared/Application` | `Core\` | NEVER | PHP built-ins, PSR interfaces, other Core Domain/Application | JOB C. FROZEN during porting |
-| `core/*/Infrastructure`, `core/Shared/Infrastructure` | `Core\` | YES (adapters) | Core contracts, `Framework\Database\` (Fluent Database), WordPress APIs for non-database adapters, PHP, PSR | JOB C. REPLACED during porting |
-| `app/`, `config/`, `routes/`, `views/`, `database/` | `App\` | YES | Core contracts and DTOs, `Framework\` | project code (DELIVERY) |
-| `framework/` (later `vendor/`) | `Framework\` | YES | PHP, WordPress, PSR, `devlinkstudios/wp-service-container` | JOB F ONLY. Read-only in every other task |
+| Zone                                                                                   | Namespace    | Knows WordPress? | May import                                                                                                  | Who edits                                 |
+| -------------------------------------------------------------------------------------- | ------------ | ---------------- | ----------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| `core/*/Domain`, `core/*/Application`, `core/Shared/Domain`, `core/Shared/Application` | `Core\`      | NEVER            | PHP built-ins, PSR interfaces, other Core Domain/Application                                                | JOB C. FROZEN during porting              |
+| `core/*/Infrastructure`, `core/Shared/Infrastructure`                                  | `Core\`      | YES (adapters)   | Core contracts, `Framework\Database\` (Fluent Database), WordPress APIs for non-database adapters, PHP, PSR | JOB C. REPLACED during porting            |
+| `app/`, `config/`, `routes/`, `views/`, `database/`                                    | `App\`       | YES              | Core contracts and DTOs, `Framework\`                                                                       | project code (DELIVERY)                   |
+| `framework/` (later `vendor/`)                                                         | `Framework\` | YES              | PHP, WordPress, PSR, `devlinkstudios/wp-service-container`                                                  | JOB F ONLY. Read-only in every other task |
 
 - `framework/` NEVER imports `App\` or `Core\`: it knows no project. `core/*/Infrastructure` NEVER imports `App\`, and imports from `Framework\` ONLY the Fluent Database public API (`Framework\Database\`). Config, helpers, HTTP, support classes and facades stay out (values arrive as constructor scalars).
 - Rebranding prefixes `App\` and `Core\` (`<Vendor>\App\`, `<Vendor>\Core\`) and never flattens them. `Framework\` is never rebranded.
 
 ## MODE DETECTION (FIRST STEP OF EVERY TASK)
+
 Before writing code, classify EVERY path the task touches, name the mode in the plan, load the listed rule files.
 
-| Path | Mode | Load | Forbidden |
-| --- | --- | --- | --- |
-| `core/*/Domain`, `core/*/Application`, `core/Shared/(Domain\|Application)` | CORE-PURE | 01, 05, 06 (+08 events, 03 new module, 04 CRUD) | any WordPress, `Framework\`, `App\`, Laravel symbol; helper or facade call |
-| `core/*/Infrastructure`, `core/Shared/Infrastructure` | ADAPTER | 02, 06 | business rules; `App\` imports; any `Framework\` import except `Framework\Database\`; Fluent Database or WP types leaking upward |
-| `app/`, `routes/`, `config/`, `views/`, `database/` | DELIVERY | 02 | business rules; calling repositories from controllers; editing `framework/` |
-| `framework/` | FRAMEWORK | 10, 02 | `App\`, `Core\`, project names, project config keys |
+| Path                                                                       | Mode      | Load                                            | Forbidden                                                                                                                        |
+| -------------------------------------------------------------------------- | --------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `core/*/Domain`, `core/*/Application`, `core/Shared/(Domain\|Application)` | CORE-PURE | 01, 05, 06 (+08 events, 03 new module, 04 CRUD) | any WordPress, `Framework\`, `App\`, Laravel symbol; helper or facade call                                                       |
+| `core/*/Infrastructure`, `core/Shared/Infrastructure`                      | ADAPTER   | 02, 06                                          | business rules; `App\` imports; any `Framework\` import except `Framework\Database\`; Fluent Database or WP types leaking upward |
+| `app/`, `routes/`, `config/`, `views/`, `database/`                        | DELIVERY  | 02                                              | business rules; calling repositories from controllers; editing `framework/`                                                      |
+| `framework/`                                                               | FRAMEWORK | 10, 02                                          | `App\`, `Core\`, project names, project config keys                                                                              |
 
 - A task spanning modes is split into ordered steps: CORE-PURE, then ADAPTER, then DELIVERY. A module task NEVER edits `framework/`.
 - If a task needs a framework feature that is missing or must change: HALT (Interactive Alert), name the missing feature, wait. NEVER patch `framework/` or `vendor/` to unblock a module. In Autonomous Execution Mode this is a hard stop.
 - Reading `framework/` or `vendor/devlinkstudios/**` to learn the API is always allowed. Editing is not.
 
 ## PORT FREEZE (ZERO-EDIT RULE)
+
 FROZEN = `Domain/` and `Application/` of every module, plus `core/Shared/Domain` and `core/Shared/Application`. REPLACEABLE = every `Infrastructure/` folder.
+
 - ONE source of truth per module: the project the developer names as the source. The other copy is a mirror. NEVER hand-edit a mirror's FROZEN folders; change the source, then re-port.
 - Porting (Laravel or any PHP framework -> this plugin, or this plugin -> any framework): copy the FROZEN folders unchanged, write NEW Infrastructure adapters for the same contracts (`EloquentLeadWriteRepository` becomes `WpLeadWriteRepository`), write the target composition root and delivery. Procedure: 06 section T9.
 - Porting NEVER edits a FROZEN file, not even one character. If it seems to need an edit, the design leaked a framework detail: add or tighten a port in the source, then re-port.
@@ -39,17 +45,20 @@ FROZEN = `Domain/` and `Application/` of every module, plus `core/Shared/Domain`
 - PORT AUDIT (06 T8): with the prefix stripped, the FROZEN trees of source and mirror MUST be identical. A difference is a defect to report, never to silence.
 - Business logic found in an adapter or delivery file while porting is lifted into the Entity in the SOURCE project first (P15), then re-ported. NEVER fix it only on the WordPress side.
 
-
 ## PROJECT DECISIONS (LOCKED BY THE DEVELOPER)
+
 - D1 NAMESPACE PREFIX: the only allowed difference in FROZEN folders is the vendor prefix on `namespace`/`use` lines, applied by tool (rebrander, release-build prefixer), never by hand.
 - D2 CONFIG INJECTION: the whole `Config` object is never injected into Core or Infrastructure. Contextual binding (`when()->needs()->give()`) passes only the needed scalar (string, int, bool). Only classes in `app/` may use `Config`.
 - D3 PACKAGE RELEASE: at release build, `vendor/` and `framework/` (including `wp-service-container`) are prefixed (PHP-Scoper or a Mozart-family tool) so several plugins can ship the framework. Source keeps `Framework\`.
 - D4 ADAPTER NAMING: every WordPress-specific Infrastructure class uses the `Wp` prefix (`WpNoteRepository`, `WpLeadWriteRepository`).
 - D5 TRANSLATION: Core holds no user-facing string and never calls `__()`. Key-based, Laravel-style: `WpTranslator` (Infrastructure) reads `lang/<locale>/<module>.php`.
-- D6 FLUENT DATABASE: Infrastructure repositories (`WpCompanyReadRepository`, `WpCompanyWriteRepository`) use ONLY `Framework\Database\Query\QueryBuilderInterface` (Laravel query-builder style). Raw SQL and `$wpdb` are forbidden in repositories. Transactions have ONE implementation: `QueryBuilderInterface::transaction()`; `WpTransactionManager` (Core Infrastructure) only delegates to it. A missing builder capability is a framework task, never a raw-SQL workaround. It NEVER enters Domain or Application.
-- D7 GLOBAL HELPERS: code inside `framework/` (classes and logic) NEVER calls a global helper (`config()`, `app()`, `view()`, `base_path()` ...); it uses dependency injection or the container directly. Helpers exist only as project-level convenience for `app/`, `routes/`, `config/` and views, so several plugins running together cannot override or conflict. Core and Infrastructure never call them either.
+- D6 FLUENT DATABASE [TEMPORARILY PAUSED]: Infrastructure repositories (`WpCompanyReadRepository`, `WpCompanyWriteRepository`) use ONLY `Framework\Database\Query\QueryBuilderInterface` (Laravel query-builder style). Raw SQL and `$wpdb` are forbidden in repositories. Transactions have ONE implementation: `QueryBuilderInterface::transaction()`; `WpTransactionManager` (Core Infrastructure) only delegates to it. A missing builder capability is a framework task, never a raw-SQL workaround. It NEVER enters Domain or Application.
+- D7 WPDB OVERRIDE: You are explicitly authorized to use global `$wpdb` and raw SQL (strictly via `$wpdb->prepare()`) directly in Infrastructure repositories. Do NOT force the use of `Framework\Database\Query\QueryBuilderInterface` and do NOT trigger a HALT or warning for `$wpdb` usage until this rule is explicitly revoked by the developer.
+
+- D8 GLOBAL HELPERS: code inside `framework/` (classes and logic) NEVER calls a global helper (`config()`, `app()`, `view()`, `base_path()` ...); it uses dependency injection or the container directly. Helpers exist only as project-level convenience for `app/`, `routes/`, `config/` and views, so several plugins running together cannot override or conflict. Core and Infrastructure never call them either.
 
 ## ARCHITECTURAL MANDATE
+
 - Hexagonal (Ports and Adapters) + Clean Architecture + Rich Domain Model. Domain isolated from infrastructure/framework.
 - `declare(strict_types=1);` in every file. `final` on all implementation classes (Services, Mappers, Adapters, Controllers). NOT on Entities.
 - PRIMARY GOAL: `Core` folder moves unchanged to any PHP framework or a WordPress plugin. Porting = new Adapters + new composition root only. If porting forces a Domain/Application edit, the design is wrong: fix it at the port level.
@@ -62,6 +71,7 @@ FROZEN = `Domain/` and `Application/` of every module, plus `core/Shared/Domain`
 ## BEHAVIORAL CONSTRAINTS
 
 ### STRICT SCOPE ADHERENCE
+
 - NEVER change code, logic, or files outside the prompt's explicit instructions. No assumptions, no unprompted fixes.
 - If an out-of-scope change seems necessary (correctness, security, stability): HALT, state the exact reason, wait for explicit permission. In Autonomous Execution Mode apply 09 (A10) instead.
 - FILE EXISTENCE GUARD (HIGHEST PRIORITY): before creating ANY file, verify it does not exist (list the directory or `git ls-files <path>`). A module is not new just because the part being built is new. If the file exists, editing it is OUT OF SCOPE: HALT unless the prompt names that file as something to change. A second file at an occupied path (duplicate Service, parallel Contract, forked Mapper) is the most damaging scope violation: it splits one port into two competing implementations.
@@ -70,6 +80,7 @@ FROZEN = `Domain/` and `Application/` of every module, plus `core/Shared/Domain`
 - These mandates do NOT authorize refactoring code the prompt did not ask you to touch. Apply them only to code you write or change.
 
 ### UNIT TESTING POLICY (TEMPORARILY PAUSED)
+
 - NEVER write, generate, scaffold, or require unit/feature/integration tests. NEVER create files under `tests/`. NEVER run test suites unless the prompt asks.
 - NEVER load or follow `07-testing.txt` while paused, unless the prompt asks for tests. Do not list or claim tests in any Definition of Done or checklist.
 - An explicit prompt instruction ("write a test for X") overrides the pause for that request only.
@@ -77,7 +88,9 @@ FROZEN = `Domain/` and `Application/` of every module, plus `core/Shared/Domain`
 - Only the developer re-enables testing, explicitly. Then load 07 and remove this section.
 
 ### AUTONOMOUS EXECUTION MODE
+
 Trigger: the developer asks you to execute a step, module, or plan. Load `09-autonomous-execution.txt` at the start of every such run.
+
 - Plan lives in `docs/ai-plans/` (`00-MASTER-ROADMAP.md` = module order; each module folder = step briefs). Plan is read-only.
 - Only the current step is in scope (wiring exception applies). Stop at the end of the requested range. "Continue the plan" with no range = finish the next unfinished module, then stop.
 - After each step: audit the actual files (never from memory), write `docs/ai-reports/<module>/<NN>-<step-slug>.md`, update `docs/ai-reports/PROJECT-LOG.md`.
@@ -88,12 +101,15 @@ Trigger: the developer asks you to execute a step, module, or plan. Load `09-aut
 - NEVER mark a step done without evidence. Report failed, partial, blocked steps honestly.
 
 ### ANTI-HALLUCINATION AND STRICT VERIFICATION PROTOCOL (CRITICAL)
+
 - NEVER output a verification checklist without auditing the actual generated code. Every claim MUST match the code. False positives are forbidden.
 - Cross-check actual diffs against claims. A feature being requested is not evidence it was implemented.
 - PROCESS GUARD (MANDATORY): BEFORE coding, list the rule sections that apply. AFTER coding, re-read the finished code against each. Green tests are NOT evidence of rule conformance. Applies to every Autonomous step and every ad-hoc change.
 
 ## RICH DOMAIN MODEL MANDATE (SINGLE SOURCE OF TRUTH)
+
 Business logic lives in Domain (Entities, Value Objects). Entities are the single source of truth for business rules.
+
 - Entities expose behavior methods that state business intent (`$activity->publish()`, `$order->cancel()`), not generic setters.
 - Invariants, state validation, and state transitions are enforced inside the Entity. An Entity MUST NOT be created or moved into an invalid state.
 - Entities are `readonly class`, NEVER also `final` (`final` applies to Services, Mappers, Adapters, Controllers and other implementation classes). Never mutate in place: a behavior method enforces the rule and returns a NEW Entity. Delivery/Application/Infrastructure code MUST NOT write Entity properties; it calls the behavior method and uses the returned instance.
@@ -107,6 +123,7 @@ Business logic lives in Domain (Entities, Value Objects). Entities are the singl
 - Domain Events: held in a readonly list on the Entity. EVERY behavior method (even event-less) passes existing events to the NEW instance and appends new ones: `domainEvents: [...$this->domainEvents, new XEvent(...)]`. `releaseEvents()` only RETURNS the list, never clears it. The Command Service takes events from the Entity returned by the behavior method BEFORE persisting (`$events = $entity->releaseEvents(); $saved = $repository->update($entity);`). The repository-returned Entity has an empty list; NEVER release from it. The Service dispatches `$events` once via the EventDispatcher port after a successful commit. The Entity never dispatches. Full rules: 08.
 
 ## SERVICE LAYER MANDATE (ORCHESTRATOR, COMMAND/QUERY SEPARATION)
+
 Services (Application layer) orchestrate Domain objects and Ports. No business logic. Split by intent. A single Service class MUST NOT mix command and query.
 
 1. Command (write) Service: `<Module>CommandService` (or one final class per use case, e.g. `CreateActivityService`).
@@ -121,24 +138,28 @@ Services (Application layer) orchestrate Domain objects and Ports. No business l
    - List/search reads return lightweight `<Module>ProjectionDTO` read models (`Domain/ReadModels/`), not Entities. Details: 05 (R12).
 
 ### INBOUND SERVICE CONTRACTS (MANDATORY)
+
 Every module exposes both Services through inbound ports in `core/<Module>/Application/Contracts/`: `<Module>CommandServiceContract` (write surface) and `<Module>QueryServiceContract` (read surface).
+
 - Controllers, Jobs, Console Commands, all delivery adapters constructor-inject the CONTRACT, NEVER the concrete Service class.
 - The module binds both in its own `app/Providers/<Module>ServiceProvider.php` (P1).
 - A module MAY add narrower query ports (e.g. `...QueryContract`, `...FormOptionsContract`) for a specific read concern. Additive, never a substitute for the two contracts.
 
 ### RESPONSE MAPPER SEPARATION
+
 When a module has both sides, each MAY own its mapper and DTO (`<Module>ResponseMapper` for the write response, `<Module>ListResponseMapper` for list rows). Sharing is not required; a read mapper need not hydrate a full Entity.
 
 ## WRITE AND READ PORT PLACEMENT (CQRS PORT SPLIT)
+
 Two persistence ports and two adapters per module. NEVER one shared repository.
 
-| | Write | Read |
-| --- | --- | --- |
-| Port | `<Module>RepositoryContract` | `<Module>QueryContract` |
-| Port location | `core/<Module>/Domain/Contracts/` | `core/<Module>/Application/Contracts/` |
-| Adapter | `<Module>WriteRepository` | `<Module>ReadRepository` |
-| Adapter extends | `BaseRepository` | nothing |
-| Used by | Command Services | Query Services, presentation adapters |
+|                 | Write                             | Read                                   |
+| --------------- | --------------------------------- | -------------------------------------- |
+| Port            | `<Module>RepositoryContract`      | `<Module>QueryContract`                |
+| Port location   | `core/<Module>/Domain/Contracts/` | `core/<Module>/Application/Contracts/` |
+| Adapter         | `<Module>WriteRepository`         | `<Module>ReadRepository`               |
+| Adapter extends | `BaseRepository`                  | nothing                                |
+| Used by         | Command Services                  | Query Services, presentation adapters  |
 
 - A WRITE port NEVER declares a pure read. The only read allowed on it is the row-locking `findByIdForUpdate()` taken immediately before the save. Test: is the read separable from the write it protects? If yes, it belongs on the read port, even if a Controller calls it. Presentation adapters inject the read port for reads and the write port for writes, never both for one concern.
 - The read port lives in `Application/Contracts/` because its read models are Application types (ProjectionDTOs, detail DataObjects); Domain never references Application types. The write port stays in `Domain/Contracts/` because it exchanges pure Entities.
@@ -147,7 +168,9 @@ Two persistence ports and two adapters per module. NEVER one shared repository.
 - A narrow extra read surface (e.g. `<Module>FormOptionsContract`) gets its own small port and adapter, never a method on the write port.
 
 ## RESPONSE DTO MANDATE
+
 Services return ResponseDTOs to every delivery mechanism (API, Web, Console). One Service output serves all.
+
 - ResponseDTOs are `final readonly` classes (PHP 8.2+), plain types only (scalars, arrays, other DTOs, DateTimeImmutable), constructor property promotion.
 - Services NEVER return Entities, Eloquent models, paginators, or framework Request/Response objects.
 - Failures use the project's `Result` type wrapping the DTO (`Result::success($dto)` / `Result::failure($message)`).
@@ -155,6 +178,7 @@ Services return ResponseDTOs to every delivery mechanism (API, Web, Console). On
 - Presentation adapters (Controllers, Console Commands, WordPress admin handlers) stay thin: parse input -> build input DTO -> call Service -> format ResponseDTO.
 
 ## MANDATORY TRANSACTION MANAGEMENT PROTOCOL
+
 Any Service method that writes (create/update/delete) or does read-then-write MUST run in a transaction boundary using `TransactionManagerContract::run()`. Query Services NEVER open transactions.
 
 1. Contract: `run(callable $callback): mixed` begins a transaction, runs the callback, commits on return, rolls back and rethrows on throw. Each environment implements it in its adapter (Laravel: closure DB transaction; WordPress: `$wpdb` or compensating-action manager). If the contract lacks `run()`, add it to the contract and every adapter in the same step.
@@ -194,7 +218,9 @@ return $result;
 7. DRY STANDARD (STRICT MANDATE). When a Command Service has write methods, do NOT duplicate try/catch and transaction calls per method. You MUST put `$this->transactionManager->run($operation)` and the shared catch blocks (TranslatorContract resolution, `LoggerInterface::error()`) in ONE private helper, e.g. `private function executeInTransaction(callable $operation, string $logMessage, string $fallbackMessageKey, string $fallbackErrorCode, array $context = []): Result`. Public use-case methods only orchestrate domain steps inside the closure. Pre-write guards (e.g. `$entity === null` after `findByIdForUpdate()`) may return `Result::failure(...)` from inside the closure; any failure after a write MUST throw.
 
 ## PORTS AND ADAPTERS MANDATE (FRAMEWORK INDEPENDENCE)
+
 Everything Core needs from outside is an interface (Port) in Core, implemented by an Adapter outside Core. Create only ports the current task needs. Suffix is always `...Contract`, never `...Interface` or `I` prefix.
+
 - Repository ports (`ActivityRepositoryContract`, `ActivityQueryContract`): this repo `WpActivityWriteRepository`, `WpActivityReadRepository` (`$wpdb`); Laravel build `EloquentActivityWriteRepository`, `EloquentActivityReadRepository`.
 - `EventDispatcherContract`: Laravel dispatcher, WordPress `do_action`.
 - `QueueManagerContract`: Laravel Queue, WordPress Action Scheduler / `wp_schedule_single_event`.
@@ -203,6 +229,7 @@ Everything Core needs from outside is an interface (Port) in Core, implemented b
 - File storage, clock, logger, any other infrastructure capability: same Port/Adapter pattern.
 
 Rules:
+
 - Core NEVER uses facades, helpers, or globals (`Event::dispatch`, `dispatch()`, `Queue::push`, `now()`, `Storage::`, `do_action`, `wp_schedule_single_event`).
 - Domain Events and Queue Jobs are plain PHP; never extend/implement framework classes.
 - Framework wiring (container bindings, providers, WordPress bootstrap) lives outside Core.
@@ -212,6 +239,7 @@ Rules:
 - NO VENDOR EXCEPTIONS IN CORE: an Application Service NEVER imports, catches, or type-hints a vendor/persistence exception (e.g. `Illuminate\Database\QueryException`). Infrastructure catches the duplicate-key error (SQLSTATE 23000 / unique violation) and rethrows `Core\Shared\Domain\Exceptions\DuplicateKeyException`. The Service catches that (or the module's own conflict exception) and returns a failure Result. No framework exception crosses the Core boundary in either direction.
 
 ## PROJECT CONVENTIONS (P-RULES)
+
 Project-wide and as binding as the mandates above.
 
 - P1 COMPOSITION ROOT PER MODULE: each module binds its own ports (`<Module>MapperContract`, `<Module>CommandServiceContract`, `<Module>QueryServiceContract`, `<Module>RepositoryContract`, any narrower query contract) in `app/Providers/<Module>ServiceProvider.php`, listed in the `providers` list of `config/app.php`. `AppServiceProvider` holds only Shared-kernel ports and framework-wide bindings, NEVER module bindings. Creating and registering the module provider is INHERENT WIRING for the step that creates the module. In this repo the composition root is the providers on `devlinkstudios/wp-service-container`; the Laravel build binds the same contracts in Laravel providers (`bootstrap/providers.php`).
@@ -230,6 +258,7 @@ Project-wide and as binding as the mandates above.
   - Request DTOs are unaffected. Never licenses an Entity, Value Object, or read model to break the naming philosophy.
 
 ## STRICT DOCBLOCK MANAGEMENT
+
 - No informal narrative class descriptions ("This acts as a translation boundary...").
 - A class implementing an interface MUST have `@implements <FQCN>`.
 - Keep descriptions short, technical, 1-2 lines unless genuinely complex business logic needs more. No conversational text.
@@ -240,9 +269,11 @@ Project-wide and as binding as the mandates above.
 - Example: `/** Handles category creation. @param CreateCategoryRequest $request @return Result */` (not "Orchestrates the category creation use-case.").
 
 ## PHP 8.X STANDARDS AND CONSTRUCTOR PROPERTY PROMOTION
+
 When constructor property promotion is requested or required: NO property declarations above the constructor, NO assignments in the constructor body. Declare dependencies in the signature: `public function __construct(private readonly DependencyType $dependency) {}`.
 
 ## ERROR HANDLING AND DEFENSIVE PROGRAMMING
+
 - Infrastructure catches framework-specific failures (e.g. `storeAs` returning false) and throws domain-agnostic or standard `RuntimeException`.
 - Silent failures are forbidden.
 - Uniqueness MUST be race-safe: database UNIQUE index, with the repository adapter mapping the duplicate-key error to the module's domain conflict exception. Check-then-insert alone is never enough.
@@ -250,18 +281,24 @@ When constructor property promotion is requested or required: NO property declar
 - LOCALIZATION: no hardcoded user-facing text in Core; Core NEVER calls `__()`, `trans()`, or any translation helper. Text lives in lang files and reaches Core only via `TranslatorContract`. Error codes stay untranslated domain keys. Details: 02 (section 9), 05 (R12.6).
 
 ## INFRASTRUCTURE STRING ENCAPSULATION MANDATE
+
 Services NEVER contain inline infrastructure strings (e.g. storage directory names). Define each as a private constant at the top of the Service (`private const THUMBNAIL_DIRECTORY = 'categories';`) and use `self::CONSTANT_NAME`.
 
 ## WORDPRESS-SPECIFIC CONVENTIONS
+
 This file stays environment-neutral where it can. WordPress specifics (boot order, config/env, DI, Fluent Database repositories, security, routing, localization, OVERRIDE TABLE) live in 02. Load 02 when touching adapters, entity mappers, providers, routes, config or views. Rule files 03, 04, 05, 08 and 09 are WordPress editions; the OVERRIDE TABLE in 02 section 11 covers any Laravel wording that still appears.
 
 ## GLOBAL EXECUTION POLICY: INTERACTIVE ALERT
+
 Trigger: every time you need user confirmation, permission, or input to proceed. Every HALT in Autonomous Execution Mode triggers it. Run BOTH commands (Windows), sound first, then toast:
+
 1. `powershell.exe -Command "[System.Media.SystemSounds]::Asterisk.Play(); Start-Sleep -Milliseconds 300; [System.Media.SystemSounds]::Asterisk.Play()"`
 2. `powershell.exe -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('Action required - please respond', 'Claude Code', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Question)"`
 
 ## CODING STANDARDS
+
 Early Return / Guard Clauses instead of complex ternaries for conditional logic and HTTP responses. Flat structure, no nested conditions.
+
 ```php
 if ($result->isFailure()) {
     return back()->with('error', $message);
@@ -270,7 +307,9 @@ return redirect()->route('index');
 ```
 
 ## COMPLETION CHECKLIST (VERIFY BEFORE REPORTING DONE)
+
 Audit the actual code against each applicable item. NEVER claim an item without confirming it in the code.
+
 - The task's MODE was named before coding; no edit landed in `framework/` or `vendor/` outside a JOB F task.
 - No `Illuminate\*`, WordPress function, `Framework\*`, `App\*`, or other framework import in Core Domain/Application (06 T8 grep returned zero matches).
 - FROZEN folders are untouched by porting work (`tools/port-audit.sh` reports no difference).
@@ -294,6 +333,7 @@ You are bound by these constraints for the entire project lifecycle.
 ---
 
 ## RULE FILE INDEX (`.claude/rules/`)
+
 1. `01-universal-philosophy.txt` - ALWAYS relevant: Golden Rules, Hexagonal model, layer boundaries, SOLID/KISS, Definition of Done. Environment-neutral, shared by the Laravel project and this plugin.
 2. `02-framework-adapter-wordpress.txt` - ALWAYS when touching `app/`, `config/`, `routes/`, `views/`, `database/`, providers, any `core/*/Infrastructure` adapter, the entry file, or porting. Boot order, config/env, DI, `$wpdb`, security, localization, OVERRIDE TABLE.
 3. `03-module-scaffolding.txt` - ONLY when scaffolding a NEW module. WordPress edition.

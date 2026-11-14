@@ -10,11 +10,11 @@ namespace Core\Company\Application\DTOs\Requests;
 final readonly class CompanyFilterDTO
 {
     /**
-     * @param string|null $search
-     * @param int         $perPage
+     * @param int $perPage
+     * @param int $page      1-based page number.
      */
     public function __construct(
-        public ?string $search = null,
         public int $perPage = 15,
+        public int $page = 1,
     ) {}
 }
