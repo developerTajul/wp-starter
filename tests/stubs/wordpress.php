@@ -775,6 +775,10 @@ if (!function_exists('add_menu_page')) {
         string $iconUrl = '',
         ?int $position = null
     ): string {
+        global $admin_page_hooks;
+
+        $admin_page_hooks ??= [];
+
         WpStub::$menuPages[] = [
             'page_title' => $pageTitle,
             'menu_title' => $menuTitle,
@@ -784,6 +788,11 @@ if (!function_exists('add_menu_page')) {
             'icon_url' => $iconUrl,
             'position' => $position,
         ];
+
+        // WordPress records a top-level page's slug here, and
+        // `get_plugin_page_hookname()` reads it to decide the hook's page type
+        // (`toplevel_page_{slug}` rather than `admin_page_{slug}`).
+        $admin_page_hooks[$menuSlug] = 'toplevel';
 
         // WordPress returns the hook suffix the page is registered under, and a
         // caller uses it to enqueue assets for that one screen. The stub composes
@@ -816,6 +825,40 @@ if (!function_exists('add_submenu_page')) {
         ];
 
         return $parentSlug . '_page_' . $menuSlug;
+    }
+}
+
+if (!function_exists('get_plugin_page_hookname')) {
+    /**
+     * Mirrors WordPress's page-type rule for a plugin page's hook name.
+     *
+     * The real function reads `$admin_page_hooks` (filled by `add_menu_page()`)
+     * and `get_admin_page_parent()`. Reproducing both faithfully matters: the
+     * hidden-page title fix depends on the hook being `admin_page_{slug}` for a
+     * page whose parent is empty, and a stub that guessed the name would let a
+     * wrong hook pass the suite - which is how the original bug shipped.
+     */
+    function get_plugin_page_hookname(string $pluginPage, string $parentPage = ''): string
+    {
+        global $admin_page_hooks;
+
+        $admin_page_hooks ??= [];
+
+        $pageType = 'admin';
+
+        if ($parentPage === '' || $parentPage === 'admin.php' || isset($admin_page_hooks[$pluginPage])) {
+            if (isset($admin_page_hooks[$pluginPage])) {
+                $pageType = 'toplevel';
+            } elseif (isset($admin_page_hooks[$parentPage])) {
+                $pageType = $admin_page_hooks[$parentPage];
+            }
+        } elseif (isset($admin_page_hooks[$parentPage])) {
+            $pageType = $admin_page_hooks[$parentPage];
+        }
+
+        $pluginName = preg_replace('!\.php!', '', $pluginPage);
+
+        return $pageType . '_page_' . $pluginName;
     }
 }
 

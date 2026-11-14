@@ -10,13 +10,12 @@ use Core\Company\Domain\Exceptions\CompanyDuplicateException;
 use Core\Company\Domain\Exceptions\CompanyNotFoundException;
 use Core\Company\Infrastructure\Mappers\CompanyEntityMapper;
 use Core\Shared\Infrastructure\Repositories\BaseRepository;
-use Framework\Database\Query\Exceptions\UniqueConstraintException;
-use Framework\Database\Query\QueryBuilderInterface;
 use RuntimeException;
 use Throwable;
+use wpdb;
 
 /**
- * Fluent-builder writes for companies.
+ * `$wpdb` writes for companies.
  *
  * @implements CompanyRepositoryContract
  */
@@ -32,24 +31,31 @@ final class WpCompanyWriteRepository extends BaseRepository implements CompanyRe
         'id', 'name', 'website', 'industry', 'phone', 'address', 'created_at', 'updated_at',
     ];
 
+    private const OUTPUT_ASSOC = ARRAY_A;
+
     /**
-     * @param QueryBuilderInterface $query  The fluent builder, bound to the
-     *                                       WordPress connection by its provider.
-     * @param CompanyEntityMapper    $mapper
+     * @param CompanyEntityMapper $mapper
+     * @param wpdb|null $wpdb Defaults to the `$wpdb` global, resolved lazily; see
+     *                        {@see BaseRepository::db()}.
      */
     public function __construct(
-        QueryBuilderInterface $query,
         private readonly CompanyEntityMapper $mapper,
+        ?wpdb $wpdb = null,
     ) {
-        parent::__construct($query);
+        parent::__construct($wpdb);
     }
 
     /**
      * Reports a rejected unique index as the module's conflict.
      *
-     * @return \Throwable
+     * `companies.name` carries a unique index, so a second company under a name
+     * already stored arrives here as an integrity violation rather than as a row.
+     *
+     * @param Throwable $exception
+     *
+     * @return Throwable
      */
-    protected function duplicateException(UniqueConstraintException $exception): Throwable
+    protected function duplicateException(Throwable $exception): Throwable
     {
         return new CompanyDuplicateException(previous: $exception);
     }
@@ -61,8 +67,8 @@ final class WpCompanyWriteRepository extends BaseRepository implements CompanyRe
      *
      * @return CompanyEntity The stored row, carrying its new ID.
      *
-     * @throws CompanyDuplicateException When a unique index rejects the row.
-     * @throws RuntimeException          When the insert fails.
+     * @throws CompanyDuplicateException When the unique name index rejects the row.
+     * @throws RuntimeException When the insert fails.
      */
     public function create(CompanyEntity $company): CompanyEntity
     {
@@ -89,8 +95,8 @@ final class WpCompanyWriteRepository extends BaseRepository implements CompanyRe
      * @return CompanyEntity The stored row.
      *
      * @throws CompanyNotFoundException When the entity has no id.
-     * @throws CompanyDuplicateException When a unique index rejects the row.
-     * @throws RuntimeException          When the update fails.
+     * @throws CompanyDuplicateException When the unique name index rejects the row.
+     * @throws RuntimeException When the update fails.
      */
     public function update(CompanyEntity $company): CompanyEntity
     {
@@ -109,6 +115,11 @@ final class WpCompanyWriteRepository extends BaseRepository implements CompanyRe
     /**
      * Reads a company while holding a row lock.
      *
+     * `FOR UPDATE` needs a transaction to mean anything. Read outside one, MySQL
+     * releases the lock as soon as the statement's implicit transaction ends, and
+     * the call becomes an ordinary read that merely looks safe. The caller takes
+     * this inside the transaction that is about to write.
+     *
      * @param int $companyId
      *
      * @return CompanyEntity|null Null when no company carries the id.
@@ -117,14 +128,31 @@ final class WpCompanyWriteRepository extends BaseRepository implements CompanyRe
      */
     public function findByIdForUpdate(int $companyId): ?CompanyEntity
     {
-        $row = $this->query
-            ->table(self::TABLE_SUFFIX)
-            ->select(...self::COLUMNS)
-            ->where('id', $companyId)
-            ->lockForUpdate()
-            ->first();
+        $db = $this->db();
 
-        return $row === null ? null : $this->mapper->toEntity($row);
+        $sql = $db->prepare(
+            sprintf(
+                'SELECT * FROM `%s` WHERE `id` = %%d LIMIT 1 FOR UPDATE',
+                $this->escapeIdentifier($this->tableName(self::TABLE_SUFFIX))
+            ),
+            $companyId
+        );
+
+        $row = $db->get_row($sql, self::OUTPUT_ASSOC);
+
+        // `get_row()` returns null for "no such row" and for a failed statement
+        // alike, so the failure is read from `last_error` rather than inferred
+        // from the null — otherwise an unreachable database would be served to
+        // the Service as "this company does not exist".
+        if ($row === null && $db->last_error !== '') {
+            throw new RuntimeException(sprintf(
+                'Failed to lock company %d for update: %s',
+                $companyId,
+                $db->last_error
+            ));
+        }
+
+        return is_array($row) ? $this->mapper->toEntity($row) : null;
     }
 
     /**
@@ -139,13 +167,33 @@ final class WpCompanyWriteRepository extends BaseRepository implements CompanyRe
      * @return void
      *
      * @throws CompanyNotFoundException When the row no longer exists.
-     * @throws RuntimeException         When the delete fails.
+     * @throws RuntimeException When the delete fails.
      */
     public function delete(int $companyId): void
     {
         $deleted = $this->executeQuery(
             sprintf('delete company %d', $companyId),
-            fn(): int => $this->query->table(self::TABLE_SUFFIX)->where('id', $companyId)->delete()
+            function () use ($companyId): int {
+                $db = $this->db();
+
+                $affected = $db->query($db->prepare(
+                    sprintf(
+                        'DELETE FROM `%s` WHERE `id` = %%d',
+                        $this->escapeIdentifier($this->tableName(self::TABLE_SUFFIX))
+                    ),
+                    $companyId
+                ));
+
+                // The message is the driver's alone: `executeQuery()` adds the
+                // action that names the operation.
+                if ($affected === false) {
+                    throw new RuntimeException(
+                        $db->last_error !== '' ? $db->last_error : 'the database reported no error message'
+                    );
+                }
+
+                return (int) $affected;
+            }
         );
 
         if ($deleted < 1) {
@@ -156,6 +204,11 @@ final class WpCompanyWriteRepository extends BaseRepository implements CompanyRe
     /**
      * Reads back a row just written.
      *
+     * Every write returns through here because the database owns the timestamps
+     * and the id: an entity assembled from the caller's own values would be
+     * missing both, and a Service returning it would report a timestamp that was
+     * never stored.
+     *
      * @param int $companyId
      *
      * @return CompanyEntity
@@ -164,13 +217,18 @@ final class WpCompanyWriteRepository extends BaseRepository implements CompanyRe
      */
     private function readBack(int $companyId): CompanyEntity
     {
-        $row = $this->query
-            ->table(self::TABLE_SUFFIX)
-            ->select(...self::COLUMNS)
-            ->where('id', $companyId)
-            ->first();
+        $db = $this->db();
 
-        if ($row === null) {
+        $row = $db->get_row($db->prepare(
+            sprintf(
+                'SELECT `%s` FROM `%s` WHERE `id` = %%d LIMIT 1',
+                implode('`, `', self::COLUMNS),
+                $this->escapeIdentifier($this->tableName(self::TABLE_SUFFIX))
+            ),
+            $companyId
+        ), self::OUTPUT_ASSOC);
+
+        if (! is_array($row)) {
             throw new RuntimeException(sprintf(
                 'The row for company %d could not be read back after it was written.',
                 $companyId
@@ -182,6 +240,10 @@ final class WpCompanyWriteRepository extends BaseRepository implements CompanyRe
 
     /**
      * The id an update must target.
+     *
+     * The guard is what makes the assumption checkable: an entity with no id
+     * would produce `WHERE id = 0` and update nothing, and the caller would be
+     * told the write succeeded.
      *
      * @param CompanyEntity $company
      *

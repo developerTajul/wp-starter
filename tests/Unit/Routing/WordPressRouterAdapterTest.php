@@ -86,6 +86,92 @@ final class WordPressRouterAdapterTest extends TestCase
     // ------------------------------------------------------------ admin pages
 
     /**
+     * **A hidden page supplies its own title, on the hook WordPress fires.**
+     *
+     * This is the regression test for a bug that shipped and was diagnosed twice
+     * as something else. A hidden page registers under an empty parent, so
+     * `get_admin_page_title()` - which searches `$menu` when the parent is empty -
+     * finds no entry, leaves the `$title` global null, and `admin-header.php` then
+     * calls `strip_tags( null )`.
+     *
+     * The first fix attached the title to `load-{slug}`. That hook does not exist:
+     * `admin.php` fires `load-{plugin_page}` only in its *file-include* branch,
+     * and a page registered with a callback takes the branch that fires
+     * `load-{page_hook}`. So the listener never ran and the bug survived - which
+     * is why this test asserts the hook NAME rather than that *a* hook exists.
+     *
+     * `get_plugin_page_hookname()` is WordPress's own derivation of that name, and
+     * the stub reproduces it faithfully so the two cannot drift.
+     */
+    public function test_a_hidden_page_supplies_its_title_on_the_hook_wordpress_fires(): void
+    {
+        $this->router->adminPage('company-edit', Fixtures\StringController::class, 'edit')
+            ->withOptions(['page_title' => 'Edit company', 'hidden' => true]);
+
+        $this->router->flush();
+        WpStub::doAction('admin_menu');
+
+        // The name WordPress computes for a callback page whose parent is empty.
+        $expected = 'load-admin_page_company-edit';
+
+        $this->assertArrayHasKey(
+            $expected,
+            WpStub::$actions,
+            'The title must ride the hook admin.php actually fires for a callback page.'
+        );
+
+        // The wrong spelling, pinned so it cannot come back.
+        $this->assertArrayNotHasKey(
+            'load-company-edit',
+            WpStub::$actions,
+            'load-{slug} is the file-include branch hook and never fires for a callback page.'
+        );
+
+        $GLOBALS['title'] = null;
+        WpStub::doAction($expected);
+
+        $this->assertSame('Edit company', $GLOBALS['title']);
+    }
+
+    /**
+     * A hidden page is a submenu of nothing, and must not reach `add_menu_page()`
+     * - that is the shape that put "Edit company" in the sidebar as a top-level
+     * menu of its own.
+     */
+    public function test_a_hidden_page_registers_as_a_submenu_with_no_parent(): void
+    {
+        $this->router->adminPage('company-edit', Fixtures\StringController::class, 'edit')
+            ->withOptions(['page_title' => 'Edit company', 'hidden' => true]);
+
+        $this->router->flush();
+        WpStub::doAction('admin_menu');
+
+        $this->assertSame([], WpStub::$menuPages, 'A hidden page is never a top-level menu.');
+        $this->assertCount(1, WpStub::$submenuPages);
+        $this->assertSame('', WpStub::$submenuPages[0]['parent_slug']);
+        $this->assertSame('company-edit', WpStub::$submenuPages[0]['menu_slug']);
+    }
+
+    /**
+     * An ordinary page takes no title hook: its title resolves through WordPress,
+     * and attaching one would be dead weight on every screen.
+     */
+    public function test_a_visible_page_attaches_no_title_hook(): void
+    {
+        $this->router->adminPage('leads', Fixtures\StringController::class, 'index');
+        $this->router->flush();
+        WpStub::doAction('admin_menu');
+
+        foreach (array_keys(WpStub::$actions) as $tag) {
+            $this->assertStringNotContainsString(
+                'leads',
+                (string) $tag,
+                'A visible page needs no title hook.'
+            );
+        }
+    }
+
+    /**
      * The brief's core requirement: an admin page route becomes an `admin_menu`
      * registration.
      */

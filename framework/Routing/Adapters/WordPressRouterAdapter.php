@@ -291,6 +291,36 @@ final class WordPressRouterAdapter extends AbstractRouterAdapter
 
         $callback = fn (): mixed => $this->dispatchWeb($route, []);
 
+        // Hidden first, and deliberately before the submenu branch: a hidden page
+        // is a submenu of nothing, so `isSubmenu()` does not describe it and
+        // testing it first would send every hidden page to `add_menu_page()` -
+        // the one outcome the option exists to prevent.
+        //
+        // The empty parent is passed literally rather than through
+        // `parentSlug()`, which coerces `''` to null because an empty parent on
+        // an *ordinary* submenu registers a screen the menu never renders. Here
+        // that is exactly the intent: WordPress registers the page and its
+        // `?page={slug}` handler while drawing no sidebar entry for it.
+        if ($page->isHidden()) {
+            if (! function_exists('add_submenu_page')) {
+                return;
+            }
+
+            add_submenu_page(
+                '',
+                $page->pageTitle(),
+                $page->menuTitle(),
+                $page->capability(),
+                $page->slug(),
+                $callback,
+                $page->position()
+            );
+
+            $this->supplyHiddenPageTitle($page);
+
+            return;
+        }
+
         if ($page->isSubmenu()) {
             if (!function_exists('add_submenu_page')) {
                 return;
@@ -320,6 +350,57 @@ final class WordPressRouterAdapter extends AbstractRouterAdapter
                 $page->position()
             );
         }
+    }
+
+    /**
+     * Gives a hidden screen the title WordPress cannot look up for it.
+     *
+     * A hidden page is registered under an empty parent, so it lands in
+     * `$submenu['']` - a bucket the sidebar never walks. `get_admin_page_title()`
+     * searches `$menu` (top level) when the parent is empty, finds no entry for
+     * the slug, and returns having assigned nothing. The `$title` global is then
+     * still null when `wp-admin/admin-header.php` runs `strip_tags( $title )` -
+     * a `TypeError` on PHP 8.3, and the "Passing null to parameter #1 ($string)
+     * of type string is deprecated" notice on 8.1/8.2.
+     *
+     * Registering the page under a real parent would let that lookup succeed, but
+     * it would also draw the sidebar entry the `hidden` option exists to remove.
+     * Removing the entry afterwards - `remove_submenu_page()` - is the other
+     * tempting fix and is worse: the lookup reads `$submenu`, so deleting the
+     * entry from it restores the null it was meant to fix.
+     *
+     * So the title is supplied directly, on the hook WordPress really fires.
+     *
+     * **Which hook that is matters, and the obvious answer is wrong.** A page
+     * registered with a callback makes `admin.php` take its `if ( $page_hook )`
+     * branch, which fires `load-{$page_hook}`. The `load-{$plugin_page}` hook
+     * belongs to the other branch - pages that name a *file* to include - and
+     * never fires here. The hook is therefore derived with WordPress's own
+     * `get_plugin_page_hookname()`, which yields `admin_page_{slug}` for a page
+     * whose parent is empty (page type `admin`, no parent to supply a type).
+     * Deriving it by hand instead would be a second implementation of a rule
+     * WordPress already owns, and the symptom would be exactly the silent
+     * no-op this method exists to fix.
+     *
+     * The title is read from {@see AdminPage}, never hardcoded here: the
+     * framework holds no project text (F1.3).
+     */
+    private function supplyHiddenPageTitle(AdminPage $page): void
+    {
+        if (! function_exists('add_action') || ! function_exists('get_plugin_page_hookname')) {
+            return;
+        }
+
+        $slug = $page->slug();
+        $title = $page->pageTitle();
+
+        // The parent is empty for a hidden page, which is what makes the page
+        // type `admin` rather than a menu-derived one.
+        $hook = 'load-' . get_plugin_page_hookname($slug, '');
+
+        add_action($hook, static function () use ($title): void {
+            $GLOBALS['title'] = $title;
+        });
     }
 
     /**

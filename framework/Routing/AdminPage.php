@@ -178,6 +178,25 @@ final class AdminPage
     }
 
     /**
+     * Whether the screen is registered without a menu entry of its own.
+     *
+     * A hidden screen is reachable at `admin.php?page={slug}` and dispatches
+     * normally, but WordPress draws nothing for it in the sidebar. It exists for
+     * screens that are always arrived at from somewhere else and have no sensible
+     * menu entry of their own - a record edit form carrying its id on the query
+     * string, which a fixed menu link could not supply.
+     *
+     * Read from the options bag like every other option rather than held as its
+     * own property, so {@see fromRoute()} and {@see fromArray()} cannot disagree
+     * about where the value lives. An explicit `false` and an absent key are the
+     * same thing, which is what makes the option safe to leave out.
+     */
+    public function isHidden(): bool
+    {
+        return ($this->options['hidden'] ?? false) === true;
+    }
+
+    /**
      * The `admin_post_{action}` name, when this route is a form handler.
      *
      * Written back onto the route by the adapter at flush() time, so a view

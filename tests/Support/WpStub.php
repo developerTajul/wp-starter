@@ -351,6 +351,12 @@ final class WpStub
         self::$loginUrl = null;
         self::$menuPages = [];
         self::$submenuPages = [];
+
+        // WordPress fills this in `add_menu_page()` and reads it in
+        // `get_plugin_page_hookname()`. Cleared here so one test's top-level
+        // menus cannot change the hook name another test computes.
+        $GLOBALS['admin_page_hooks'] = [];
+
         self::$adminUrl = null;
         self::$homeUrl = null;
         self::$isAdmin = false;

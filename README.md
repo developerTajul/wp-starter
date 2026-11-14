@@ -2643,9 +2643,16 @@ The migration builder above describes **schema**. This section covers **data**:
 It lives in `framework/Database/Query/`, is bound by
 `Framework\Database\QueryServiceProvider` (listed in
 [Configuration](#configuration)), and is resolved by the repositories that use
-it — `WPFluentCompanyReadRepository`, `WPFluentCompanyWriteRepository` and
-`LeadReadRepository`. A repository on the older `$wpdb` path is not required to
+it — `LeadReadRepository`. A repository on the `$wpdb` path is not required to
 move; the builder is adopted per adapter, and both paths are bound in `app/`.
+
+The Company module's repositories (`WpCompanyReadRepository`,
+`WpCompanyWriteRepository`) use `$wpdb` directly, through the shared
+`BaseRepository` write helpers. That is the `D7 WPDB OVERRIDE` decision in
+`AGENTS.md`: a repository may use `$wpdb` and raw SQL, with every value bound
+through `$wpdb->prepare()`. `LeadReadRepository` is the one adapter still on the
+builder; there is no requirement that the two agree, because the choice is per
+adapter rather than per project.
 
 ### Who may call it
 
@@ -2666,10 +2673,10 @@ there the leak has already happened with no seam left to notice it.
 | `app/`                       | only in a provider wiring it into a repository | Controllers and services call the repository, not the builder |
 | `framework/Database/`        | not through this API                | The migrator uses its own `DatabaseAdapterInterface` seam, not the builder |
 
-Verified by grep: outside `framework/Database/Query/`, the only files naming this
-interface are the three repositories that use it and the two providers in `app/`
-that wire it into them. No Application service, domain object or controller
-references it.
+Verified by grep: outside `framework/Database/Query/`, the only file naming this
+interface as a caller is `LeadReadRepository`, and the one provider in `app/`
+that wires it into that repository. No Application service, domain object or
+controller references it.
 
 The builder is resolved through the container, so a repository receives it as a
 constructor argument rather than reaching for a global:
@@ -2899,17 +2906,21 @@ A write, showing the row lock that makes read-then-write safe. The lock, the rea
 the decision and the write all happen inside one
 `TransactionManagerContract::run()` boundary — see
 [Mandatory transaction management](#mandatory-transaction-management-protocol).
-This is `findByIdForUpdate()` from `WPFluentCompanyWriteRepository`, which is the
+This is `findByIdForUpdate()` from `WpCompanyWriteRepository`, which is the
 only read a write port is allowed to carry:
 
 ```php
-$row = $this->query
-    ->table(self::TABLE_SUFFIX)
-    ->select(...self::COLUMNS)
-    ->where('id', $companyId)
-    ->lockForUpdate()
-    ->first();
+$sql = $db->prepare(
+    sprintf('SELECT * FROM `%s` WHERE `id` = %%d LIMIT 1 FOR UPDATE', $table),
+    $companyId
+);
+
+$row = $db->get_row($sql, ARRAY_A);
 ```
+
+`get_row()` returns `null` both for "no such row" and for a failed statement, so
+the two are told apart by `$wpdb->last_error` — a database fault must not be
+served to the caller as "this company does not exist".
 
 ### Transactions
 
@@ -2949,13 +2960,21 @@ Application Service catches. No `Framework\*` exception is imported, caught, or
 type-hinted in a service.
 
 ```php
-// Core\Company\Infrastructure\Repositories\WPFluentCompanyWriteRepository
+// Core\Shared\Infrastructure\Repositories\BaseRepository
 try {
-    return $this->query->table(self::TABLE_SUFFIX)->insertGetId($values);
-} catch (UniqueConstraintException $exception) {
-    throw new CompanyDuplicateException();
+    return $operation();
+} catch (Throwable $exception) {
+    $this->throwIfDuplicate($exception, $action);
+
+    throw new RuntimeException(sprintf('Failed to %s: %s', $action, $exception->getMessage()), 0, $exception);
 }
 ```
+
+A `$wpdb` repository cannot use the error number: `$wpdb` exposes no error code,
+only `last_error`, so the duplicate is recognised from the two phrases MySQL
+writes into that string — the SQLSTATE `23000` and `Duplicate entry`. That is the
+one place this project matches on message text, and it is why the check is kept
+to a single method rather than repeated per repository.
 
 The refusals above (`= NULL`, an empty `whereIn()`, an unsupported operator, a
 non-positive `limit()`, an unqualified `update()`/`delete()`) all raise

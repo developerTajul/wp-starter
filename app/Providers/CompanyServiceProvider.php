@@ -25,8 +25,7 @@ use DevLinkStudios\WPServiceContainer\ServiceProvider;
  * Every binding the module owns lives here rather than in
  * {@see AppServiceProvider}, which holds shared-kernel bindings only. Each
  * contract has exactly one implementation: the `Wp*` classes under
- * `core/Company/Infrastructure/Repositories/`, which use the Fluent Database
- * builder.
+ * `core/Company/Infrastructure/Repositories/`, which use `$wpdb`.
  */
 final class CompanyServiceProvider extends ServiceProvider
 {
@@ -48,27 +47,22 @@ final class CompanyServiceProvider extends ServiceProvider
             static fn (): CompanyEntityMapper => new CompanyEntityMapper()
         );
 
-        // Bound by concrete class so the builder and the mapper arrive by
-        // injection. The query builder itself is bound by
-        // Framework\Database\QueryServiceProvider; resolving it here rather
-        // than constructing it keeps the connection out of this file.
+        // Bound by concrete class so the mapper arrives by injection. The $wpdb
+        // handle is not passed: both repositories resolve the global lazily on
+        // first use, which is what lets these bindings be registered before
+        // WordPress has loaded the database.
         $this->container->bind(
             WpCompanyWriteRepository::class,
             fn ($container): WpCompanyWriteRepository => new WpCompanyWriteRepository(
-                $container->resolve(\Framework\Database\Query\QueryBuilderInterface::class),
                 $container->resolve(CompanyEntityMapper::class)
             )
         );
 
         // The read repository is bound separately from the write one: the two
-        // implement different contracts and neither knows about the other. It
-        // takes the same builder and mapper, and the connection is resolved
-        // lazily inside the builder, which is what lets this binding be
-        // registered before WordPress has loaded the database.
+        // implement different contracts and neither knows about the other.
         $this->container->bind(
             WpCompanyReadRepository::class,
             fn ($container): WpCompanyReadRepository => new WpCompanyReadRepository(
-                $container->resolve(\Framework\Database\Query\QueryBuilderInterface::class),
                 $container->resolve(CompanyEntityMapper::class)
             )
         );

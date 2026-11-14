@@ -74,6 +74,48 @@ final class AdminPageTest extends TestCase
 
     // --------------------------------------------------------------- fallbacks
 
+    // ------------------------------------------------------------------ hidden
+
+    /**
+     * An absent `hidden` key and an explicit `false` mean the same thing, which is
+     * what makes the option safe to leave out of every ordinary screen.
+     */
+    public function test_a_page_is_visible_unless_it_says_otherwise(): void
+    {
+        $this->assertFalse(AdminPage::fromArray('leads')->isHidden());
+        $this->assertFalse(AdminPage::fromArray('leads', ['hidden' => false])->isHidden());
+    }
+
+    public function test_a_hidden_page_reports_itself_hidden(): void
+    {
+        $this->assertTrue(AdminPage::fromArray('company-edit', ['hidden' => true])->isHidden());
+    }
+
+    /**
+     * A hidden page is not a submenu: the two are independent, and conflating them
+     * is what once sent a hidden page to `add_menu_page()` and put it in the
+     * sidebar as a top-level menu of its own.
+     */
+    public function test_a_hidden_page_is_not_a_submenu_of_anything(): void
+    {
+        $page = AdminPage::fromArray('company-edit', ['hidden' => true]);
+
+        $this->assertTrue($page->isHidden());
+        $this->assertNull($page->parentSlug());
+        $this->assertFalse($page->isSubmenu());
+    }
+
+    /**
+     * A truthy non-boolean is not accepted. `hidden => 'no'` is a mistake - the
+     * string is non-empty and would read as true under a loose test - so only a
+     * real `true` hides a screen.
+     */
+    public function test_only_a_real_boolean_hides_a_page(): void
+    {
+        $this->assertFalse(AdminPage::fromArray('leads', ['hidden' => 'no'])->isHidden());
+        $this->assertFalse(AdminPage::fromArray('leads', ['hidden' => 1])->isHidden());
+    }
+
     /**
      * A page declaring only a menu title uses it for the heading too — humanizing
      * the slug over the top would ignore a deliberate choice.

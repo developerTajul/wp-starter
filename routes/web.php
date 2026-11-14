@@ -66,12 +66,17 @@ Route::group([
             ->withOptions(['action' => CompanyController::UPDATE_ACTION])
             ->middleware(['nonce:' . CompanyController::UPDATE_ACTION]);
 
+        // Hidden: the screen is reached with an id on the query string, so it has
+        // no fixed link a menu entry could carry. Without this the route registers
+        // as a top-level menu of its own and WordPress draws an "Edit company"
+        // item that goes nowhere.
         Route::get(CompanyController::EDIT_SLUG, [CompanyController::class, 'edit'])
             ->name('companies.edit')
             ->withOptions([
                 'page_title'  => 'Edit company',
                 'menu_title'  => 'Edit company',
-                'capability'  => CompanyController::CAPABILITY
+                'capability'  => CompanyController::CAPABILITY,
+                'hidden'      => true,
             ]);
 
         Route::post('companies/delete', [CompanyController::class, 'destroy'])

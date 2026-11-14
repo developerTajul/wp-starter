@@ -188,23 +188,31 @@ final class WebRoutesFileTest extends TestCase
 
         $slugs = array_column(WpStub::$menuPages, 'menu_slug');
 
+        // The dashboard screen and the company list are the two top-level menus
+        // the file declares, in registration order. Edit company is deliberately
+        // absent: it is a hidden screen, so a top-level entry for it here is the
+        // sidebar bug this assertion exists to catch.
         $this->assertSame(
-            [CompanyController::SCREEN_SLUG],
+            ['wp-mini-laravel', CompanyController::SCREEN_SLUG],
             $slugs,
             'Top-level menus, in registration order.'
         );
 
         $submenuParents = array_column(WpStub::$submenuPages, 'parent_slug');
 
-        // Two screens sit under the list screen: Add a company and Edit company.
-        // Edit carries a `parent_slug` for the same reason Add does - WordPress
-        // reaches an admin screen only through a menu registration, and a screen
-        // registered without a parent becomes a menu of its own. Both are stated
-        // here so a new screen has to be added consciously, not pass silently.
+        // Only Add a company sits under the list screen. Edit company is
+        // registered with an empty parent on purpose: it is reached with an id on
+        // the query string and has no fixed link, so it must resolve as a screen
+        // without WordPress drawing a menu entry for it. Registered under
+        // `companies` it would appear as a dead "Edit company" item in the
+        // sidebar; registered with no parent at all it became a top-level menu of
+        // its own. The empty parent is the one spelling that is both reachable and
+        // invisible, and it is named here so it cannot regress to either broken
+        // shape silently.
         $this->assertSame(
-            [CompanyController::SCREEN_SLUG, CompanyController::SCREEN_SLUG],
+            [CompanyController::SCREEN_SLUG, ''],
             $submenuParents,
-            'Both other company screens are submenus of the list screen.'
+            'Add is a submenu of the list screen; Edit is registered with no parent.'
         );
         $this->assertSame(
             [CompanyController::CREATE_SLUG, CompanyController::EDIT_SLUG],
